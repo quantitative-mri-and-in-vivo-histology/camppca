@@ -78,16 +78,13 @@ stays in the data for the per-patch MP fit to find.
 | — | `V` | mask voxels |
 | — | `S` | shells |
 
-Preferred in new code and the public API: `n_vox`, `n_vols`, `n_mask`, `n_shells`. The
-ported modules keep the short letters until the post-`selftest` rename commit.
+In code these are spelled `n_vox`, `n_vols`, `n_mask`, `n_shells` — the bare letters were
+renamed once the self-test was green. `Mp`/`Np` became **`n_small`/`n_large`**: the
+reference had `Mp, Np = min(P, N), max(P, N)`, the *sorted* pair, so under this notation
+the old names read as patch-M and patch-N, which they never meant.
 
-⚠ **`P` means two different things across the two documents.** Paper `P` = retained
-rank; code `P` = voxels in a patch. Both appear in the tables above.
-
-⚠ **`Mp`/`Np` do not mean patch-M and patch-N.** `whitened.py:143` is
-`Mp, Np = min(P, N), max(P, N)` — the *sorted* pair. Under this notation the names read
-as if they meant M and N, and they do not. Rename to `n_small`/`n_large` in the same
-later commit.
+⚠ **`P` still means two different things across the two documents.** Paper `P` = retained
+rank; the reference code's `P` = voxels in a patch (now `n_vox`).
 
 Worked example: the story doc's "M = 125, N = 34" (paper convention: 125 voxels,
 34 volumes) lands in code as `Mp = 34`, `Np = 125`. "Rank → Mp" means rank approaching

@@ -8,9 +8,8 @@ Source-agnostic by design -- ``denoise_with_noise_model`` consumes a
 alignment-based estimator feeds the same code.
 
 ``camppca.py`` is the method; ``mppca.py`` is the plain white-noise baseline arm plus the
-Marchenko-Pastur threshold both share. This module is where the ported spelling (``Rs``,
-``row_scale``, ``kernel``) is translated into the project's notation (``Cs``, ``d``,
-``patch``).
+Marchenko-Pastur threshold both share. Both now speak CLAUDE.md's notation directly -- see
+their module headers for the rename from the reference spelling.
 """
 
 from dataclasses import dataclass, field
@@ -49,7 +48,7 @@ class DenoiseResult:
 def _effective_d(d, mask):
     """The level field exactly as the engine normalizes and clips it internally.
 
-    ⚠ MIRRORS ``camppca.denoise_white_percol`` (the ``row_scale`` block).  It has to: the
+    ⚠ MIRRORS ``camppca.denoise_white_percol`` (the ``d_field`` block).  It has to: the
     engine rescales the denoised image by this field at the centre voxel but NOT
     ``sigma_hat``, so putting sigma_hat back into data units means applying the same
     field.  Keep the two in sync.
@@ -94,8 +93,8 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
     d_eff = _effective_d(model.d, model.mask) if noise_field else None
 
     denoised, sigma_hat, rank = denoise_white_percol(
-        dwi, model.mask, Cs, model.group, col_scale=model.column_scale(),
-        kernel=tuple(int(v) for v in patch), algo=algo, tile=tile, row_scale=d_eff)
+        dwi, model.mask, Cs, model.group, column_scale=model.column_scale(),
+        patch=tuple(int(v) for v in patch), algo=algo, tile=tile, d_field=d_eff)
 
     if d_eff is not None and sigma_units == "data":
         # The engine rescales the IMAGE by d at the centre voxel but not sigma_hat

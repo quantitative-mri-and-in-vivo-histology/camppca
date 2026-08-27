@@ -41,6 +41,6 @@ def check_patch(patch):
         raise ValueError(f"patch dimensions must be >= 1, got {tuple(int(v) for v in patch)}")
     if np.any(patch % 2 == 0):
         raise ValueError(
-            f"patch dimensions must be odd, got {tuple(int(v) for v in patch)} -- an even dimension has "
-            "no centre voxel and the engine is centre-voxel-only")
+            f"patch dimensions must be odd, got {tuple(int(v) for v in patch)} -- an even "
+            "dimension has no centre voxel and the engine is centre-voxel-only")
     return patch

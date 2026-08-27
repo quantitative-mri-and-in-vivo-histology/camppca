@@ -5,11 +5,15 @@ for two reasons: it is the standard-MP-PCA comparison arm, and it owns
 ``_mp_threshold_jax`` (the Marchenko-Pastur cutoff rule) and
 ``_device_gather_budget_bytes``, both of which the covariance-aware engine imports.
 
-Ported verbatim from ``src/warp_denoise/mppca.py`` (see reference/), so it keeps the
-upstream spelling. Notation mapping to CLAUDE.md:
+Ported from ``src/warp_denoise/mppca.py`` (see reference/). The bodies are verbatim; the
+NAMES were moved to CLAUDE.md's notation once the self-test was green:
 
-    kernel  -> patch (the box shape)      P   -> paper M, voxels in a patch
-    Mp, Np  -> min(P, N), max(P, N)  -- the SORTED pair, NOT patch-M and patch-N
+    kernel     -> patch                the box shape (paper M = n_vox voxels in it)
+    patchsize  -> n_keep               how many voxels adaptive selection retains
+    P, N       -> n_vox, n_vols
+    Mp, Np     -> n_small, n_large     ⚠ min/max of (n_vox, n_vols) -- the SORTED pair.
+                                       The old names read as patch-M and patch-N; they
+                                       never meant that.
 
 Port of DESIGNER-v2's ``lib/mpdenoise_adaptive.py`` (``MP`` class) with a single JAX
 implementation: the per-voxel loop is replaced by a batched device kernel, so the same
@@ -17,19 +21,20 @@ estimator runs on the CPU (default JAX backend) or the GPU (``jax`` with a CUDA 
 
 Method per target voxel:
 
-1. Extract the ``kernel`` (default 5x5x5) box around the voxel from the ``mode='wrap'``
-   padded volume -> data matrix ``X`` of shape ``(P, N)`` (rows = patch voxels, cols =
+1. Extract the ``patch`` (default 5x5x5) box around the voxel from the ``mode='wrap'``
+   padded volume -> data matrix ``X`` of shape ``(n_vox, n_vols)`` (rows = patch voxels, cols =
    diffusion volumes).
 2. **Bilateral patch selection** (``adaptive=True``): min-max normalize the whole box,
    compute ``int_distances`` = mean squared cross-volume difference from the centre voxel,
    multiply by the precomputed squared-Euclidean ``pos_distances``, and keep the
-   ``patchsize`` (~0.8*P) voxels with the smallest product.
+   ``n_keep`` (~0.8*n_vox) voxels with the smallest product.
 3. **Marchenko-Pastur threshold** (Veraart / Cordero-Grande / Jespersen; default
-   ``jespersen``) on the eigenvalues of the selected ``(patchsize, N)`` matrix. No demeaning.
+   ``jespersen``) on the eigenvalues of the selected ``(n_keep, n_vols)`` matrix. No demeaning.
 4. Hard-threshold (or Gavish-Donoho Frobenius shrinkage) the spectrum, reconstruct, and
    write back **only the centre voxel's** denoised signal.
 
-Numerics: the kernel forms the ``N x N`` Gram over volumes and eigendecomposes it, which
+Numerics: the tile core forms the ``n_vols x n_vols`` Gram over volumes and
+eigendecomposes it, which
 reproduces the centre-voxel output of a full SVD exactly (the centre voxel is always in the
 selected patch, and ``x_centre . V`` equals ``u[centre] . s``). ``_mp_threshold`` /
 ``_eig_shrink`` / ``_denoise_patch`` are single-patch JAX convenience wrappers over the
@@ -52,8 +57,8 @@ import jax
 import jax.numpy as jnp
 
 
-def _default_kernel(nvols: int) -> np.ndarray:
-    """Smallest odd isotropic kernel with ``p**3 >= nvols`` (DESIGNER default)."""
+def _default_patch(nvols: int) -> np.ndarray:
+    """Smallest odd isotropic patch with ``p**3 >= nvols`` (DESIGNER default)."""
     p = np.arange(3, max(nvols, 5), 2)
     pf = np.where(p**3 >= nvols)[0][0]
     return np.array([p[pf]] * 3)
@@ -81,33 +86,33 @@ def _device_gather_budget_bytes() -> float:
 # Batched JAX core.
 # ---------------------------------------------------------------------------
 
-def _mp_threshold_jax(vals, Mp: int, Np: int, algo: str):
-    """Batched Marchenko-Pastur threshold. ``vals`` (B, K>=Mp) descending eigenvalues
+def _mp_threshold_jax(vals, n_small: int, n_large: int, algo: str):
+    """Batched Marchenko-Pastur threshold. ``vals`` (B, K>=n_small) descending eigenvalues
     (singular values squared). Returns ``t`` (B,) int32 = #retained components and
     ``sigma`` (B,) noise level (tn=0 crossing of Veraart / Cordero-Grande / Jespersen).
     """
     eps = jnp.finfo(vals.dtype).eps
-    v = vals[:, :Mp]                                    # (B, Mp)
-    p = jnp.arange(Mp)                                  # (Mp,)
+    v = vals[:, :n_small]                                    # (B, n_small)
+    p = jnp.arange(n_small)                                  # (n_small,)
     csum = jnp.cumsum(v[:, ::-1], axis=1)[:, ::-1]      # csum[:, i] = sum(v[:, i:])
-    last = v[:, Mp - 1:Mp]                              # (B, 1) smallest of the top-Mp
+    last = v[:, n_small - 1:n_small]                              # (B,1) smallest kept
 
     if algo == "veraart":
-        sig1 = csum / ((Mp - p) * float(Np))
-        range_mp = 4.0 * jnp.sqrt((Mp - p) * float(Np))
+        sig1 = csum / ((n_small - p) * float(n_large))
+        range_mp = 4.0 * jnp.sqrt((n_small - p) * float(n_large))
     elif algo == "cordero-grande":
-        sig1 = csum / ((Mp - p) * (Np - p))
-        range_mp = 4.0 * jnp.sqrt((Mp - p) * (Np - p))
+        sig1 = csum / ((n_small - p) * (n_large - p))
+        range_mp = 4.0 * jnp.sqrt((n_small - p) * (n_large - p))
     elif algo == "jespersen":
-        sig1 = csum / ((Mp - p) * (Np - p))
-        range_mp = 4.0 * jnp.sqrt(float(Np) * float(Mp))   # scalar
+        sig1 = csum / ((n_small - p) * (n_large - p))
+        range_mp = 4.0 * jnp.sqrt(float(n_large) * float(n_small))   # scalar
     else:
         raise ValueError(f"unknown algorithm {algo!r}")
 
-    sig2 = (v - last) / range_mp                        # (B, Mp)
+    sig2 = (v - last) / range_mp                        # (B, n_small)
     cond = sig2 < sig1                                  # first True = first crossing
     any_hit = jnp.any(cond, axis=1)
-    t = jnp.where(any_hit, jnp.argmax(cond, axis=1), Mp - 1)   # else Mp-1 (tn=0)
+    t = jnp.where(any_hit, jnp.argmax(cond, axis=1), n_small - 1)   # else n_small-1 (tn=0)
     sig1_t = jnp.take_along_axis(sig1, t[:, None], axis=1)[:, 0]
     sigma = jnp.sqrt(jnp.maximum(sig1_t, 0.0))
     sigma = jnp.where((sigma > 0) & jnp.isfinite(sigma), sigma, eps)
@@ -117,7 +122,7 @@ def _mp_threshold_jax(vals, Mp: int, Np: int, algo: str):
 def _eig_shrink(vals, gamma):
     """Gavish-Donoho optimal singular-value shrinkage (Frobenius); elementwise, batched.
 
-    ``vals`` = singular values normalized by ``sqrt(Mp)*sigma``; returns the shrunk
+    ``vals`` = singular values normalized by ``sqrt(n_small)*sigma``; returns the shrunk
     (still normalized) values. Below the bulk edge ``1 + sqrt(gamma)`` the value is zeroed.
     """
     vals = jnp.asarray(vals)
@@ -127,14 +132,15 @@ def _eig_shrink(vals, gamma):
     return jnp.where(vals > thr, jnp.sqrt(jnp.maximum(disc, 0.0)) / jnp.maximum(vals, eps), 0.0)
 
 
-def _denoise_tile(patches, pos_dist, col_w, center: int, patchsize: int, Mp: int, Np: int,
+def _denoise_tile(patches, pos_dist, col_w, center: int, n_keep: int, n_small: int, n_large: int,
                   algo: str, shrink_frob: bool, adaptive: bool):
-    """Denoise a tile of ``B`` boxes. ``patches`` (B, P, N); ``pos_dist`` (P,); ``col_w``
-    (B, N) per-volume noise weights (all-zero -> no whitening). Returns the denoised centre
-    spectrum ``xhat`` (B, N), ``sigma`` (B,), ``npars`` (B,). See module docstring for the
+    """Denoise a tile of ``B`` boxes. ``patches`` (B, n_vox, n_vols); ``pos_dist``
+    (n_vox,); ``col_w``
+    (B, n_vols) per-volume noise weights (all-zero -> no whitening). Returns the denoised centre
+    spectrum ``xhat`` (B, n_vols), ``sigma`` (B,), ``npars`` (B,). See module docstring for the
     Gram-eigh == SVD-centre-row equivalence.
     """
-    B, _, N = patches.shape
+    B, _, n_vols = patches.shape
     dt = patches.dtype
     eps = jnp.finfo(dt).eps
 
@@ -142,36 +148,36 @@ def _denoise_tile(patches, pos_dist, col_w, center: int, patchsize: int, Mp: int
         pmin = jnp.min(patches, axis=(1, 2), keepdims=True)
         pmax = jnp.max(patches, axis=(1, 2), keepdims=True)
         rng = pmax - pmin
-        Xn = jnp.where(rng > 0, (patches - pmin) / jnp.where(rng > 0, rng, 1.0), 0.0)  # (B,P,N)
-        ref = Xn[:, center, :][:, None, :]                          # (B,1,N)
-        int_d = jnp.mean((Xn - ref) ** 2, axis=2)                   # (B,P)
-        wd = pos_dist[None, :] * int_d                              # (B,P)
-        sel = jax.lax.top_k(-wd, patchsize)[1]                      # (B,patchsize) smallest wd
-        Xs = jnp.take_along_axis(patches, jnp.broadcast_to(sel[:, :, None], (B, patchsize, N)),
-                                 axis=1)                            # (B,patchsize,N)
+        Xn = jnp.where(rng > 0, (patches - pmin) / jnp.where(rng > 0, rng, 1.0), 0.0)
+        ref = Xn[:, center, :][:, None, :]                          # (B,1,n_vols)
+        int_d = jnp.mean((Xn - ref) ** 2, axis=2)                   # (B,n_vox)
+        wd = pos_dist[None, :] * int_d                              # (B,n_vox)
+        sel = jax.lax.top_k(-wd, n_keep)[1]                      # (B,n_keep) smallest wd
+        Xs = jnp.take_along_axis(patches, jnp.broadcast_to(sel[:, :, None], (B, n_keep, n_vols)),
+                                 axis=1)                            # (B,n_keep,n_vols)
     else:
-        Xs = patches                                                # (B,P,N)
+        Xs = patches                                                # (B,n_vox,n_vols)
 
-    xc = patches[:, center, :]                                      # (B,N) centre spectrum
-    w = jnp.where(col_w > 0, col_w, 1.0)                            # (B,N); all-zero -> ones
+    xc = patches[:, center, :]                                      # (B,n_vols) centre spectrum
+    w = jnp.where(col_w > 0, col_w, 1.0)                            # (B,n_vols); all-zero -> ones
     Xs = Xs / w[:, None, :]
     xc = xc / w
 
-    G = jnp.einsum("bpn,bpm->bnm", Xs, Xs)                          # (B,N,N) Gram over volumes
+    G = jnp.einsum("bpn,bpm->bnm", Xs, Xs)                          # (B,n_vols,n_vols) Gram
     evals, V = jnp.linalg.eigh(G)                                   # ascending
-    vals = jnp.maximum(evals[:, ::-1], 0.0)                         # descending (B,N)
+    vals = jnp.maximum(evals[:, ::-1], 0.0)                         # descending (B,n_vols)
     Vd = V[:, :, ::-1]                                              # eigenvectors, descending
     coords = jnp.einsum("bn,bnm->bm", xc, Vd)                       # project centre onto eigvecs
 
-    t, sigma = _mp_threshold_jax(vals, Mp, Np, algo)                # (B,), (B,)
+    t, sigma = _mp_threshold_jax(vals, n_small, n_large, algo)                # (B,), (B,)
 
-    if shrink_frob:                                                 # Gavish-Donoho Frobenius shrink
-        sv = jnp.sqrt(vals[:, :Mp])                                 # (B,Mp)
-        y = sv / jnp.maximum(jnp.sqrt(float(Mp)) * sigma[:, None], eps)
-        fac = _eig_shrink(y, float(Np) / float(Mp)) / jnp.maximum(y, eps)   # keep_sv / sv
-        fac = jnp.pad(fac, ((0, 0), (0, N - Mp)))                   # (B,N)
+    if shrink_frob:                                                 # Gavish-Donoho shrink
+        sv = jnp.sqrt(vals[:, :n_small])                                 # (B,n_small)
+        y = sv / jnp.maximum(jnp.sqrt(float(n_small)) * sigma[:, None], eps)
+        fac = _eig_shrink(y, float(n_large) / float(n_small)) / jnp.maximum(y, eps)
+        fac = jnp.pad(fac, ((0, 0), (0, n_vols - n_small)))                   # (B,n_vols)
     else:                                                          # hard MP threshold
-        fac = (jnp.arange(N)[None, :] < t[:, None]).astype(dt)     # (B,N) keep mask
+        fac = (jnp.arange(n_vols)[None, :] < t[:, None]).astype(dt)     # (B,n_vols) keep mask
 
     xhat = jnp.einsum("bm,bnm->bn", coords * fac, Vd)              # reconstruct centre row
     xhat = xhat * w                                                # un-whiten
@@ -185,36 +191,36 @@ _denoise_tile_jit = partial(jax.jit, static_argnums=(3, 4, 5, 6, 7, 8, 9))(_deno
 # Single-patch JAX convenience wrappers (delegate to the batched core; unit-tested).
 # ---------------------------------------------------------------------------
 
-def _mp_threshold(vals, Mp: int, Np: int, algo: str, tn: int = 0):
+def _mp_threshold(vals, n_small: int, n_large: int, algo: str, tn: int = 0):
     """Single-patch Marchenko-Pastur threshold -> ``(t, sigma)``. ``vals`` descending
     eigenvalues (1-D). ``tn`` is accepted for signature compatibility (only ``tn=0``,
     the value used throughout this project, is supported)."""
     if tn:
         raise NotImplementedError("tn>0 is not supported by the JAX threshold")
-    t, sigma = _mp_threshold_jax(jnp.asarray(vals)[None, :], Mp, Np, algo)
+    t, sigma = _mp_threshold_jax(jnp.asarray(vals)[None, :], n_small, n_large, algo)
     return int(t[0]), float(sigma[0])
 
 
-def _denoise_patch(X, center, pos_distances, patchsize, algo, shrink, tn: int = 0,
+def _denoise_patch(X, center, pos_distances, n_keep, algo, shrink, tn: int = 0,
                    adaptive: bool = True, col_weights=None):
-    """Denoise one box ``X`` of shape ``(P, N)``; return ``(signal_N, sigma, npars)``.
+    """Denoise one box ``X`` of shape ``(n_vox, n_vols)``; return ``(signal_N, sigma, npars)``.
 
-    ``adaptive=True``  -> DESIGNER bilateral top-``patchsize`` patch selection.
+    ``adaptive=True``  -> DESIGNER bilateral top-``n_keep`` patch selection.
     ``adaptive=False`` -> plain box patch (whole cube, mrtrix ``dwidenoise`` style).
-    ``col_weights`` (length ``N``): optional per-volume noise scale for column whitening.
+    ``col_weights`` (length ``n_vols``): optional per-volume noise scale for column whitening.
     Thin wrapper over :func:`_denoise_tile` with a batch of one.
     """
     if tn:
         raise NotImplementedError("tn>0 is not supported by the JAX denoiser")
     X = jnp.asarray(X, jnp.float32)
-    P, N = X.shape
-    M = int(patchsize) if adaptive else P
-    Mp, Np = min(M, N), max(M, N)
-    col_w = (jnp.zeros((1, N), jnp.float32) if col_weights is None
+    n_vox, n_vols = X.shape
+    M = int(n_keep) if adaptive else n_vox
+    n_small, n_large = min(M, n_vols), max(M, n_vols)
+    col_w = (jnp.zeros((1, n_vols), jnp.float32) if col_weights is None
              else jnp.asarray(col_weights, jnp.float32)[None, :])
     xhat, sigma, npars = _denoise_tile(
         X[None], jnp.asarray(pos_distances, jnp.float32), col_w,
-        int(center), int(patchsize), Mp, Np, algo, shrink != "threshold", bool(adaptive),
+        int(center), int(n_keep), n_small, n_large, algo, shrink != "threshold", bool(adaptive),
     )
     return np.asarray(xhat[0]).ravel(), float(sigma[0]), int(npars[0])
 
@@ -226,8 +232,8 @@ def _denoise_patch(X, center, pos_distances, patchsize, algo, shrink, tn: int = 
 def denoise_adaptive(
     dwi: np.ndarray,
     mask: np.ndarray | None = None,
-    kernel=(5, 5, 5),
-    patchsize: int | None = None,
+    patch=(5, 5, 5),
+    n_keep: int | None = None,
     algorithm: str = "jespersen",
     shrinkage: str = "threshold",
     adaptive: bool = True,
@@ -236,12 +242,12 @@ def denoise_adaptive(
     tile: int = 256,
     on_device_gather: bool | None = None,
 ):
-    """MPPCA denoise a 4D volume ``(X, Y, Z, N)`` on the JAX backend (CPU or GPU).
+    """MPPCA denoise a 4D volume ``(X, Y, Z, n_vols)`` on the JAX backend (CPU or GPU).
 
-    ``col_weights`` (X,Y,Z,N): optional per-voxel per-volume noise scale ``‖w‖``; each
+    ``col_weights`` (X,Y,Z,n_vols): optional per-voxel per-volume noise scale ``‖w‖``; each
     patch is column-whitened by its centre voxel's weights before the eigendecomposition.
 
-    ``adaptive=True`` uses DESIGNER's bilateral top-``patchsize`` patch selection;
+    ``adaptive=True`` uses DESIGNER's bilateral top-``n_keep`` patch selection;
     ``adaptive=False`` uses the plain full cube (mrtrix ``dwidenoise`` style).
 
     ``n_jobs`` is accepted for backwards compatibility and ignored (batching now runs on the
@@ -255,37 +261,38 @@ def denoise_adaptive(
     free device-memory budget (see :func:`_device_gather_budget_bytes`), else host.
 
     Only voxels inside ``mask`` are denoised; other voxels keep their input value.
-    Returns ``(denoised (X,Y,Z,N), sigma (X,Y,Z), npars (X,Y,Z))``; ``sigma``/``npars`` are 0
+    Returns ``(denoised (X,Y,Z,n_vols), sigma (X,Y,Z), npars (X,Y,Z))``; ``sigma``/``npars`` are 0
     outside the processed region.
     """
     del n_jobs  # batching moved to the device; kept in the signature for compatibility
     dwi = np.asarray(dwi, np.float32)
     sx, sy, sz, nvols = dwi.shape
 
-    kernel = np.array(kernel) if kernel is not None else _default_kernel(nvols)
-    kernel = (kernel + np.mod(kernel, 2) - 1).astype(int)  # force odd
-    kk = kernel // 2
-    P = int(np.prod(kernel))
-    center = P // 2
+    patch = np.array(patch) if patch is not None else _default_patch(nvols)
+    patch = (patch + np.mod(patch, 2) - 1).astype(int)  # force odd
+    kk = patch // 2
+    n_vox = int(np.prod(patch))
+    center = n_vox // 2
 
-    if patchsize is None:
-        patchsize = int(np.floor(0.8 * P))
-    patchsize = int(np.clip(patchsize, nvols + 1, P - 1))
+    if n_keep is None:
+        n_keep = int(np.floor(0.8 * n_vox))
+    n_keep = int(np.clip(n_keep, nvols + 1, n_vox - 1))
 
     # effective matrix shape seen by MP-PCA (rows = patch voxels, cols = volumes)
-    M = patchsize if adaptive else P
-    Mp, Np = min(M, nvols), max(M, nvols)
+    M = n_keep if adaptive else n_vox
+    n_small, n_large = min(M, nvols), max(M, nvols)
     shrink_frob = shrinkage != "threshold"
 
     # squared-Euclidean spatial distance of each box voxel from the centre (C order)
-    pi, pj, pk = np.where(np.ones(kernel, np.uint8))
+    pi, pj, pk = np.where(np.ones(patch, np.uint8))
     pos = np.sum((np.vstack((pi, pj, pk)).T - kk) ** 2, axis=1).astype(np.float32)
     pos_j = jnp.asarray(pos)
 
     # padded copy for border-safe box extraction (wrap = every in-mask voxel gets a full box)
     padded = np.pad(dwi, ((kk[0], kk[0]), (kk[1], kk[1]), (kk[2], kk[2]), (0, 0)), mode="wrap")
     Xp, Yp, Zp = padded.shape[:3]
-    offs = [(dx, dy, dz) for dx in range(kernel[0]) for dy in range(kernel[1]) for dz in range(kernel[2])]
+    offs = [(dx, dy, dz) for dx in range(patch[0]) for dy in range(patch[1])
+            for dz in range(patch[2])]
 
     if mask is None:
         mask = np.ones((sx, sy, sz), bool)
@@ -304,7 +311,8 @@ def denoise_adaptive(
         gpu_patches = bool(on_device_gather)
     if gpu_patches:
         pf = jnp.asarray(padded.reshape(-1, nvols))
-        doff = jnp.asarray(np.array([dx * Yp * Zp + dy * Zp + dz for dx, dy, dz in offs], np.int32))
+        doff = jnp.asarray(np.array([dx * Yp * Zp + dy * Zp + dz
+                                     for dx, dy, dz in offs], np.int32))
         base = jnp.asarray((xs * Yp * Zp + ys * Zp + zs).astype(np.int32))
     if col_weights is not None:
         col_weights = np.asarray(col_weights, np.float32)
@@ -316,10 +324,10 @@ def denoise_adaptive(
     for s in range(0, xs.size, tile):
         ix, iy, iz = xs[s:s + tile], ys[s:s + tile], zs[s:s + tile]
         if gpu_patches:
-            patches = pf[base[s:s + tile][:, None] + doff[None, :]]   # (B,P,N) gathered on-device
+            patches = pf[base[s:s + tile][:, None] + doff[None, :]]   # gathered on-device
         else:
             B = ix.size
-            hp = np.empty((B, P, nvols), np.float32)
+            hp = np.empty((B, n_vox, nvols), np.float32)
             for vi, (dx, dy, dz) in enumerate(offs):
                 hp[:, vi, :] = padded[ix + dx, iy + dy, iz + dz, :]   # per-tile host gather
             patches = jnp.asarray(hp)
@@ -328,7 +336,7 @@ def denoise_adaptive(
         else:
             cw = jnp.zeros((ix.size, nvols), np.float32)
         xhat, sig, npar = _denoise_tile_jit(
-            patches, pos_j, cw, center, patchsize, Mp, Np, algorithm, shrink_frob, adaptive
+            patches, pos_j, cw, center, n_keep, n_small, n_large, algorithm, shrink_frob, adaptive
         )
         out[ix, iy, iz, :] = np.asarray(xhat)
         sigma_map[ix, iy, iz] = np.asarray(sig)

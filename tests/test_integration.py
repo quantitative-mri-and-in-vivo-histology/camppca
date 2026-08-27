@@ -129,7 +129,7 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
     patch = (5, 5, 3)
 
     ours = denoise(dwi, bvals, mask, patch=patch).sigma_hat
-    _, white, _ = denoise_adaptive(dwi, mask, kernel=patch, algorithm="cordero-grande",
+    _, white, _ = denoise_adaptive(dwi, mask, patch=patch, algorithm="cordero-grande",
                                    shrinkage="threshold", adaptive=False)
 
     ours_med, white_med = np.median(ours[mask]), np.median(white[mask])
