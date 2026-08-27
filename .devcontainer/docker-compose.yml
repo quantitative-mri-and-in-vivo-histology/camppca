@@ -1,0 +1,50 @@
+# Base devcontainer stack. Committed — keep machine-specific paths OUT of here.
+#
+# Layering (Dev Containers merges the files listed in each devcontainer.json,
+# later files winning):
+#
+#   docker-compose.yml              <- this file: build, volumes, env
+# + docker-compose.override.yml     <- YOUR host paths      (gitignored)
+# + gpu/docker-compose.gpu.yml      <- CUDA image + GPUs    (GPU config)
+#
+# docker-compose.override.yml is REQUIRED (every config lists it) but gitignored.
+# If it is missing:  cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# No `version:` key — obsolete in Compose v2 and it only emits a warning.
+
+services:
+  devcontainer:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+      args:
+        TZ: ${TZ:-Europe/Berlin}
+        CLAUDE_CODE_VERSION: latest
+        GIT_DELTA_VERSION: 0.18.2
+        ZSH_IN_DOCKER_VERSION: 1.2.0
+    command: sleep infinity
+    # Generous /dev/shm: the default 64 MB makes multiprocessing / DataLoader
+    # workers die with cryptic bus errors on any real array workload.
+    shm_size: 16g
+    volumes:
+      - ..:/workspace:delegated
+      - claude-code-bashhistory:/commandhistory
+      - claude-code-config:/home/node/.claude
+      - ${HOME}/.ssh:/home/node/.ssh-host:cached
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      CLAUDE_CONFIG_DIR: "/home/node/.claude"
+      POWERLEVEL9K_DISABLE_GITSTATUS: "true"
+      # Flat layout: the package lives at /workspace/camppca.
+      PYTHONPATH: "/workspace"
+    user: node
+
+volumes:
+  # Explicit `name:` defeats Compose's per-project prefixing, so your Claude Code
+  # login is shared by every project using this template — authenticate once.
+  claude-code-config:
+    name: claude-code-config
+  # Left unnamed on purpose: Compose prefixes it with the project name (Dev
+  # Containers derives that from the workspace folder), so shell history stays
+  # per-project rather than bleeding between repos.
+  claude-code-bashhistory:

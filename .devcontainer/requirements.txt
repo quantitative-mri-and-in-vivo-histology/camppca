@@ -1,0 +1,28 @@
+# Container-level tooling ONLY.
+#
+# These are baked into the image so that a fresh container can lint, test, debug
+# and run notebooks before the project itself is installed. The project's real
+# dependencies belong in ../pyproject.toml ([project.dependencies]) and arrive
+# via the editable install in post-create.sh. Do not duplicate them here.
+
+# Testing / debugging
+pytest
+pytest-cov
+pytest-xdist
+debugpy
+ipdb
+
+# Code quality
+ruff
+black
+isort
+mypy
+
+# Notebooks and interactive work
+ipython
+ipykernel
+ipywidgets
+jupyter
+
+# Plotting (headless by default — see matplotlibrc)
+matplotlib

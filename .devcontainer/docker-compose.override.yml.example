@@ -1,0 +1,33 @@
+# Copy to `docker-compose.override.yml` (gitignored) and edit for THIS machine.
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Every devcontainer config lists docker-compose.override.yml, so the file must
+# exist even if it adds nothing. The stub below is valid as-is.
+#
+# Host paths come from .devcontainer/.env (also gitignored) via ${VAR}
+# substitution — that keeps real paths out of git even if you slip and commit
+# this file. See .env.example.
+
+services:
+  devcontainer: {}
+
+  # --- Example: mount a big external dataset read-write at /data -------------
+  # devcontainer:
+  #   volumes:
+  #     - ${PROJECT_DATA_HOST}:/data:cached
+  #   environment:
+  #     PROJECT_DATA_PATH: /data
+
+  # --- Example: read-only source data ---------------------------------------
+  # devcontainer:
+  #   volumes:
+  #     - ${RAW_DATA_HOST}:/raw:ro
+
+  # --- Example: host toolchain mounted at the SAME path ----------------------
+  # Some scientific packages hard-code absolute paths in wrapper shebangs and
+  # RPATHs, so they only work if mounted where they live on the host.
+  # devcontainer:
+  #   volumes:
+  #     - ${TOOLDIR}:${TOOLDIR}:ro
+  #   environment:
+  #     PATH: "${TOOLDIR}/bin:/usr/local/bin:/usr/local/share/npm-global/bin:/usr/bin:/bin"

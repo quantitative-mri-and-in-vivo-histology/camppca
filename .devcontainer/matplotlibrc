@@ -1,0 +1,15 @@
+# Matplotlib defaults for this container.
+#
+# Agg is a NON-INTERACTIVE backend. Figures render to files (savefig) and to
+# Jupyter / the VS Code Python Interactive window, but `plt.show()` from a plain
+# script is a no-op: there is no X display inside the container. That is the
+# intended behaviour for headless and batch runs.
+#
+# For interactive plotting, use a notebook or the Interactive window, which
+# capture figures inline. To get real windows instead you would need an X socket
+# or VNC bind-mounted into the container and a GUI backend (e.g. TkAgg) here.
+backend: Agg
+
+figure.dpi: 110
+savefig.dpi: 200
+savefig.bbox: tight

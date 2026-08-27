@@ -1,0 +1,35 @@
+// Default config: CPU, no added capabilities.
+//
+// Sibling config (VS Code shows it in the "Reopen in Container" picker):
+//   gpu/devcontainer.json  CUDA image + all host GPUs
+//
+// KEEP IN SYNC with gpu/devcontainer.json: only "name" and "dockerComposeFile"
+// are meant to differ. Editor settings deliberately live in
+// ../.vscode/settings.json instead of here so there is one copy, not two.
+{
+  "name": "Dev Container",
+  "dockerComposeFile": [
+    "docker-compose.yml",
+    "docker-compose.override.yml"
+  ],
+  "service": "devcontainer",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "eamodio.gitlens",
+        "hediet.debug-visualizer"
+      ]
+    }
+  },
+  "remoteUser": "node",
+  "postCreateCommand": "/usr/local/bin/post-create.sh",
+  "postStartCommand": "npm update -g @anthropic-ai/claude-code",
+  "waitFor": "postStartCommand"
+}

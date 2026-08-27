@@ -1,0 +1,36 @@
+// GPU config: same stack as ../devcontainer.json, but built on a CUDA image and
+// with all host GPUs reserved. Requires the NVIDIA Container Toolkit on the host.
+//
+// Unlike a `"hostRequirements": {"gpu": "optional"}` hint, this config FAILS on a
+// machine with no GPU — that is deliberate. Use the default config there.
+//
+// KEEP IN SYNC with ../devcontainer.json: only "name" and "dockerComposeFile"
+// are meant to differ.
+{
+  "name": "Dev Container (GPU)",
+  "dockerComposeFile": [
+    "../docker-compose.yml",
+    "../docker-compose.override.yml",
+    "docker-compose.gpu.yml"
+  ],
+  "service": "devcontainer",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "eamodio.gitlens",
+        "hediet.debug-visualizer"
+      ]
+    }
+  },
+  "remoteUser": "node",
+  "postCreateCommand": "/usr/local/bin/post-create.sh",
+  "postStartCommand": "npm update -g @anthropic-ai/claude-code",
+  "waitFor": "postStartCommand"
+}

@@ -1,0 +1,20 @@
+# GPU overlay. Layered on top of ../docker-compose.yml and
+# ../docker-compose.override.yml, so it inherits every volume, env var and the
+# shm_size, and changes only the image and the device reservation.
+#
+# Requires the NVIDIA Container Toolkit on the host:
+#   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/
+# Verify inside the container with `nvidia-smi`.
+
+services:
+  devcontainer:
+    build:
+      # Relative to the build context (the repo root, set in ../docker-compose.yml).
+      dockerfile: .devcontainer/gpu/Dockerfile
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

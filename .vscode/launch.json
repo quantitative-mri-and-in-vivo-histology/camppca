@@ -1,0 +1,47 @@
+{
+  // "type": "debugpy" — the old "type": "python" is deprecated and only still
+  // works through a compatibility shim that will eventually be removed.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      // Step into library code too — usually what you want when the bug is in
+      // how you are calling numpy/scipy rather than in your own frame.
+      "justMyCode": false
+    },
+    {
+      "name": "Python: Current Test File",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-v"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    },
+    {
+      "name": "Python: All Tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-v"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    },
+    {
+      "name": "Python: Attach to Process",
+      "type": "debugpy",
+      "request": "attach",
+      // Pair with, in the target process:
+      //   import debugpy; debugpy.listen(5678); debugpy.wait_for_client()
+      "connect": { "host": "localhost", "port": 5678 },
+      "justMyCode": false
+    }
+  ]
+}
