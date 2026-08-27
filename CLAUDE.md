@@ -117,7 +117,7 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
         __init__.py        NoiseModel, estimate_noise_model() -> NoiseModel
         p2s.py             Patch2Self: residuals, rho, sigma_p2s        numpy
         masks.py           brain mask, stable region                    numpy
-      denoise/
+      denoiser/
         __init__.py        denoise(), denoise_with_noise_model() -> DenoiseResult
         camppca.py         covariance-aware MP-PCA — the method         jax
         mppca.py           plain white MP-PCA — baseline arm + the shared MP threshold
@@ -132,7 +132,7 @@ do not repeat it, and each `__init__.py` is that half's public face.
   It is always the **noise model**: `estimate_noise_model`, `denoise_with_noise_model`.
   This deviates from the port brief's frozen `estimate_noise` / `denoise_with_model`,
   deliberately.
-- `denoise/camppca.py` is the method; `denoise/mppca.py` is a **reference/baseline arm**
+- `denoiser/camppca.py` is the method; `denoiser/mppca.py` is a **reference/baseline arm**
   only. Say so in its module header — it is the one file not on the main path.
 - `NoiseModel` lives in `noise_model/__init__.py`, not with the P2S math: a future
   alignment-based estimator builds the same object and must not import P2S to get it.

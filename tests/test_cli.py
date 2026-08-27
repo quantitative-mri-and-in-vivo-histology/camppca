@@ -87,3 +87,18 @@ def test_even_patch_is_rejected(dataset):
     with pytest.raises(ValueError, match="odd"):
         main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(dataset / "qc_even"),
               "--patch", "4", "5", "5", *_grad(dataset)])
+
+
+def test_qc_rerun_does_not_leave_a_stale_shell_behind(dataset):
+    """A QC dir must describe ONE model: rho_shell01 from a two-shell run must not
+    survive a one-shell re-run whose provenance.json says one shell."""
+    qc = dataset / "qc_rerun"
+    main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc), "--patch", "5", "5", "3",
+          "-q", *_grad(dataset)])
+    assert (qc / "rho_shell01.nii.gz").exists()
+
+    main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc), "--patch", "5", "5", "3",
+          "-q", "--per-shell", "no", *_grad(dataset)])
+    assert (qc / "rho_shell00.nii.gz").exists()
+    assert not (qc / "rho_shell01.nii.gz").exists()
+    assert json.loads((qc / "provenance.json").read_text())["model"]["per_shell"] is False

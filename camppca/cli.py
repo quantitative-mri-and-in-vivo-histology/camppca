@@ -82,6 +82,9 @@ def _write_qc(directory, model, affine, result=None):
     """Free byproducts, as things to look at. Not a reload unit -- see the module docstring."""
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
+    for stale in out.glob("rho_shell*.nii.gz"):
+        stale.unlink()          # a re-run with fewer shells must not leave a stale one
+                                # beside a provenance.json that describes the new model
 
     for s in range(model.n_shells):
         io.save_like(out / f"rho_shell{s:02d}.nii.gz", model.rho[s], np.eye(4))

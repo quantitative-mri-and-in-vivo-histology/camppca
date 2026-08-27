@@ -21,6 +21,11 @@ MASK_FRAC = 0.15      # threshold as a fraction of the mean-b0 99th percentile
 CLOSE = 2             # seal pores BEFORE eroding -- see the module docstring
 ERODE = 3             # rho_region and patch sampling need a strict interior
 
+# ⚠ ERODE belongs to the ESTIMATION region, not to the output region. `estimate_noise_model`
+# calls `brain_mask(..., erode=0)` and derives the interior separately with
+# `interior_region` -- eroding the stored mask would leave a 3-voxel rim of the brain
+# un-denoised, since the model's mask is also the set of voxels the engine writes.
+
 
 def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
     """Eroded brain interior from the mean b0: threshold, largest component, close, fill, erode."""
@@ -32,6 +37,8 @@ def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
     m = binary_fill_holes(binary_closing(m, iterations=close))
     for z in range(m.shape[2]):                    # 3-D fill misses pores open in-plane only
         m[:, :, z] = binary_fill_holes(m[:, :, z])
+    if erode <= 0:
+        return m           # ⚠ scipy erodes to CONVERGENCE at iterations=0, not zero times
     eroded = binary_erosion(m, iterations=erode)
     if not eroded.any():
         raise ValueError(
@@ -39,6 +46,25 @@ def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
             f"before). Thin volumes lose every slice this way -- lower `erode`, or pass a "
             f"mask explicitly.")
     return eroded
+
+
+def interior_region(mask, erode=ERODE):
+    """The strict interior of ``mask``: where a patch fits and rho_region is trustworthy.
+
+    Separate from the mask itself on purpose. The estimation region wants to sit away from
+    the boundary; the OUTPUT region wants the whole brain. Conflating them silently leaves
+    an un-denoised rim.
+
+    Returns ``(region, erode_used)``. Erosion is reduced rather than allowed to empty the
+    region -- thin volumes lose every slice at erode=3, and a silently empty estimation
+    region is how `rho` ends up all-NaN.
+    """
+    mask = np.asarray(mask, bool)
+    for k in range(int(erode), 0, -1):
+        region = binary_erosion(mask, iterations=k)
+        if region.any():
+            return region, k
+    return mask, 0
 
 
 def stable_region(cols, mask):

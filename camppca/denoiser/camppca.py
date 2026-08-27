@@ -55,7 +55,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..patch import patch_offsets as patch_offsets
+from ..patch import check_patch, patch_offsets
 from .mppca import _device_gather_budget_bytes, _mp_threshold_jax
 
 
@@ -124,8 +124,9 @@ def denoise_white_percol(dwi, mask, Cs, group, column_scale=None, patch=(5, 5, 5
     (no overlap averaging), matching the rest of the engine.
     """
     dwi = np.asarray(dwi, np.float32)
+    mask = np.asarray(mask, bool)          # non-bool would make `& mask` an integer op
     sx, sy, sz, n_vols = dwi.shape
-    patch = np.asarray(patch, int)
+    patch = check_patch(patch)             # odd dims: centre = n_vox // 2 must BE the centre
     kk = patch // 2
     n_vox = int(np.prod(patch))
     center = n_vox // 2

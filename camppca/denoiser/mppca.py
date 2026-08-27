@@ -1,6 +1,6 @@
 """Plain white MP-PCA -- the BASELINE ARM, plus the MP threshold shared with camppca.py.
 
-⚠ NOT ON THE MAIN PATH. camppca's method is ``denoise/camppca.py``; this module exists
+⚠ NOT ON THE MAIN PATH. camppca's method is ``denoiser/camppca.py``; this module exists
 for two reasons: it is the standard-MP-PCA comparison arm, and it owns
 ``_mp_threshold_jax`` (the Marchenko-Pastur cutoff rule) and
 ``_device_gather_budget_bytes``, both of which the covariance-aware engine imports.

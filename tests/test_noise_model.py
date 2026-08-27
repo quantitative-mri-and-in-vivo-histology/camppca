@@ -135,3 +135,73 @@ def test_the_noise_model_half_never_imports_jax():
     code = ("import camppca, camppca.noise_model, camppca.patch, sys; "
             "assert 'jax' not in sys.modules, sorted(m for m in sys.modules if 'jax' in m)")
     subprocess.run([sys.executable, "-c", code], check=True, cwd="/workspace")
+
+
+def test_a_shell_too_small_to_fit_is_refused_not_silently_nan():
+    """A stray single-volume shell used to yield an all-NaN rho and a fully NaN image.
+
+    p2s_ols on one column has no predictors, so every residual is the centred signal;
+    stable_region then drops every voxel and rho_region divides 0/0. Only a RuntimeWarning
+    was emitted, and the CLI wrote a NaN NIfTI and exited 0.
+    """
+    rng = np.random.default_rng(0)
+    shape, n_dirs = (20, 20, 10), 22
+    bvals = np.concatenate([np.zeros(4), [3000.0], np.full(n_dirs, 1000.0),
+                            np.full(n_dirs, 2000.0)])
+    n_vols = bvals.size
+    signal = rng.standard_normal(shape + (3,)) @ rng.standard_normal((3, n_vols))
+    dwi = signal * 20 + 300 + rng.standard_normal(shape + (n_vols,)) * 8
+    mask = np.ones(shape, bool)
+
+    with pytest.raises(ValueError, match=r"b=3000 has 1.*minimum is"):
+        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+
+    # Pooling across shells is the documented way out, and it works.
+    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), per_shell=False)
+    assert model.n_shells == 1
+    assert np.isfinite(model.rho).all()
+
+
+def test_the_auto_mask_is_the_whole_brain_not_the_eroded_interior():
+    """The stored mask is also the set of voxels the engine WRITES.
+
+    brain_mask erodes 3 voxels because rho_region needs a strict interior. Storing that
+    eroded mask left a thick rim un-denoised -- 57% of brain voxels on this phantom.
+    """
+    rng = np.random.default_rng(0)
+    shape, n_vols = (40, 40, 20), 50
+    zz, yy, xx = np.meshgrid(*(np.arange(s) for s in (shape[2], shape[1], shape[0])),
+                             indexing="ij")
+    brain = ((((xx - 20) / 16.) ** 2 + ((yy - 20) / 16.) ** 2
+              + ((zz - 10) / 8.) ** 2) < 1.0).transpose(2, 1, 0)
+    bvals = np.concatenate([np.zeros(4), np.full(23, 1000.0), np.full(23, 2000.0)])
+    signal = rng.standard_normal(shape + (3,)) @ rng.standard_normal((3, n_vols))
+    dwi = np.zeros(shape + (n_vols,), np.float32)
+    dwi[brain] = (signal * 20 + 400)[brain]
+    dwi += (rng.standard_normal(shape + (n_vols,)) * 8).astype(np.float32)
+
+    model = estimate_noise_model(dwi, bvals, None, patch=(5, 5, 3))
+    covered = model.mask.sum() / brain.sum()
+    assert covered > 0.95, f"the mask must cover the brain, got {covered:.0%}"
+    # ...while estimation still uses the strict interior.
+    assert model.provenance["erode"] == 3
+    assert model.provenance["n_interior"] < model.provenance["n_mask"] / 2
+
+
+def test_a_non_bool_mask_does_not_become_an_integer_index():
+    """`... & mask` with a uint8 mask makes `d[good]` a fancy INDEX, not a selection."""
+    model = _model_with_rho(_separable_rho(4), lag=4)
+    model.mask = np.ones((8, 8, 4), np.uint8)          # what get_fdata().astype() gives
+    assert NoiseModel(rho=model.rho, group=model.group, d=model.d,
+                      sigma_p2s=model.sigma_p2s, sigma_shell=model.sigma_shell,
+                      mask=np.ones((8, 8, 4), np.uint8), lag=4).mask.dtype == bool
+
+
+def test_brain_mask_with_erode_zero_does_not_erode_to_nothing():
+    """⚠ scipy erodes to CONVERGENCE at iterations=0, not zero times."""
+    from camppca.noise_model.masks import brain_mask
+
+    b0 = np.zeros((20, 20, 12))
+    b0[4:16, 4:16, 3:9] = 100.0
+    assert brain_mask(b0, erode=0).sum() > 0
+    assert brain_mask(b0, erode=0).sum() > brain_mask(b0, erode=2).sum()

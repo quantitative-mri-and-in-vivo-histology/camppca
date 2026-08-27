@@ -23,10 +23,17 @@ from typing import Any
 import numpy as np
 
 from ..patch import patch_offsets, patch_size, required_lag, check_patch
-from .masks import brain_mask, stable_region
+from .masks import brain_mask, interior_region, stable_region
 from .p2s import noise_map, p2s_ols, rho_region
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask", "stable_region"]
+
+#: Fewest volumes a shell may have and still get its own correlation pattern. Below this
+#: the leave-one-out fit degenerates: at 1 volume there are no predictors at all, every
+#: residual is the centred signal, `stable_region` drops every voxel and `rho` comes back
+#: all-NaN -- which propagates to a fully NaN denoised image. At 2 volumes it does not
+#: crash but the level is badly biased (measured ~50% high).
+MIN_SHELL_VOLUMES = 10
 
 
 @dataclass
@@ -55,6 +62,13 @@ class NoiseModel:
     mask: np.ndarray
     lag: int
     provenance: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # A uint8 mask (what `nib.load(...).get_fdata().astype(...)` hands you) would turn
+        # `... & mask` into integer fancy indexing downstream, silently mis-normalizing d.
+        self.mask = np.asarray(self.mask, bool)
+        self.group = np.asarray(self.group, int)
+        self.rho = np.asarray(self.rho, float)
 
     @property
     def n_shells(self):
@@ -147,7 +161,10 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
     if mask is None:
         b0 = np.where(bvals <= lowb)[0]
         b0_mean = dwi[..., b0].mean(-1) if b0.size else dwi.mean(-1)
-        mask = brain_mask(b0_mean)
+        # erode=0: the stored mask is also the set of voxels the engine WRITES, so
+        # eroding here would leave an un-denoised rim. The strict interior that
+        # rho_region needs is derived separately, below.
+        mask = brain_mask(b0_mean, erode=0)
     mask = np.asarray(mask, bool)
     if mask.shape != dwi.shape[:3]:
         raise ValueError(f"mask shape {mask.shape} != dwi spatial shape {dwi.shape[:3]}")
@@ -157,6 +174,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
             f"mask holds {n_mask} voxels but P2S fits up to {dwi_idx.size - 1} predictors "
             f"per volume -- the regression is singular. Need V >> N; V/N here is "
             f"{n_mask / max(dwi_idx.size, 1):.1f}.")
+
+    interior, erode_used = interior_region(mask)
 
     # ---- shell grouping -----------------------------------------------------------------
     nominal = np.round(bvals / shell_tol) * shell_tol
@@ -172,13 +191,26 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
         col_sets = [dwi_idx]
         group = np.zeros(n_vols, int)
 
+    small = [(b, c.size) for b, c in zip(shells if want_shells else [None], col_sets)
+             if c.size < MIN_SHELL_VOLUMES]
+    if small:
+        detail = ", ".join(f"b={int(b)} has {n}" if b is not None else f"{n} volumes"
+                           for b, n in small)
+        raise ValueError(
+            f"shell too small to fit its own correlation pattern ({detail}; minimum is "
+            f"{MIN_SHELL_VOLUMES}). A one-volume shell yields an all-NaN rho and a fully "
+            f"NaN denoised image. Pass per_shell=False to pool the pattern across shells, "
+            f"raise shell_tol (currently {shell_tol:g}) to merge nearby b-values, or drop "
+            f"the stray volumes.")
+
     # ---- P2S per shell: rho from a column subsample, sigma from every column -------------
     rhos = []
     sigma_shell = []
     sumsq = np.zeros(int(mask.sum()))
     ncols_used = 0
+    masked = dwi[mask]                      # loop-invariant: (n_mask, n_vols)
     for cols in col_sets:
-        Yc = dwi[mask][:, cols].astype(np.float64)
+        Yc = masked[:, cols].astype(np.float64)
         res, infl = p2s_ols(Yc)
         del Yc
         # sigma uses ALL of this shell's columns; each column's own inflation factor.
@@ -190,9 +222,14 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
         sub = res[:, keep].astype(np.float32)
         del res
         reg, _ = stable_region(sub, mask)
+        reg &= interior           # rho_region wants the strict interior, not the rim
+        if not reg.any():
+            raise ValueError("estimation region is empty after dropping constant voxels "
+                             "and eroding to the interior -- check the mask")
         rhos.append(rho_region(sub, mask, reg, lag=lag, dzmax=dzmax))
         del sub
 
+    del masked
     sigma_vox = np.sqrt(sumsq / ncols_used)
     sigma_p2s = np.zeros(mask.shape, np.float32)
     sigma_p2s[mask] = sigma_vox
@@ -204,6 +241,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
                 per_shell=bool(want_shells), shell_tol=float(shell_tol),
                 shells=[float(b) for b in shells] if want_shells else None,
                 n_mask=int(mask.sum()), n_vols=int(n_vols),
+                erode=int(erode_used), n_interior=int(interior.sum()),
                 bvals_sha=_bvals_hash(bvals))
     return NoiseModel(rho=np.stack(rhos), group=group, d=d, sigma_p2s=sigma_p2s,
                       sigma_shell=np.array(sigma_shell), mask=mask, lag=lag,

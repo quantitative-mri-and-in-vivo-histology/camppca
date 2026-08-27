@@ -54,6 +54,7 @@ def _effective_d(d, mask):
     field.  Keep the two in sync.
     """
     d = np.asarray(d, np.float32)
+    mask = np.asarray(mask, bool)          # a uint8 mask makes `d[good]` a fancy INDEX
     good = np.isfinite(d) & (d > 0) & mask
     if not good.any():
         raise ValueError("noise field d is empty or non-positive everywhere in the mask")
