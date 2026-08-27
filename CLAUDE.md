@@ -157,7 +157,15 @@ Breaking any of these corrupts results without an error:
   noise estimate rests on. Users coming from `dwidenoise` may expect averaging.
 - **P2S radius 0 is mandatory**, not a simplification. A radius>0 predictor regresses on
   spatial neighbors, which biases the very spatial correlation being estimated.
-- **Hard threshold, no shrinkage** — shrinkage breaks the exact-unwhitening identity.
+- **Hard threshold, no shrinkage.** ⚠ NOT because shrinkage would break exactness — it
+  would not. The unwhitening identity `eᶜᵀ C^(1/2) · (Yw V diag(f) Vᵀ)` is plain
+  associativity and never used idempotency of the projector, so it holds for ANY `f`
+  (measured at 4e-16 for hard threshold, a GD profile, and a random profile). The real
+  reasons: a hard threshold needs only the edge LOCATION, while shrinkage scales every
+  retained component by a continuous function of `sigma_hat` — and `sigma_hat` is fragile
+  at small N (see Exp2 below). Shrinkage would also optimize in the WHITENED metric while
+  the output lands in data units, so it minimizes the wrong error. And the rule is the
+  method, not a knob.
 
 ## API rules
 
