@@ -1,6 +1,6 @@
 """TEST-ONLY: the global-whitener (S = 1) reference implementation.
 
-``camppca.denoise.camppca.selftest`` reduction 2 checks the per-column engine against
+``camppca.denoiser.camppca.selftest`` reduction 2 checks the per-column engine against
 this: with one shell, the per-column whitener must collapse exactly onto whitening the
 whole patch once.
 
@@ -19,7 +19,7 @@ import jax.numpy as jnp
 from functools import partial
 
 from camppca.patch import patch_offsets as kernel_offsets
-from camppca.denoise.mppca import _device_gather_budget_bytes, _mp_threshold_jax
+from camppca.denoiser.mppca import _device_gather_budget_bytes, _mp_threshold_jax
 
 
 def _tile_white(patches, Wmat, center: int, Mp: int, Np: int, algo: str):

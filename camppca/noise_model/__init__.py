@@ -39,6 +39,10 @@ class NoiseModel:
     ``d``          (X, Y, Z) relative level field, median-normalized.  Only ratios matter.
     ``sigma_p2s``  (X, Y, Z) absolute P2S noise level.  An INPUT that drives whitening --
                    not to be confused with ``sigma_hat``, the MP-PCA output.
+    ``sigma_shell``(S,) noise level per shell.  Only RATIOS matter: whitening with
+                   patterns of different amplitude gives C_s^(-1/2) different gains, so
+                   the per-shell level must be divided out alongside C_s or spatial
+                   correlation is merely traded for column heteroscedasticity.
     ``mask``       (X, Y, Z) bool, the voxels the model was estimated on.
     ``lag``        max lag ``rho`` covers; bounds the patch this model can serve.
     """
@@ -47,6 +51,7 @@ class NoiseModel:
     group: np.ndarray
     d: np.ndarray
     sigma_p2s: np.ndarray
+    sigma_shell: np.ndarray
     mask: np.ndarray
     lag: int
     provenance: dict = field(default_factory=dict)
@@ -54,6 +59,15 @@ class NoiseModel:
     @property
     def n_shells(self):
         return int(self.rho.shape[0])
+
+    def column_scale(self):
+        """(N,) per-volume noise scale for the engine: ``sigma_shell[group]``, mean 1.
+
+        Mean-normalized so ``sigma_hat`` comes back in the input's units; only ratios
+        enter the whitening, so the choice of normalizer cancels there.
+        """
+        per_vol = np.asarray(self.sigma_shell, float)[self.group]
+        return per_vol / per_vol.mean()
 
     def patch_correlation(self, patch):
         """Derive ``Cs`` (S, P, P), the unit-diagonal patch correlation per shell.
@@ -154,6 +168,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
 
     # ---- P2S per shell: rho from a column subsample, sigma from every column -------------
     rhos = []
+    sigma_shell = []
     sumsq = np.zeros(int(mask.sum()))
     ncols_used = 0
     for cols in col_sets:
@@ -161,7 +176,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
         res, infl = p2s_ols(Yc)
         del Yc
         # sigma uses ALL of this shell's columns; each column's own inflation factor.
-        sumsq += noise_map(res, infl, np.arange(len(cols))) ** 2 * len(cols)
+        shell_sigma = noise_map(res, infl, np.arange(len(cols)))
+        sigma_shell.append(float(np.median(shell_sigma)))
+        sumsq += shell_sigma ** 2 * len(cols)
         ncols_used += len(cols)
         keep = np.sort(rng.permutation(res.shape[1])[:ncol])
         sub = res[:, keep].astype(np.float32)
@@ -183,7 +200,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
                 n_mask=int(mask.sum()), n_vols=int(n_vols),
                 bvals_sha=_bvals_hash(bvals))
     return NoiseModel(rho=np.stack(rhos), group=group, d=d, sigma_p2s=sigma_p2s,
-                      mask=mask, lag=lag, provenance=prov)
+                      sigma_shell=np.array(sigma_shell), mask=mask, lag=lag,
+                      provenance=prov)
 
 
 def _bvals_hash(bvals):

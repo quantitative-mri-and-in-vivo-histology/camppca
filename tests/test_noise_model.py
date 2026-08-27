@@ -24,7 +24,7 @@ def _synthetic(rng, shape=(20, 20, 10), n_dirs=27, sigma=8.0, rank=4):
 def _model_with_rho(rho_table, lag, shape=(8, 8, 4)):
     return NoiseModel(rho=rho_table[None], group=np.zeros(4, int),
                       d=np.ones(shape, np.float32), sigma_p2s=np.ones(shape, np.float32),
-                      mask=np.ones(shape, bool), lag=lag)
+                      sigma_shell=np.ones(1), mask=np.ones(shape, bool), lag=lag)
 
 
 def _separable_rho(lag, ax=0.6, ay=0.35, az=0.0):
@@ -92,6 +92,20 @@ def test_estimate_recovers_the_noise_level_and_a_unit_median_field():
     assert np.median(model.sigma_p2s[mask]) == pytest.approx(sigma, rel=0.1)
     assert np.median(model.d[mask]) == pytest.approx(1.0, abs=1e-5), "d is median-normalized"
     assert np.all(model.d[~mask] == 0)
+
+
+def test_column_scale_is_per_shell_and_mean_one():
+    dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(5))
+    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+
+    assert model.sigma_shell.shape == (2,)
+    assert np.allclose(model.sigma_shell, sigma, rtol=0.15)
+    col = model.column_scale()
+    assert col.shape == (bvals.size,)
+    assert col.mean() == pytest.approx(1.0)
+    # every volume in a shell shares that shell's level
+    for s in range(model.n_shells):
+        assert len(np.unique(col[model.group == s])) == 1
 
 
 def test_estimate_is_deterministic():

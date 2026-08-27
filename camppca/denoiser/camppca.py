@@ -36,7 +36,7 @@ upstream spelling. Notation mapping to CLAUDE.md:
 ``build_R`` and ``kernel_offsets`` are NOT here: C is derived by
 ``NoiseModel.patch_correlation`` (it belongs to the model) and the patch offsets live in
 ``camppca.patch`` (both halves need them). The clean names are presented by
-``camppca.denoise``; this module is the ported core.
+``camppca.denoiser``; this module is the ported core.
 
 PATCH ORDER. C is built from explicit (dx, dy, dz) lags in the engine's C order (z
 fastest), not as a Kronecker product, so it is Toeplitz in the true relative lags with no
@@ -236,7 +236,7 @@ def selftest(seed=0, kernel=(5, 5, 3), N=40, shape=(24, 24, 8), npatch=24,
         """Derive C through the public model path -- exercises the real seam."""
         model = NoiseModel(rho=rho_table[None], group=np.zeros(N, int),
                            d=np.ones(shape, np.float32), sigma_p2s=np.ones(shape, np.float32),
-                           mask=mask, lag=lag)
+                           sigma_shell=np.ones(1), mask=mask, lag=lag)
         return model.patch_correlation(kernel)[0]
 
     # --- 1. identity whitener == denoise_adaptive(adaptive=False) -----------------------------

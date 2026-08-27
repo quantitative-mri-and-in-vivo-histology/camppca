@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 
 from _reference_denoise_white import denoise_white
-from camppca.denoise.camppca import selftest
+from camppca.denoiser.camppca import selftest
 
 
 @pytest.fixture(scope="module")

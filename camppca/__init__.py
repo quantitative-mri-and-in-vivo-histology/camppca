@@ -15,4 +15,21 @@ from .noise_model import NoiseModel, brain_mask, estimate_noise_model  # noqa: E
 
 __version__ = "0.1.0"
 
-__all__ = ["NoiseModel", "estimate_noise_model", "brain_mask", "__version__"]
+__all__ = ["NoiseModel", "DenoiseResult", "estimate_noise_model",
+           "denoise", "denoise_with_noise_model", "brain_mask", "__version__"]
+
+# Lazy: importing the engine pulls in JAX. `estimate_noise_model` and `brain_mask` stay
+# JAX-free, and staying that way is asserted in the test suite.
+_LAZY = {"denoise": "denoiser", "denoise_with_noise_model": "denoiser",
+         "DenoiseResult": "denoiser"}
+
+
+def __getattr__(name):
+    if name in _LAZY:
+        import importlib
+        return getattr(importlib.import_module(f".{_LAZY[name]}", __name__), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(__all__)

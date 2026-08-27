@@ -170,6 +170,16 @@ Breaking any of these corrupts results without an error:
 
 ## Gotchas
 
+- **P2S needs V >> N.** It fits N-1 predictors across the mask voxels, so in-sample
+  overfitting deflates BOTH `rho` and `sigma_p2s` when the mask is small. Measured at
+  N = 60 on synthetic data with a known kernel:
+
+      V = 576    p/V = 0.10    rho_x1 0.589 / 0.665    sigma 7.95 / 10
+      V = 2904   p/V = 0.020   rho_x1 0.649 / 0.665    sigma 9.53 / 10
+      V = 11560  p/V = 0.005   rho_x1 0.657 / 0.665    sigma 9.82 / 10
+
+  Real data sits near p/V = 1e-4, so it never bites in practice -- but a small synthetic
+  test reads as a broken estimator if you forget.
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a
   true 5%). Keep ≳ 50 volumes in the pooled patch.
