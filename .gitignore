@@ -195,3 +195,7 @@ package.json
 
 # Local scratch: working notes and source material, not part of the package.
 reference/
+
+# Internal notes. docs/ may hold user-facing documentation; docs/local/ never
+# leaves this machine.
+**/docs/local/
