@@ -32,7 +32,13 @@ def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
     m = binary_fill_holes(binary_closing(m, iterations=close))
     for z in range(m.shape[2]):                    # 3-D fill misses pores open in-plane only
         m[:, :, z] = binary_fill_holes(m[:, :, z])
-    return binary_erosion(m, iterations=erode)
+    eroded = binary_erosion(m, iterations=erode)
+    if not eroded.any():
+        raise ValueError(
+            f"brain mask is empty after {erode} erosions (it held {int(m.sum())} voxels "
+            f"before). Thin volumes lose every slice this way -- lower `erode`, or pass a "
+            f"mask explicitly.")
+    return eroded
 
 
 def stable_region(cols, mask):

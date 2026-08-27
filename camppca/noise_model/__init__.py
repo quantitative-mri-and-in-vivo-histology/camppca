@@ -151,6 +151,12 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
     mask = np.asarray(mask, bool)
     if mask.shape != dwi.shape[:3]:
         raise ValueError(f"mask shape {mask.shape} != dwi spatial shape {dwi.shape[:3]}")
+    n_mask = int(mask.sum())
+    if n_mask <= dwi_idx.size:
+        raise ValueError(
+            f"mask holds {n_mask} voxels but P2S fits up to {dwi_idx.size - 1} predictors "
+            f"per volume -- the regression is singular. Need V >> N; V/N here is "
+            f"{n_mask / max(dwi_idx.size, 1):.1f}.")
 
     # ---- shell grouping -----------------------------------------------------------------
     nominal = np.round(bvals / shell_tol) * shell_tol
