@@ -42,8 +42,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..gather import gather_budget_bytes
+from ..mp import mp_threshold
 from ..patch import check_patch, patch_offsets
-from .mppca import _device_gather_budget_bytes, _mp_threshold_jax
 
 
 # patch correlation helpers
@@ -74,7 +75,7 @@ def _tile_percol(patches, Wcol, Sc, group, scale, n_small: int, n_large: int, al
     evals, V = jnp.linalg.eigh(G)
     vals = jnp.maximum(evals[:, ::-1], 0.0)
     Vd = V[:, :, ::-1]
-    t, sigma = _mp_threshold_jax(vals, n_small, n_large, algo)
+    t, sigma = mp_threshold(vals, n_small, n_large, algo)
     fac = (jnp.arange(n_vols)[None, :] < t[:, None]).astype(patches.dtype)
     # n_shells candidate centre rows: T[b,g,m] = e_c^T R_g^(1/2) Xw[b,:,m]
     T = jnp.einsum("gp,bpm->bgm", Sc, Xw)                          # (B,n_shells,n_vols)
@@ -149,7 +150,7 @@ def denoise_white_percol(dwi, mask, Cs, group, column_scale=None, patch=(5, 5, 5
     # 2x safety factor: the budget is computed from the JAX pool's own stats, which do not see
     # other processes on a shared GPU -- a 6 GB padded volume that "fits" a 12 GB pool still
     # OOMs when the desktop holds 3 GB.  Host gather is the slow-but-sure fallback.
-    gpu = (2 * Xp * Yp * Zp * n_vols * 4) < _device_gather_budget_bytes()
+    gpu = (2 * Xp * Yp * Zp * n_vols * 4) < gather_budget_bytes()
     if gpu:
         pf = jnp.asarray(padded.reshape(-1, n_vols))
         doff = jnp.asarray((offs[:, 0] * Yp * Zp + offs[:, 1] * Zp + offs[:, 2]).astype(np.int32))
@@ -202,7 +203,7 @@ def slow_patch_percol(Y, Cs, group, scale, algo="cordero-grande"):
     ev, V = np.linalg.eigh(Yw.T @ Yw)
     vals = np.maximum(ev[::-1], 0.0)
     Vd = V[:, ::-1]
-    t, sigma = _mp_threshold_jax(jnp.asarray(vals[None, :]),
+    t, sigma = mp_threshold(jnp.asarray(vals[None, :]),
                                  min(n_vox, n_vols), max(n_vox, n_vols), algo)
     t = int(np.asarray(t)[0])
     Xw = Yw @ Vd[:, :t] @ Vd[:, :t].T
@@ -238,7 +239,8 @@ def selftest(seed=0, patch=(5, 5, 3), n_vols=40, shape=(24, 24, 8), npatch=24,
         return model.patch_correlation(patch)[0]
 
     # --- 1. identity whitener == denoise_mppca ------------------------------------------------
-    ref, rs, rn = denoise_mppca(dwi, mask, patch=patch, algorithm="cordero-grande")
+    plain = denoise_mppca(dwi, mask, patch=patch, algorithm="cordero-grande")
+    ref, rs, rn = plain.denoised, plain.sigma_hat, plain.rank
     o1, s1, n1 = denoise_white_percol(dwi, mask, np.eye(n_vox)[None],
                                       np.zeros(n_vols, int), patch=patch)
     sc = float(np.abs(ref[mask]).max())

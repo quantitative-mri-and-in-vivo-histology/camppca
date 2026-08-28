@@ -19,9 +19,8 @@ test will read as a broken estimator if you let it.
 import numpy as np
 import pytest
 
-from camppca import denoise, estimate_noise_model
+from camppca import denoise_camppca, denoise_mppca, estimate_noise_model
 from camppca.denoiser import denoise_with_noise_model
-from camppca.denoiser.mppca import denoise_mppca
 from camppca.patch import patch_offsets
 
 SIGMA_TRUE = 10.0
@@ -128,8 +127,8 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
     dwi, bvals, mask = dataset
     patch = (5, 5, 3)
 
-    ours = denoise(dwi, bvals, mask, patch=patch).sigma_hat
-    _, white, _ = denoise_mppca(dwi, mask, patch=patch, algorithm="cordero-grande")
+    ours = denoise_camppca(dwi, bvals, mask, patch=patch).sigma_hat
+    white = denoise_mppca(dwi, mask, patch=patch).sigma_hat
 
     ours_med, white_med = np.median(ours[mask]), np.median(white[mask])
     # Measured: camppca ~10.0, white MP-PCA ~5.3 against a true 10.0.
@@ -140,7 +139,7 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
 
 def test_denoise_reduces_variance_and_keeps_shape(dataset):
     dwi, bvals, mask = dataset
-    result = denoise(dwi, bvals, mask, patch=(5, 5, 3))
+    result = denoise_camppca(dwi, bvals, mask, patch=(5, 5, 3))
 
     assert result.denoised.shape == dwi.shape
     assert result.sigma_hat.shape == dwi.shape[:3]

@@ -15,13 +15,14 @@ from .noise_model import NoiseModel, brain_mask, estimate_noise_model  # noqa: E
 
 __version__ = "0.1.0"
 
-__all__ = ["NoiseModel", "DenoiseResult", "estimate_noise_model",
-           "denoise", "denoise_with_noise_model", "brain_mask", "__version__"]
+__all__ = ["NoiseModel", "DenoiseResult", "brain_mask", "denoise_camppca",
+           "denoise_mppca", "denoise_with_noise_model", "estimate_noise_model",
+           "__version__"]
 
-# Lazy: importing the engine pulls in JAX. `estimate_noise_model` and `brain_mask` stay
+# Lazy: importing a denoiser pulls in JAX. `estimate_noise_model` and `brain_mask` stay
 # JAX-free, and staying that way is asserted in the test suite.
-_LAZY = {"denoise": "denoiser", "denoise_with_noise_model": "denoiser",
-         "DenoiseResult": "denoiser"}
+_LAZY = {"denoise_camppca": "denoiser", "denoise_mppca": "denoiser",
+         "denoise_with_noise_model": "denoiser", "DenoiseResult": "denoiser"}
 
 
 def __getattr__(name):

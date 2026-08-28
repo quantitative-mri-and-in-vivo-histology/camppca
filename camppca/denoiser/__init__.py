@@ -1,48 +1,27 @@
-"""The denoiser: the engine half of the seam.
+"""The denoisers: the engine half of the seam.
 
-Named ``denoiser`` and not ``denoise`` so the subpackage does not shadow the
-``denoise()`` function on ``camppca`` itself.
-
-Source-agnostic by design -- ``denoise_with_noise_model`` consumes a
+Source-agnostic by design. ``denoise_with_noise_model`` consumes a
 :class:`~camppca.noise_model.NoiseModel` and never asks where it came from, so a future
 alignment-based estimator feeds the same code.
 
-``camppca.py`` is the method; ``mppca.py`` is the plain white-noise baseline arm plus the
-Marchenko-Pastur threshold both share. Both now speak CLAUDE.md's notation directly -- see
-their module headers for the rename from the reference spelling.
-"""
+``camppca.py`` is the covariance-aware method, ``mppca.py`` the standard white-noise one.
+What they share lives in ``camppca.mp``, ``camppca.gather`` and ``camppca.patch``.
 
-from dataclasses import dataclass, field
-from typing import Any, Optional
+Every public name here is re-exported from ``camppca`` itself.
+"""
 
 import numpy as np
 
 from ..noise_model import NoiseModel, estimate_noise_model
 from ..patch import check_patch
+from ..result import DenoiseResult
 from .camppca import denoise_white_percol
+from .mppca import denoise_mppca
 
-__all__ = ["DenoiseResult", "denoise", "denoise_with_noise_model"]
+__all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",
+           "denoise_with_noise_model"]
 
 D_CLIP = (0.2, 5.0)
-
-
-@dataclass
-class DenoiseResult:
-    """Denoised data plus the calibrated noise level the MP fit found.
-
-    ``denoised``   (X, Y, Z, N) denoised data.  Voxels outside the mask are passed through
-                   unchanged -- the engine is centre-voxel-only, with no overlap averaging.
-    ``sigma_hat``  (X, Y, Z) MP-PCA's noise estimate, in the input's units.  An OUTPUT --
-                   distinct from ``model.sigma_p2s``, the P2S level that drove whitening.
-    ``rank``       (X, Y, Z) retained rank per voxel.
-    ``model``      the noise model used, so the one-liner still exposes the intermediates.
-    """
-
-    denoised: np.ndarray
-    sigma_hat: np.ndarray
-    rank: np.ndarray
-    model: NoiseModel
-    provenance: dict = field(default_factory=dict)
 
 
 def _effective_d(d, mask):
@@ -103,16 +82,17 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
         # normalization convention leaks into the headline number.
         sigma_hat = sigma_hat * d_eff
 
-    prov = dict(patch=tuple(int(v) for v in patch), algo=algo, noise_field=bool(noise_field),
-                sigma_units=sigma_units, rule="Cordero-Grande/Exp2, hard threshold, "
-                "no shrinkage, centre-voxel only", model=dict(model.provenance))
+    prov = dict(method="camppca", patch=tuple(int(v) for v in patch), algo=algo,
+                noise_field=bool(noise_field), sigma_units=sigma_units,
+                rule="Cordero-Grande/Exp2, hard threshold, no shrinkage, centre-voxel only",
+                model=dict(model.provenance))
     return DenoiseResult(denoised=denoised, sigma_hat=sigma_hat, rank=rank, model=model,
                          provenance=prov)
 
 
-def denoise(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=True,
-            per_shell="auto", algo="cordero-grande", tile=256, sigma_units="data",
-            **estimate_kwargs):
+def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=True,
+                    per_shell="auto", algo="cordero-grande", tile=256, sigma_units="data",
+                    **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
     Equivalent to ``estimate_noise_model`` followed by ``denoise_with_noise_model``; the
