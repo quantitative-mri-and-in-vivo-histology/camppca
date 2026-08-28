@@ -1,9 +1,8 @@
 """The engine's three reductions, asserted.
 
-`selftest` returns METRICS, not pass/fail -- upstream it printed them and moved on, and
-its S=1 reduction was wrapped in a bare `except` that recorded "skipped" on any failure,
-so a broken import degraded it to two reductions silently. Here the thresholds are
-explicit and a skip is a failure.
+`selftest` returns METRICS, not pass/fail, so the thresholds live here. A skipped
+reduction is a failure: the S=1 case needs an out-of-package reference implementation,
+and a broken import must not quietly degrade this to two reductions.
 
 All three metrics are BIMODAL across runs: XLA picks one of two compilation plans and
 the float32 rounding follows it. Observed over repeated processes (jax 0.10.2, CUDA),

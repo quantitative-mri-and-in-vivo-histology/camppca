@@ -75,7 +75,7 @@ def noise_map(res, infl, dwi_cols):
     give you, because it does not expose the weights.
 
     ``dwi_cols`` selects the columns to average over (b0 residual levels are not
-    representative of DWI noise).  Kept explicit: the two canonical upstream call sites
-    disagree on the cut, so the policy belongs to the caller.
+    representative of DWI noise).  There is no single right cut, so the policy belongs to
+    the caller.
     """
     return np.sqrt(np.mean(res[:, dwi_cols] ** 2 / infl[None, dwi_cols], axis=1))

@@ -4,15 +4,6 @@ camppca's own method is ``denoiser/camppca.py``. This module owns ``_mp_threshol
 (the Marchenko-Pastur cutoff rule) and ``_device_gather_budget_bytes``, both imported by
 the covariance-aware engine.
 
-Ported from ``src/warp_denoise/mppca.py`` (see reference/); the NAMES were moved to
-CLAUDE.md's notation once the self-test was green:
-
-    kernel     -> patch                the box shape (paper M = n_vox voxels in it)
-    P, N       -> n_vox, n_vols
-    Mp, Np     -> n_small, n_large     ⚠ min/max of (n_vox, n_vols) -- the SORTED pair.
-                                       The old names read as patch-M and patch-N; they
-                                       never meant that.
-
 One JAX implementation for both backends: the per-voxel loop is a batched device kernel,
 so the same estimator runs on the CPU (default JAX backend) or the GPU (``jax`` with a
 CUDA build).
@@ -50,7 +41,7 @@ import jax.numpy as jnp
 
 
 def _default_patch(nvols: int) -> np.ndarray:
-    """Smallest odd isotropic patch with ``p**3 >= nvols`` (DESIGNER default)."""
+    """Smallest odd isotropic patch with ``p**3 >= nvols``."""
     p = np.arange(3, max(nvols, 5), 2)
     pf = np.where(p**3 >= nvols)[0][0]
     return np.array([p[pf]] * 3)
@@ -149,8 +140,7 @@ _denoise_tile_jit = partial(jax.jit, static_argnums=(2, 3, 4, 5))(_denoise_tile)
 
 def _mp_threshold(vals, n_small: int, n_large: int, algo: str, tn: int = 0):
     """Single-patch Marchenko-Pastur threshold -> ``(t, sigma)``. ``vals`` descending
-    eigenvalues (1-D). ``tn`` is accepted for signature compatibility (only ``tn=0``,
-    the value used throughout this project, is supported)."""
+    eigenvalues (1-D). Only ``tn=0`` is supported."""
     if tn:
         raise NotImplementedError("tn>0 is not supported by the JAX threshold")
     t, sigma = _mp_threshold_jax(jnp.asarray(vals)[None, :], n_small, n_large, algo)
@@ -184,7 +174,6 @@ def denoise_mppca(
     patch=(5, 5, 5),
     algorithm: str = "jespersen",
     col_weights: np.ndarray | None = None,
-    n_jobs: int = -1,
     tile: int = 256,
     on_device_gather: bool | None = None,
 ):
@@ -193,8 +182,7 @@ def denoise_mppca(
     ``col_weights`` (X,Y,Z,n_vols): optional per-voxel per-volume noise scale ``‖w‖``; each
     patch is column-whitened by its centre voxel's weights before the eigendecomposition.
 
-    ``n_jobs`` is accepted for backwards compatibility and ignored (batching now runs on the
-    JAX device); ``tile`` caps the per-batch patch count to bound device memory.
+    ``tile`` caps the per-batch patch count to bound device memory.
 
     ``on_device_gather`` controls how the overlapping patches are extracted: ``True`` keeps the
     whole padded volume on the device and gathers each tile's box with an indexed read (fast, but
@@ -207,7 +195,6 @@ def denoise_mppca(
     Returns ``(denoised (X,Y,Z,n_vols), sigma (X,Y,Z), npars (X,Y,Z))``; ``sigma``/``npars`` are 0
     outside the processed region.
     """
-    del n_jobs  # batching moved to the device; kept in the signature for compatibility
     dwi = np.asarray(dwi, np.float32)
     sx, sy, sz, nvols = dwi.shape
 

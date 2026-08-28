@@ -27,22 +27,9 @@ code divides rows by d then applies C^(-1/2), i.e. W = C^(-1/2) D^(-1). W^T W = 
 either way, so the Gram, spectrum, threshold, retained subspace and reconstruction are
 identical. Do NOT "fix" one to match the other.
 
-Ported from ``src/warp_denoise/whitened.py`` (see reference/). The bodies are verbatim;
-the NAMES were moved to CLAUDE.md's notation once the self-test was green:
-
-    R, Rs        -> C, Cs      the patch correlation, per shell
-    row_scale    -> d_field    the relative level field  (never `g` -- that is the g-factor)
-    col_scale    -> column_scale
-    kernel       -> patch      the box shape
-    P, N, S      -> n_vox, n_vols, n_shells
-    Mp, Np       -> n_small, n_large   ⚠ min/max of (n_vox, n_vols) -- the SORTED pair.
-                                      The old names read as patch-M and patch-N; they
-                                      never meant that.
-
-``build_R`` and ``patch_offsets`` are NOT here: C is derived by
-``NoiseModel.patch_correlation`` (it belongs to the model) and the patch offsets live in
-``camppca.patch`` (both halves need them). The clean names are presented by
-``camppca.denoiser``; this module is the ported core.
+WHERE C COMES FROM. C is not built here: ``NoiseModel.patch_correlation`` derives it,
+because it belongs to the model. The patch offsets live in ``camppca.patch``, since both
+halves of the seam need them. ``camppca.denoiser`` is the public face of this module.
 
 PATCH ORDER. C is built from explicit (dx, dy, dz) lags in the engine's C order (z
 fastest), not as a Kronecker product, so it is Toeplitz in the true relative lags with no
@@ -229,7 +216,7 @@ def selftest(seed=0, patch=(5, 5, 3), n_vols=40, shape=(24, 24, 8), npatch=24,
 
     ``global_whitener`` is the n_shells = 1 reference implementation
     (``denoise_white(dwi, mask, W, patch)``).  It lives outside the package -- pass the
-    test-only port to run that reduction; omit it and the reduction reports "skipped"
+    test-only one to run that reduction; omit it and the reduction reports "skipped"
     rather than silently vanishing.
 
     Returns a dict of METRICS, not pass/fail: the caller supplies the thresholds.

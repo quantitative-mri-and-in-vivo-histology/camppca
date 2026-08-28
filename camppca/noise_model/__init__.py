@@ -87,8 +87,8 @@ class NoiseModel:
         """Derive ``Cs`` (S, P, P), the unit-diagonal patch correlation per shell.
 
         ``C`` is ``rho`` re-indexed into the geometry of this patch, PSD-projected to unit
-        diagonal.  Raises if the patch needs lags this model never measured -- upstream
-        this ran off the table and numpy answered with a silent wraparound.
+        diagonal.  Raises if the patch needs lags this model never measured: without the
+        check, the index runs off the table and numpy wraps around silently.
         """
         patch = check_patch(patch)
         need = required_lag(patch)
@@ -103,8 +103,8 @@ def _build_C(rho, patch, lag):
     """Patch correlation from a lag table ``rho[dx+lag, dy+lag, |dz|]``; no wraparound.
 
     Projected to the nearest PSD matrix with unit diagonal if the measured table is
-    indefinite.  Body ported verbatim from ``whitened.build_R``; the bounds check that
-    guards it lives in :meth:`NoiseModel.patch_correlation`.
+    indefinite.  The bounds check that guards it lives in
+    :meth:`NoiseModel.patch_correlation`.
     """
     o = patch_offsets(patch)
     dx = o[:, 0][:, None] - o[:, 0][None, :]

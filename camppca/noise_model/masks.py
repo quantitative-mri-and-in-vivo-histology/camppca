@@ -1,8 +1,6 @@
 """Brain mask and estimation-region helpers.
 
-Ported from ``scripts/paper/multi_dataset/masking.py`` (see reference/), verbatim except
-that an empty mask raises ``ValueError`` instead of ``SystemExit`` -- a library must not
-kill its caller's interpreter.
+An empty mask raises ``ValueError``.
 
 WHY brain_mask IS NOT JUST threshold + erode.  That is what it started as, and on GE
 MR750 data it collapsed the mask from ~137k voxels to 13.7k: the intensity threshold
