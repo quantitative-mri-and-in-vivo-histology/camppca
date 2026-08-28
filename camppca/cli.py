@@ -73,7 +73,7 @@ def _load(args):
     bvals = io.load_bvals(args.fslgrad[1]) if args.fslgrad else None
     mask = None
     if args.mask:
-        mask = np.asanyarray(io._nib().load(args.mask).dataobj) > 0.5
+        mask = io.load_mask(args.mask)
     per_shell = {"auto": "auto", "yes": True, "no": False}[args.per_shell]
     return dwi, bvals, mask, affine, header, per_shell
 
