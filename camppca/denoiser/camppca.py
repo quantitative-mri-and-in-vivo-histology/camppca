@@ -234,7 +234,7 @@ def selftest(seed=0, patch=(5, 5, 3), n_vols=40, shape=(24, 24, 8), npatch=24,
 
     Returns a dict of METRICS, not pass/fail: the caller supplies the thresholds.
     """
-    from .mppca import denoise_adaptive
+    from .mppca import denoise_mppca
     from ..noise_model import NoiseModel
     rng = np.random.default_rng(seed)
     n_vox = int(np.prod(patch))
@@ -250,9 +250,8 @@ def selftest(seed=0, patch=(5, 5, 3), n_vols=40, shape=(24, 24, 8), npatch=24,
                            sigma_shell=np.ones(1), mask=mask, lag=lag)
         return model.patch_correlation(patch)[0]
 
-    # --- 1. identity whitener == denoise_adaptive(adaptive=False) -----------------------------
-    ref, rs, rn = denoise_adaptive(dwi, mask, patch=patch, algorithm="cordero-grande",
-                                   shrinkage="threshold", adaptive=False)
+    # --- 1. identity whitener == denoise_mppca ------------------------------------------------
+    ref, rs, rn = denoise_mppca(dwi, mask, patch=patch, algorithm="cordero-grande")
     o1, s1, n1 = denoise_white_percol(dwi, mask, np.eye(n_vox)[None],
                                       np.zeros(n_vols, int), patch=patch)
     sc = float(np.abs(ref[mask]).max())

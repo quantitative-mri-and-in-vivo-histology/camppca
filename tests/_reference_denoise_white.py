@@ -39,7 +39,7 @@ def _tile_white(patches, Wmat, center: int, n_small: int, n_large: int, algo: st
 _tile_white_jit = partial(jax.jit, static_argnums=(2, 3, 4, 5))(_tile_white)
 
 def denoise_white(dwi, mask, Wmat, patch, algo="cordero-grande", tile=256):
-    """Same tiling/gather as denoise_adaptive, plain box patches, voxel-axis whitening."""
+    """Same tiling/gather as denoise_mppca, plain box patches, voxel-axis whitening."""
     dwi = np.asarray(dwi, np.float32)
     sx, sy, sz, n_vols = dwi.shape
     patch = np.asarray(patch, int)

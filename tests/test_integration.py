@@ -21,7 +21,7 @@ import pytest
 
 from camppca import denoise, estimate_noise_model
 from camppca.denoiser import denoise_with_noise_model
-from camppca.denoiser.mppca import denoise_adaptive
+from camppca.denoiser.mppca import denoise_mppca
 from camppca.patch import patch_offsets
 
 SIGMA_TRUE = 10.0
@@ -129,8 +129,7 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
     patch = (5, 5, 3)
 
     ours = denoise(dwi, bvals, mask, patch=patch).sigma_hat
-    _, white, _ = denoise_adaptive(dwi, mask, patch=patch, algorithm="cordero-grande",
-                                   shrinkage="threshold", adaptive=False)
+    _, white, _ = denoise_mppca(dwi, mask, patch=patch, algorithm="cordero-grande")
 
     ours_med, white_med = np.median(ours[mask]), np.median(white[mask])
     # Measured: camppca ~10.0, white MP-PCA ~5.3 against a true 10.0.
