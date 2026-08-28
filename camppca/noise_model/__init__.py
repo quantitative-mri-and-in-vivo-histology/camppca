@@ -18,47 +18,39 @@ Pure numpy/scipy. Nothing here imports JAX.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
 
-from ..patch import patch_offsets, patch_size, required_lag, check_patch
+from ..patch import check_patch, patch_offsets, required_lag
 from .masks import brain_mask, interior_region, stable_region
 from .p2s import noise_map, p2s_ols, rho_region
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask", "stable_region"]
 
-#: Fewest volumes a shell may have and still get its own correlation pattern. Below this
-#: the leave-one-out fit degenerates: at 1 volume there are no predictors at all, every
+#: Fewest diffusion volumes P2S can fit a correlation pattern from. Below this the
+#: leave-one-out fit degenerates: at 1 volume there are no predictors at all, every
 #: residual is the centred signal, `stable_region` drops every voxel and `rho` comes back
-#: all-NaN -- which propagates to a fully NaN denoised image. At 2 volumes it does not
-#: crash but the level is badly biased (measured ~50% high).
-MIN_SHELL_VOLUMES = 10
+#: all-NaN, which propagates to a fully NaN denoised image. At 2 volumes it does not crash
+#: but the level is badly biased, measured ~50% high.
+MIN_VOLUMES = 10
 
 
 @dataclass
 class NoiseModel:
     """Spatial noise model: correlation pattern ``rho`` plus level field ``d``.
 
-    ``rho``        (S, 2*lag+1, 2*lag+1, dzmax+1) correlation lag tables, one per shell,
-                   unit at zero lag.  PATTERN ONLY -- carries no level.
-    ``group``      (N,) volume -> shell index, indexing ``rho``.
+    ``rho``        (2*lag+1, 2*lag+1, dzmax+1) correlation lag table, unit at zero lag.
+                   PATTERN ONLY -- carries no level.
     ``d``          (X, Y, Z) relative level field, median-normalized.  Only ratios matter.
     ``sigma_p2s``  (X, Y, Z) absolute P2S noise level.  An INPUT that drives whitening --
                    not to be confused with ``sigma_hat``, the MP-PCA output.
-    ``sigma_shell``(S,) noise level per shell.  Only RATIOS matter: whitening with
-                   patterns of different amplitude gives C_s^(-1/2) different gains, so
-                   the per-shell level must be divided out alongside C_s or spatial
-                   correlation is merely traded for column heteroscedasticity.
     ``mask``       (X, Y, Z) bool, the voxels the model was estimated on.
     ``lag``        max lag ``rho`` covers; bounds the patch this model can serve.
     """
 
     rho: np.ndarray
-    group: np.ndarray
     d: np.ndarray
     sigma_p2s: np.ndarray
-    sigma_shell: np.ndarray
     mask: np.ndarray
     lag: int
     provenance: dict = field(default_factory=dict)
@@ -67,24 +59,10 @@ class NoiseModel:
         # A uint8 mask (what `nib.load(...).get_fdata().astype(...)` hands you) would turn
         # `... & mask` into integer fancy indexing downstream, silently mis-normalizing d.
         self.mask = np.asarray(self.mask, bool)
-        self.group = np.asarray(self.group, int)
         self.rho = np.asarray(self.rho, float)
 
-    @property
-    def n_shells(self):
-        return int(self.rho.shape[0])
-
-    def column_scale(self):
-        """(N,) per-volume noise scale for the engine: ``sigma_shell[group]``, mean 1.
-
-        Mean-normalized so ``sigma_hat`` comes back in the input's units; only ratios
-        enter the whitening, so the choice of normalizer cancels there.
-        """
-        per_vol = np.asarray(self.sigma_shell, float)[self.group]
-        return per_vol / per_vol.mean()
-
     def patch_correlation(self, patch):
-        """Derive ``Cs`` (S, P, P), the unit-diagonal patch correlation per shell.
+        """Derive ``C`` (P, P), the unit-diagonal patch correlation.
 
         ``C`` is ``rho`` re-indexed into the geometry of this patch, PSD-projected to unit
         diagonal.  Raises if the patch needs lags this model never measured: without the
@@ -96,7 +74,7 @@ class NoiseModel:
             raise ValueError(
                 f"patch {tuple(int(v) for v in patch)} needs lag {need}, but this noise "
                 f"model only covers lag {self.lag}. Re-estimate with the larger patch.")
-        return np.stack([_build_C(r, patch, self.lag) for r in self.rho])
+        return _build_C(self.rho, patch, self.lag)
 
 
 def _build_C(rho, patch, lag):
@@ -121,23 +99,21 @@ def _build_C(rho, patch, lag):
     return R
 
 
-def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell="auto",
-                         ncol=40, lowb=100, shell_tol=250, seed=0):
+def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, lowb=100,
+                         seed=0):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
-    ``dwi``        (X, Y, Z, N) diffusion data.
-    ``bvals``      (N,) b-values.  Required for per-shell estimation; without them
-                   everything above ``lowb`` is treated as one shell.
-    ``mask``       (X, Y, Z) bool.  Estimated from the mean b0 when omitted.
-    ``patch``      the patch this model must be able to serve; sets the lag rho covers.
-    ``per_shell``  "auto" (per-shell when bvals resolve >1 shell), True, or False.
-    ``ncol``       residual columns subsampled for the rho fit.  Deterministic given
-                   ``seed``, so re-estimating gives an identical model.
-    ``lowb``       b-value at or below which a volume counts as a b0.
-    ``shell_tol``  nominal-shell clustering width.
+    ``dwi``    (X, Y, Z, N) diffusion data.
+    ``bvals``  (N,) b-values, used only to tell b0s from diffusion volumes.  Without them
+               every volume is treated as a diffusion volume.
+    ``mask``   (X, Y, Z) bool.  Estimated from the mean b0 when omitted.
+    ``patch``  the patch this model must be able to serve; sets the lag rho covers.
+    ``ncol``   residual columns subsampled for the rho fit.  Deterministic given ``seed``,
+               so re-estimating gives an identical model.
+    ``lowb``   b-value at or below which a volume counts as a b0.
 
-    Per-shell patterns are fit WITHIN each shell -- b1000 predicted from b1000 only --
-    so no shell's pattern borrows structure from another's residuals.
+    One pattern is fit across all the diffusion volumes.  b0s are excluded from the fit:
+    their residual level is not representative of diffusion-weighted noise.
     """
     dwi = np.asarray(dwi)
     if dwi.ndim != 4:
@@ -155,8 +131,11 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
         if bvals.size != n_vols:
             raise ValueError(f"bvals has {bvals.size} entries, dwi has {n_vols} volumes")
         dwi_idx = np.where(bvals > lowb)[0]
-    if dwi_idx.size < 2:
-        raise ValueError(f"need >= 2 volumes above b={lowb}, found {dwi_idx.size}")
+    if dwi_idx.size < MIN_VOLUMES:
+        raise ValueError(
+            f"need >= {MIN_VOLUMES} volumes above b={lowb} to fit a correlation pattern, "
+            f"found {dwi_idx.size}. Below this the leave-one-out fit degenerates and rho "
+            f"comes back all-NaN, which propagates to a fully NaN denoised image.")
 
     if mask is None:
         b0 = np.where(bvals <= lowb)[0]
@@ -177,60 +156,21 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
 
     interior, erode_used = interior_region(mask)
 
-    # ---- shell grouping -----------------------------------------------------------------
-    nominal = np.round(bvals / shell_tol) * shell_tol
-    shells = sorted(set(nominal[dwi_idx]))
-    want_shells = len(shells) > 1 if per_shell == "auto" else bool(per_shell)
-    if want_shells:
-        col_sets = [np.where(nominal == b)[0] for b in shells]
-        group = np.zeros(n_vols, int)
-        for s, cols in enumerate(col_sets):
-            group[cols] = s
-        group[bvals <= lowb] = 0        # b0s ride along with the first shell's pattern
-    else:
-        col_sets = [dwi_idx]
-        group = np.zeros(n_vols, int)
+    # ---- P2S: sigma from every diffusion column, rho from a subsample of them ------------
+    residuals, inflation = p2s_ols(dwi[mask][:, dwi_idx].astype(np.float64))
+    sigma_vox = noise_map(residuals, inflation, np.arange(dwi_idx.size))
 
-    small = [(b, c.size) for b, c in zip(shells if want_shells else [None], col_sets)
-             if c.size < MIN_SHELL_VOLUMES]
-    if small:
-        detail = ", ".join(f"b={int(b)} has {n}" if b is not None else f"{n} volumes"
-                           for b, n in small)
-        raise ValueError(
-            f"shell too small to fit its own correlation pattern ({detail}; minimum is "
-            f"{MIN_SHELL_VOLUMES}). A one-volume shell yields an all-NaN rho and a fully "
-            f"NaN denoised image. Pass per_shell=False to pool the pattern across shells, "
-            f"raise shell_tol (currently {shell_tol:g}) to merge nearby b-values, or drop "
-            f"the stray volumes.")
+    keep = np.sort(rng.permutation(residuals.shape[1])[:ncol])
+    subsample = residuals[:, keep].astype(np.float32)
+    del residuals
+    region, _ = stable_region(subsample, mask)
+    region &= interior           # rho_region wants the strict interior, not the rim
+    if not region.any():
+        raise ValueError("estimation region is empty after dropping constant voxels "
+                         "and eroding to the interior -- check the mask")
+    rho = rho_region(subsample, mask, region, lag=lag, dzmax=dzmax)
+    del subsample
 
-    # ---- P2S per shell: rho from a column subsample, sigma from every column -------------
-    rhos = []
-    sigma_shell = []
-    sumsq = np.zeros(int(mask.sum()))
-    ncols_used = 0
-    masked = dwi[mask]                      # loop-invariant: (n_mask, n_vols)
-    for cols in col_sets:
-        Yc = masked[:, cols].astype(np.float64)
-        res, infl = p2s_ols(Yc)
-        del Yc
-        # sigma uses ALL of this shell's columns; each column's own inflation factor.
-        shell_sigma = noise_map(res, infl, np.arange(len(cols)))
-        sigma_shell.append(float(np.median(shell_sigma)))
-        sumsq += shell_sigma ** 2 * len(cols)
-        ncols_used += len(cols)
-        keep = np.sort(rng.permutation(res.shape[1])[:ncol])
-        sub = res[:, keep].astype(np.float32)
-        del res
-        reg, _ = stable_region(sub, mask)
-        reg &= interior           # rho_region wants the strict interior, not the rim
-        if not reg.any():
-            raise ValueError("estimation region is empty after dropping constant voxels "
-                             "and eroding to the interior -- check the mask")
-        rhos.append(rho_region(sub, mask, reg, lag=lag, dzmax=dzmax))
-        del sub
-
-    del masked
-    sigma_vox = np.sqrt(sumsq / ncols_used)
     sigma_p2s = np.zeros(mask.shape, np.float32)
     sigma_p2s[mask] = sigma_vox
     d = np.zeros(mask.shape, np.float32)
@@ -238,13 +178,10 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), per_shell=
 
     prov = dict(patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
                 ncol=int(ncol), seed=int(seed), lowb=float(lowb),
-                per_shell=bool(want_shells), shell_tol=float(shell_tol),
-                shells=[float(b) for b in shells] if want_shells else None,
-                n_mask=int(mask.sum()), n_vols=int(n_vols),
+                n_mask=int(mask.sum()), n_vols=int(n_vols), n_dwi=int(dwi_idx.size),
                 erode=int(erode_used), n_interior=int(interior.sum()),
                 bvals_sha=_bvals_hash(bvals))
-    return NoiseModel(rho=np.stack(rhos), group=group, d=d, sigma_p2s=sigma_p2s,
-                      sigma_shell=np.array(sigma_shell), mask=mask, lag=lag,
+    return NoiseModel(rho=rho, d=d, sigma_p2s=sigma_p2s, mask=mask, lag=lag,
                       provenance=prov)
 
 

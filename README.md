@@ -33,20 +33,23 @@ camppca estimate in.nii.gz --qc qc/                                 -fslgrad in.
 | `--noise PATH` | the σ̂ map, in the input's units — a first-class product, as `dwidenoise -noise` is |
 | `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the level field, σ, rank, `provenance.json` |
 
-Without `-fslgrad` every volume is treated as one shell. `--patch X Y Z` sets the patch
-(default `5 5 5`, odd in every dimension).
+Without `-fslgrad` no volume can be recognised as a b0, so every volume enters the fit.
+`--patch X Y Z` sets the patch (default `5 5 5`, odd in every dimension).
 
 ## Python
 
 ```python
-from camppca import denoise
+from camppca import denoise_camppca
 
-result = denoise(dwi, bvals, mask)          # mask is optional
+result = denoise_camppca(dwi, bvals, mask)  # mask is optional
 result.denoised     # (X, Y, Z, N)
 result.sigma_hat    # (X, Y, Z) MP-PCA's noise estimate, in data units
 result.rank         # (X, Y, Z) retained rank
 result.model        # the noise model it estimated along the way
 ```
+
+Standard white-noise MP-PCA is `camppca.denoise_mppca(dwi, mask)`, which returns the same
+result object with `model` unset.
 
 Estimation and denoising are separate, so the noise model can be inspected, reused, or
 supplied from elsewhere:
@@ -55,7 +58,7 @@ supplied from elsewhere:
 from camppca import estimate_noise_model, denoise_with_noise_model
 
 model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 5))
-model.rho           # correlation lag table(s), one per shell — the pattern
+model.rho           # the correlation lag table — the pattern, no level
 model.d             # relative noise level per voxel
 model.sigma_p2s     # absolute noise level per voxel (drives whitening; NOT sigma_hat)
 model.patch_correlation((5, 5, 5))          # the P×P patch correlation, derived on demand

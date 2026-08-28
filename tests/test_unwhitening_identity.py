@@ -6,15 +6,14 @@ The engine reconstructs the centre voxel as
             = ( e_c^T C^(1/2) ) Yw V diag(f) V^T          <- what the engine computes
 
 which is plain associativity. It never uses idempotency of the projector, so `f` being a
-0/1 keep-mask is irrelevant to exactness -- a continuous shrinkage profile, or an
-arbitrary one, is equally exact.
+0/1 keep-mask is irrelevant to exactness. A continuous shrinkage profile, or an arbitrary
+one, is equally exact.
 
-This matters because it corrects a claim inherited from the porting brief: "shrinkage
-breaks the exact-unwhitening identity". It does not. Hard thresholding is a METHOD choice
-(sigma_hat sensitivity, and shrinkage would optimize in the whitened metric while the
-output lands in data units), not a structural constraint -- see CLAUDE.md.
+Hard thresholding is therefore a METHOD choice, made for sigma_hat sensitivity and because
+shrinkage would optimize in the whitened metric while the output lands in data units. It
+is not a structural constraint. See CLAUDE.md.
 
-Run in the full model: per-shell C_s, per-shell sigma_s, per-voxel row scale d.
+Run with the row scale d in play, since that is the other half of the whitener.
 """
 
 import numpy as np
@@ -25,33 +24,29 @@ from camppca.noise_model import NoiseModel
 from camppca.patch import patch_size
 
 PATCH = (5, 5, 3)
-N_VOLS, N_SHELLS = 24, 2
+N_VOLS = 24
 
 
-def _patch_correlation(ax, ay, lag, n_vox):
+def _patch_correlation(ax, ay, lag):
     rho = np.zeros((2 * lag + 1, 2 * lag + 1, lag + 1))
     for i in range(-lag, lag + 1):
         for j in range(-lag, lag + 1):
             rho[i + lag, j + lag, 0] = ax ** abs(i) * ay ** abs(j)
     shape = (4, 4, 4)
-    model = NoiseModel(rho=rho[None], group=np.zeros(N_VOLS, int),
-                       d=np.ones(shape, np.float32), sigma_p2s=np.ones(shape, np.float32),
-                       sigma_shell=np.ones(1), mask=np.ones(shape, bool), lag=lag)
-    return model.patch_correlation(PATCH)[0]
+    model = NoiseModel(rho=rho, d=np.ones(shape, np.float32),
+                       sigma_p2s=np.ones(shape, np.float32),
+                       mask=np.ones(shape, bool), lag=lag)
+    return model.patch_correlation(PATCH)
 
 
 @pytest.fixture(scope="module")
 def setup():
     rng = np.random.default_rng(0)
-    lag = max(PATCH) - 1
-    P = patch_size(PATCH)
-    Cs = np.stack([_patch_correlation(0.6, 0.35, lag, P),
-                   _patch_correlation(0.25, 0.55, lag, P)])
-    group = rng.integers(0, N_SHELLS, N_VOLS)
-    sigma_shell = np.array([0.8, 1.3])
-    d = rng.uniform(0.5, 2.0, P)                       # per-voxel row scale
-    Y = rng.standard_normal((P, N_VOLS)) * 40 + 200
-    return rng, Cs, group, sigma_shell, d, Y, P
+    n_vox = patch_size(PATCH)
+    C = _patch_correlation(0.6, 0.35, max(PATCH) - 1)
+    d = rng.uniform(0.5, 2.0, n_vox)                   # per-voxel row scale
+    Y = rng.standard_normal((n_vox, N_VOLS)) * 40 + 200
+    return rng, C, d, Y, n_vox
 
 
 def _profiles(rng, evals):
@@ -65,35 +60,29 @@ def _profiles(rng, evals):
 
 @pytest.mark.parametrize("profile_idx", [0, 1, 2])
 def test_centre_row_shortcut_is_exact_for_any_profile(setup, profile_idx):
-    rng, Cs, group, sigma_shell, d, Y, P = setup
-    centre = P // 2
-    W = [sqrtm_psd(C, -0.5) for C in Cs]
-    H = [sqrtm_psd(C, 0.5) for C in Cs]
+    rng, C, d, Y, n_vox = setup
+    centre = n_vox // 2
+    whitener, unwhitener = sqrtm_psd(C, -0.5), sqrtm_psd(C, 0.5)
 
-    Yw = np.stack([W[group[n]] @ (Y[:, n] / d) / sigma_shell[group[n]]
-                   for n in range(N_VOLS)], 1)
+    Yw = whitener @ (Y / d[:, None])
     evals, V = np.linalg.eigh(Yw.T @ Yw)
     V = V[:, ::-1]
     name, f = _profiles(rng, evals[::-1])[profile_idx]
 
     Xw = Yw @ (V * f) @ V.T
 
-    # LITERAL: unwhiten the whole P x N patch, then take the centre row.
-    literal = np.stack([H[group[n]] @ Xw[:, n] * sigma_shell[group[n]] * d
-                        for n in range(N_VOLS)], 1)[centre]
+    # LITERAL: unwhiten the whole n_vox x N patch, then take the centre row.
+    literal = (unwhitener @ Xw * d[:, None])[centre]
 
-    # FUSED: carry only the centre ROW of C^(1/2), one per shell -- what the engine does.
-    rows = np.stack([H[s][centre] @ Yw for s in range(N_SHELLS)])
-    proj = (rows @ (V * f)) @ V.T
-    fused = np.array([proj[group[n], n] * sigma_shell[group[n]] * d[centre]
-                      for n in range(N_VOLS)])
+    # FUSED: carry only the centre ROW of C^(1/2) -- what the engine does.
+    fused = ((unwhitener[centre] @ Yw) @ (V * f)) @ V.T * d[centre]
 
     rel = np.abs(literal - fused).max() / np.abs(literal).max()
     assert rel < 1e-12, f"{name}: shortcut must be exact, got {rel:.2e}"
 
 
-def test_the_shortcut_is_cheaper_than_it_looks(setup):
-    """S candidate centre rows, not a P x N reconstruction -- S x the work, not P x."""
-    _, Cs, _, _, _, _, P = setup
-    assert Cs.shape == (N_SHELLS, P, P)
-    assert N_SHELLS < P / 10, "the whole point: S << P"
+def test_the_shortcut_carries_one_row_not_the_whole_matrix(setup):
+    """The saving: one row of C^(1/2), not an n_vox x N reconstruction."""
+    _, C, _, _, n_vox = setup
+    assert C.shape == (n_vox, n_vox)
+    assert sqrtm_psd(C, 0.5)[n_vox // 2].shape == (n_vox,)

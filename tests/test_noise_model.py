@@ -22,9 +22,9 @@ def _synthetic(rng, shape=(20, 20, 10), n_dirs=27, sigma=8.0, rank=4):
 
 
 def _model_with_rho(rho_table, lag, shape=(8, 8, 4)):
-    return NoiseModel(rho=rho_table[None], group=np.zeros(4, int),
-                      d=np.ones(shape, np.float32), sigma_p2s=np.ones(shape, np.float32),
-                      sigma_shell=np.ones(1), mask=np.ones(shape, bool), lag=lag)
+    return NoiseModel(rho=rho_table, d=np.ones(shape, np.float32),
+                      sigma_p2s=np.ones(shape, np.float32),
+                      mask=np.ones(shape, bool), lag=lag)
 
 
 def _separable_rho(lag, ax=0.6, ay=0.35, az=0.0):
@@ -39,10 +39,9 @@ def _separable_rho(lag, ax=0.6, ay=0.35, az=0.0):
 def test_patch_correlation_is_a_valid_correlation_matrix():
     lag, patch = 4, (5, 5, 3)
     model = _model_with_rho(_separable_rho(lag), lag)
-    Cs = model.patch_correlation(patch)
+    C = model.patch_correlation(patch)
 
-    assert Cs.shape == (1, 75, 75)
-    C = Cs[0]
+    assert C.shape == (75, 75)
     assert np.allclose(C.diagonal(), 1.0), "unit diagonal"
     assert np.allclose(C, C.T), "symmetric"
     assert np.linalg.eigvalsh(C).min() > -1e-9, "positive semi-definite"
@@ -51,7 +50,7 @@ def test_patch_correlation_is_a_valid_correlation_matrix():
 def test_patch_correlation_reads_rho_at_the_right_lags():
     lag, patch = 4, (5, 5, 3)
     rho = _separable_rho(lag)
-    C = _model_with_rho(rho, lag).patch_correlation(patch)[0]
+    C = _model_with_rho(rho, lag).patch_correlation(patch)
 
     offs = patch_offsets(patch)
     rng = np.random.default_rng(0)
@@ -73,16 +72,14 @@ def test_patch_correlation_refuses_an_even_patch():
         model.patch_correlation((4, 5, 5))
 
 
-def test_estimate_groups_shells_and_fits_one_pattern_each():
+def test_estimate_fits_one_pattern_over_every_diffusion_volume():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(0))
     model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
 
-    assert model.n_shells == 2, "b1000 and b2000 get their own pattern"
-    assert model.rho.shape == (2, 9, 9, 5)
-    assert model.group.shape == (bvals.size,)
+    assert model.rho.shape == (9, 9, 5)
     assert model.lag == 4
-    assert model.provenance["per_shell"] is True
-    assert model.provenance["shells"] == [1000.0, 2000.0]
+    assert model.provenance["n_vols"] == bvals.size
+    assert model.provenance["n_dwi"] == int((bvals > 100).sum()), "b0s stay out of the fit"
 
 
 def test_estimate_recovers_the_noise_level_and_a_unit_median_field():
@@ -94,20 +91,6 @@ def test_estimate_recovers_the_noise_level_and_a_unit_median_field():
     assert np.all(model.d[~mask] == 0)
 
 
-def test_column_scale_is_per_shell_and_mean_one():
-    dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(5))
-    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
-
-    assert model.sigma_shell.shape == (2,)
-    assert np.allclose(model.sigma_shell, sigma, rtol=0.15)
-    col = model.column_scale()
-    assert col.shape == (bvals.size,)
-    assert col.mean() == pytest.approx(1.0)
-    # every volume in a shell shares that shell's level
-    for s in range(model.n_shells):
-        assert len(np.unique(col[model.group == s])) == 1
-
-
 def test_estimate_is_deterministic():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(2))
     a = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
@@ -117,11 +100,11 @@ def test_estimate_is_deterministic():
     assert a.provenance == b.provenance
 
 
-def test_estimate_without_bvals_treats_everything_as_one_shell():
-    dwi, _, mask, _ = _synthetic(np.random.default_rng(3))
+def test_estimate_without_bvals_uses_every_volume():
+    dwi, bvals, mask, _ = _synthetic(np.random.default_rng(3))
     model = estimate_noise_model(dwi, None, mask, patch=(5, 5, 3))
-    assert model.n_shells == 1
-    assert model.provenance["per_shell"] is False
+    assert model.provenance["n_dwi"] == bvals.size, "no bvals means no b0 to exclude"
+    assert np.isfinite(model.rho).all()
 
 
 def test_estimate_rejects_mismatched_bvals():
@@ -137,29 +120,21 @@ def test_the_noise_model_half_never_imports_jax():
     subprocess.run([sys.executable, "-c", code], check=True, cwd="/workspace")
 
 
-def test_a_shell_too_small_to_fit_is_refused_not_silently_nan():
-    """A stray single-volume shell used to yield an all-NaN rho and a fully NaN image.
+def test_too_few_diffusion_volumes_is_refused_not_silently_nan():
+    """Too few volumes used to yield an all-NaN rho and a fully NaN image.
 
     p2s_ols on one column has no predictors, so every residual is the centred signal;
     stable_region then drops every voxel and rho_region divides 0/0. Only a RuntimeWarning
     was emitted, and the CLI wrote a NaN NIfTI and exited 0.
     """
     rng = np.random.default_rng(0)
-    shape, n_dirs = (20, 20, 10), 22
-    bvals = np.concatenate([np.zeros(4), [3000.0], np.full(n_dirs, 1000.0),
-                            np.full(n_dirs, 2000.0)])
-    n_vols = bvals.size
-    signal = rng.standard_normal(shape + (3,)) @ rng.standard_normal((3, n_vols))
-    dwi = signal * 20 + 300 + rng.standard_normal(shape + (n_vols,)) * 8
-    mask = np.ones(shape, bool)
+    shape = (20, 20, 10)
+    bvals = np.concatenate([np.zeros(4), np.full(5, 1000.0)])
+    signal = rng.standard_normal(shape + (3,)) @ rng.standard_normal((3, bvals.size))
+    dwi = signal * 20 + 300 + rng.standard_normal(shape + (bvals.size,)) * 8
 
-    with pytest.raises(ValueError, match=r"b=3000 has 1.*minimum is"):
-        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
-
-    # Pooling across shells is the documented way out, and it works.
-    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), per_shell=False)
-    assert model.n_shells == 1
-    assert np.isfinite(model.rho).all()
+    with pytest.raises(ValueError, match=r"need >= 10 volumes above b=100"):
+        estimate_noise_model(dwi, bvals, np.ones(shape, bool), patch=(5, 5, 3))
 
 
 def test_the_auto_mask_is_the_whole_brain_not_the_eroded_interior():
@@ -192,8 +167,7 @@ def test_a_non_bool_mask_does_not_become_an_integer_index():
     """`... & mask` with a uint8 mask makes `d[good]` a fancy INDEX, not a selection."""
     model = _model_with_rho(_separable_rho(4), lag=4)
     model.mask = np.ones((8, 8, 4), np.uint8)          # what get_fdata().astype() gives
-    assert NoiseModel(rho=model.rho, group=model.group, d=model.d,
-                      sigma_p2s=model.sigma_p2s, sigma_shell=model.sigma_shell,
+    assert NoiseModel(rho=model.rho, d=model.d, sigma_p2s=model.sigma_p2s,
                       mask=np.ones((8, 8, 4), np.uint8), lag=4).mask.dtype == bool
 
 

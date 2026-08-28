@@ -45,15 +45,13 @@ def test_denoise_writes_image_noise_map_and_qc(dataset, capsys):
     assert sigma_hat.shape == (34, 34, 16), "the noise map is 3D, not 4D with a stale dim4"
     assert np.median(sigma_hat[sigma_hat > 0]) == pytest.approx(10.0, rel=0.2)
 
-    for name in ("rho_shell00.nii.gz", "rho_shell01.nii.gz", "noise_field_d.nii.gz",
-                 "sigma_p2s.nii.gz", "mask.nii.gz", "sigma_hat.nii.gz", "rank.nii.gz",
-                 "provenance.json"):
+    for name in ("rho.nii.gz", "noise_field_d.nii.gz", "sigma_p2s.nii.gz", "mask.nii.gz",
+                 "sigma_hat.nii.gz", "rank.nii.gz", "provenance.json"):
         assert (qc / name).exists(), name
 
     prov = json.loads((qc / "provenance.json").read_text())
-    assert prov["model"]["per_shell"] is True
     assert prov["denoise"]["sigma_units"] == "data"
-    assert len(prov["sigma_shell"]) == 2
+    assert prov["model"]["n_dwi"] < prov["model"]["n_vols"], "b0s stay out of the fit"
 
 
 def test_estimate_writes_qc_but_no_image(dataset):
@@ -73,14 +71,13 @@ def test_estimate_without_qc_writes_nothing_and_says_so(dataset, capsys):
     assert "nothing written" in capsys.readouterr().err
 
 
-def test_denoise_without_a_gradient_table_is_single_shell(dataset):
+def test_denoise_without_a_gradient_table_uses_every_volume(dataset):
     qc = dataset / "qc_nograd"
     rc = main(["denoise", str(dataset / "in.nii.gz"), str(dataset / "out2.nii.gz"),
                "--qc", str(qc), "--patch", "5", "5", "3", "-q"])
     assert rc == 0
     prov = json.loads((qc / "provenance.json").read_text())
-    assert prov["model"]["per_shell"] is False
-    assert not (qc / "rho_shell01.nii.gz").exists()
+    assert prov["model"]["n_dwi"] == prov["model"]["n_vols"], "no bvals, so no b0 to drop"
 
 
 def test_even_patch_is_rejected(dataset):
@@ -89,16 +86,16 @@ def test_even_patch_is_rejected(dataset):
               "--patch", "4", "5", "5", *_grad(dataset)])
 
 
-def test_qc_rerun_does_not_leave_a_stale_shell_behind(dataset):
-    """A QC dir must describe ONE model: rho_shell01 from a two-shell run must not
-    survive a one-shell re-run whose provenance.json says one shell."""
+def test_a_qc_rerun_overwrites_rather_than_accumulates(dataset):
+    """A QC dir must describe ONE model, so a re-run replaces what the last one wrote."""
     qc = dataset / "qc_rerun"
     main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc), "--patch", "5", "5", "3",
           "-q", *_grad(dataset)])
-    assert (qc / "rho_shell01.nii.gz").exists()
+    first = json.loads((qc / "provenance.json").read_text())["model"]
 
-    main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc), "--patch", "5", "5", "3",
-          "-q", "--per-shell", "no", *_grad(dataset)])
-    assert (qc / "rho_shell00.nii.gz").exists()
-    assert not (qc / "rho_shell01.nii.gz").exists()
-    assert json.loads((qc / "provenance.json").read_text())["model"]["per_shell"] is False
+    main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc), "--patch", "5", "5", "5",
+          "-q", *_grad(dataset)])
+    second = json.loads((qc / "provenance.json").read_text())["model"]
+
+    assert first["patch"] == [5, 5, 3] and second["patch"] == [5, 5, 5]
+    assert second["lag"] == 4

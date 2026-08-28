@@ -13,9 +13,9 @@ Every public name here is re-exported from ``camppca`` itself.
 
 import numpy as np
 
-from ..noise_model import NoiseModel, estimate_noise_model
+from ..noise_model import estimate_noise_model
 from ..patch import check_patch
-from .camppca import denoise_white_percol
+from .camppca import denoise_whitened
 from .result import DenoiseResult
 from .mppca import denoise_mppca
 
@@ -26,12 +26,11 @@ D_CLIP = (0.2, 5.0)
 
 
 def _effective_d(d, mask):
-    """The level field exactly as the engine normalizes and clips it internally.
+    """Median-normalize and clip the level field. The one place this happens.
 
-    ⚠ MIRRORS ``camppca.denoise_white_percol`` (the ``d_field`` block).  It has to: the
-    engine rescales the denoised image by this field at the centre voxel but NOT
-    ``sigma_hat``, so putting sigma_hat back into data units means applying the same
-    field.  Keep the two in sync.
+    The engine takes the field as given and rescales the denoised image by it at the centre
+    voxel, but NOT ``sigma_hat``. Putting sigma_hat back into data units therefore means
+    applying this same field, which is why it is computed here and passed down.
     """
     d = np.asarray(d, np.float32)
     mask = np.asarray(mask, bool)          # a uint8 mask makes `d[good]` a fancy INDEX
@@ -66,21 +65,17 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
     if dwi.shape[:3] != model.mask.shape:
         raise ValueError(f"dwi spatial shape {dwi.shape[:3]} != model mask "
                          f"{model.mask.shape}")
-    if dwi.shape[3] != model.group.size:
-        raise ValueError(f"dwi has {dwi.shape[3]} volumes, model covers "
-                         f"{model.group.size}")
 
-    Cs = model.patch_correlation(patch)
+    C = model.patch_correlation(patch)
     d_eff = _effective_d(model.d, model.mask) if noise_field else None
 
-    denoised, sigma_hat, rank = denoise_white_percol(
-        dwi, model.mask, Cs, model.group, column_scale=model.column_scale(),
-        patch=tuple(int(v) for v in patch), algo=algo, tile=tile, d_field=d_eff)
+    denoised, sigma_hat, rank = denoise_whitened(
+        dwi, model.mask, C, patch=tuple(int(v) for v in patch), algo=algo, tile=tile,
+        d_field=d_eff)
 
     if d_eff is not None and sigma_units == "data":
-        # The engine rescales the IMAGE by d at the centre voxel but not sigma_hat
-        # (camppca.py, the `xh = xh * gp[:, center, None]` line). Do it here, or the
-        # normalization convention leaks into the headline number.
+        # The engine rescales the IMAGE by d at the centre voxel but not sigma_hat.
+        # Do it here, or the normalization convention leaks into the headline number.
         sigma_hat = sigma_hat * d_eff
 
     prov = dict(method="camppca", patch=tuple(int(v) for v in patch), algo=algo,
@@ -92,7 +87,7 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
 
 
 def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=True,
-                    per_shell="auto", algo="cordero-grande", tile=256, sigma_units="data",
+                    algo="cordero-grande", tile=256, sigma_units="data",
                     **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
@@ -101,6 +96,6 @@ def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=Tru
     intermediates.
     """
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
-                                 per_shell=per_shell, **estimate_kwargs)
+                                 **estimate_kwargs)
     return denoise_with_noise_model(dwi, model, patch=patch, noise_field=noise_field,
                                     algo=algo, tile=tile, sigma_units=sigma_units)
