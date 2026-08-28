@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .noise_model import NoiseModel
+from ..noise_model import NoiseModel
 
 __all__ = ["DenoiseResult"]
 

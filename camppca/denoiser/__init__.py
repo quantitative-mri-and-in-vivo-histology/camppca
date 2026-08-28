@@ -5,7 +5,8 @@ Source-agnostic by design. ``denoise_with_noise_model`` consumes a
 alignment-based estimator feeds the same code.
 
 ``camppca.py`` is the covariance-aware method, ``mppca.py`` the standard white-noise one.
-What they share lives in ``camppca.mp``, ``camppca.gather`` and ``camppca.patch``.
+What they share lives in ``mp_threshold.py``, ``gather.py`` and ``result.py``, next to
+them. JAX lives in this subpackage and nowhere else in the package.
 
 Every public name here is re-exported from ``camppca`` itself.
 """
@@ -14,8 +15,8 @@ import numpy as np
 
 from ..noise_model import NoiseModel, estimate_noise_model
 from ..patch import check_patch
-from ..result import DenoiseResult
 from .camppca import denoise_white_percol
+from .result import DenoiseResult
 from .mppca import denoise_mppca
 
 __all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",

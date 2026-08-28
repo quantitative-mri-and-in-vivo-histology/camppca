@@ -8,7 +8,7 @@ implementation.
 import numpy as np
 import pytest
 
-from camppca.mp import ALGORITHMS, mp_threshold
+from camppca.denoiser.mp_threshold import ALGORITHMS, mp_threshold
 
 N_VOX, N_VOLS = 125, 40
 N_SMALL, N_LARGE = min(N_VOX, N_VOLS), max(N_VOX, N_VOLS)

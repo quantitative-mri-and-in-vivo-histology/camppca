@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .patch import check_patch, patch_offsets
+from ..patch import check_patch, patch_offsets
 
 __all__ = ["gather_budget_bytes", "patch_tiles"]
 

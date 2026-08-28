@@ -42,9 +42,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..gather import gather_budget_bytes
-from ..mp import mp_threshold
 from ..patch import check_patch, patch_offsets
+from .gather import gather_budget_bytes
+from .mp_threshold import mp_threshold
 
 
 # patch correlation helpers

@@ -19,8 +19,8 @@ import jax.numpy as jnp
 from functools import partial
 
 from camppca.patch import patch_offsets as patch_offsets
-from camppca.gather import gather_budget_bytes
-from camppca.mp import mp_threshold
+from camppca.denoiser.gather import gather_budget_bytes
+from camppca.denoiser.mp_threshold import mp_threshold
 
 
 def _tile_white(patches, Wmat, center: int, n_small: int, n_large: int, algo: str):

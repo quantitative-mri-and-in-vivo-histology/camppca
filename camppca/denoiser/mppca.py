@@ -27,10 +27,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..gather import patch_tiles
-from ..mp import mp_threshold
 from ..patch import check_patch, patch_size
-from ..result import DenoiseResult
+from .gather import patch_tiles
+from .mp_threshold import mp_threshold
+from .result import DenoiseResult
 
 __all__ = ["denoise_mppca"]
 
@@ -79,13 +79,13 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
             through. Defaults to the whole volume.
         patch: box shape, three odd integers.
         algorithm: which Marchenko-Pastur variant to cut with, see
-            :data:`camppca.mp.ALGORITHMS`.
+            :data:`~camppca.denoiser.mp_threshold.ALGORITHMS`.
         tile: maximum patches per device batch, to bound memory.
-        on_device: patch-gather strategy, see :func:`camppca.gather.patch_tiles`. The
+        on_device: patch-gather strategy, see :func:`~camppca.denoiser.gather.patch_tiles`. The
             default decides from free device memory.
 
     Returns:
-        A :class:`~camppca.result.DenoiseResult` with ``model`` unset, since standard
+        A :class:`~camppca.denoiser.result.DenoiseResult` with ``model`` unset, since standard
         MP-PCA does not use a noise model.
 
     Raises:
