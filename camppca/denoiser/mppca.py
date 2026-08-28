@@ -5,9 +5,8 @@ for two reasons: it is the standard-MP-PCA comparison arm, and it owns
 ``_mp_threshold_jax`` (the Marchenko-Pastur cutoff rule) and
 ``_device_gather_budget_bytes``, both of which the covariance-aware engine imports.
 
-Ported from ``src/warp_denoise/mppca.py`` (see reference/). The bodies are verbatim apart
-from the two dropped branches noted below; the NAMES were moved to CLAUDE.md's notation
-once the self-test was green:
+Ported from ``src/warp_denoise/mppca.py`` (see reference/); the NAMES were moved to
+CLAUDE.md's notation once the self-test was green:
 
     kernel     -> patch                the box shape (paper M = n_vox voxels in it)
     P, N       -> n_vox, n_vols
@@ -15,14 +14,9 @@ once the self-test was green:
                                        The old names read as patch-M and patch-N; they
                                        never meant that.
 
-Port of DESIGNER-v2's ``lib/mpdenoise_adaptive.py`` (``MP`` class) with a single JAX
-implementation: the per-voxel loop is replaced by a batched device kernel, so the same
-estimator runs on the CPU (default JAX backend) or the GPU (``jax`` with a CUDA build).
-
-DESIGNER's two optional branches -- bilateral top-``n_keep`` patch selection and
-Gavish-Donoho Frobenius shrinkage -- are not carried over. Nothing in camppca ever used
-them: the comparison arm is the plain full cube with a hard threshold (mrtrix
-``dwidenoise`` style), and CLAUDE.md fixes the hard threshold as the method.
+One JAX implementation for both backends: the per-voxel loop is a batched device kernel,
+so the same estimator runs on the CPU (default JAX backend) or the GPU (``jax`` with a
+CUDA build).
 
 Method per target voxel:
 
@@ -196,9 +190,6 @@ def denoise_mppca(
     on_device_gather: bool | None = None,
 ):
     """MPPCA denoise a 4D volume ``(X, Y, Z, n_vols)`` on the JAX backend (CPU or GPU).
-
-    Every patch is the plain full cube (mrtrix ``dwidenoise`` style) and the spectrum is
-    hard-thresholded. See the module docstring for the DESIGNER options left behind.
 
     ``col_weights`` (X,Y,Z,n_vols): optional per-voxel per-volume noise scale ``‖w‖``; each
     patch is column-whitened by its centre voxel's weights before the eigendecomposition.
