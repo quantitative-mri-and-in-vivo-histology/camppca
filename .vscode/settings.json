@@ -2,12 +2,16 @@
   // Editor/Python settings live here rather than in devcontainer.json so the
   // two container configs (default / gpu) share one copy, and so
   // they also apply when the folder is opened outside a container.
-  "editor.formatOnSave": true,
+  "editor.formatOnSave": false,
+  // Format-on-save is OFF deliberately. The engine under camppca/denoiser/ is a port
+  // whose bodies are kept comparable line-by-line against reference/, and a save-time
+  // reformat rewrites ~800 lines across 16 files -- churn that leaks into unrelated
+  // commits. Format explicitly when you mean to: `ruff format camppca tests`.
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
-    "editor.formatOnSave": true,
+    "editor.formatOnSave": false,
     "editor.codeActionsOnSave": {
-      "source.organizeImports": "explicit"
+      "source.organizeImports": "never"
     }
   },
   "python.defaultInterpreterPath": "/usr/local/bin/python3",

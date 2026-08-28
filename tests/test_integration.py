@@ -19,9 +19,8 @@ test will read as a broken estimator if you let it.
 import numpy as np
 import pytest
 
-from camppca import denoise, estimate_noise_model
+from camppca import denoise_camppca, denoise_mppca, estimate_noise_model
 from camppca.denoiser import denoise_with_noise_model
-from camppca.denoiser.mppca import denoise_adaptive
 from camppca.patch import patch_offsets
 
 SIGMA_TRUE = 10.0
@@ -65,7 +64,7 @@ def model(dataset):
 
 def test_estimator_recovers_the_injected_correlation(model):
     lag = model.lag
-    rho = model.rho[0]
+    rho = model.rho
     want_x, want_y = _filter_rho(HX, lag), _filter_rho(HY, lag)
 
     assert rho[lag, lag, 0] == pytest.approx(1.0)
@@ -86,7 +85,7 @@ def test_whitening_collapses_the_patch_off_diagonals(model, dataset):
 
     dwi, _, mask = dataset
     patch = (5, 5, 3)
-    C = model.patch_correlation(patch)[0]
+    C = model.patch_correlation(patch)
     W = sqrtm_psd(C, -0.5)
 
     rng = np.random.default_rng(1)
@@ -128,9 +127,8 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
     dwi, bvals, mask = dataset
     patch = (5, 5, 3)
 
-    ours = denoise(dwi, bvals, mask, patch=patch).sigma_hat
-    _, white, _ = denoise_adaptive(dwi, mask, patch=patch, algorithm="cordero-grande",
-                                   shrinkage="threshold", adaptive=False)
+    ours = denoise_camppca(dwi, bvals, mask, patch=patch).sigma_hat
+    white = denoise_mppca(dwi, mask, patch=patch).sigma_hat
 
     ours_med, white_med = np.median(ours[mask]), np.median(white[mask])
     # Measured: camppca ~10.0, white MP-PCA ~5.3 against a true 10.0.
@@ -141,11 +139,10 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
 
 def test_denoise_reduces_variance_and_keeps_shape(dataset):
     dwi, bvals, mask = dataset
-    result = denoise(dwi, bvals, mask, patch=(5, 5, 3))
+    result = denoise_camppca(dwi, bvals, mask, patch=(5, 5, 3))
 
     assert result.denoised.shape == dwi.shape
     assert result.sigma_hat.shape == dwi.shape[:3]
-    assert result.model.n_shells >= 1
     passthrough = dwi.astype(result.denoised.dtype)      # engine works in float32
     assert np.all(result.denoised[~mask] == passthrough[~mask]), "outside the mask is untouched"
     assert (dwi - result.denoised)[mask].std() < SIGMA_TRUE * 1.2
@@ -168,7 +165,7 @@ def test_denoise_refuses_a_patch_the_model_cannot_serve(dataset, model):
         denoise_with_noise_model(dwi, model, patch=(9, 9, 9))
 
 
-def test_denoise_refuses_a_mismatched_volume_count(dataset, model):
+def test_denoise_refuses_a_mismatched_spatial_shape(dataset, model):
     dwi, _, _ = dataset
-    with pytest.raises(ValueError, match="model covers"):
-        denoise_with_noise_model(dwi[..., :-1], model, patch=(5, 5, 3))
+    with pytest.raises(ValueError, match="model mask"):
+        denoise_with_noise_model(dwi[:-1], model, patch=(5, 5, 3))

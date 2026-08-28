@@ -35,15 +35,13 @@ __all__ = ["main"]
 
 def _add_common(p):
     p.add_argument("-fslgrad", nargs=2, metavar=("BVEC", "BVAL"),
-                   help="FSL gradient table. Without it every volume is treated as one "
-                        "shell, and no volume can be recognised as a b0.")
+                   help="FSL gradient table. Without it no volume can be recognised as "
+                        "a b0, so every volume enters the fit.")
     p.add_argument("--mask", metavar="PATH", help="brain mask; estimated from the mean b0 "
                                                   "when omitted")
     p.add_argument("--patch", type=int, nargs=3, default=(5, 5, 5), metavar=("X", "Y", "Z"),
                    help="patch shape, odd in every dimension (default: 5 5 5)")
     p.add_argument("--qc", metavar="DIR", help="write QC byproducts here")
-    p.add_argument("--per-shell", choices=("auto", "yes", "no"), default="auto",
-                   help="fit one correlation pattern per shell (default: auto)")
     p.add_argument("--lowb", type=float, default=100.0,
                    help="b-value at or below which a volume counts as a b0 (default: 100)")
     p.add_argument("-q", "--quiet", action="store_true")
@@ -73,26 +71,20 @@ def _load(args):
     bvals = io.load_bvals(args.fslgrad[1]) if args.fslgrad else None
     mask = None
     if args.mask:
-        mask = np.asanyarray(io._nib().load(args.mask).dataobj) > 0.5
-    per_shell = {"auto": "auto", "yes": True, "no": False}[args.per_shell]
-    return dwi, bvals, mask, affine, header, per_shell
+        mask = io.load_mask(args.mask)
+    return dwi, bvals, mask, affine, header
 
 
 def _write_qc(directory, model, affine, result=None):
     """Free byproducts, as things to look at. Not a reload unit -- see the module docstring."""
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
-    for stale in out.glob("rho_shell*.nii.gz"):
-        stale.unlink()          # a re-run with fewer shells must not leave a stale one
-                                # beside a provenance.json that describes the new model
-
-    for s in range(model.n_shells):
-        io.save_like(out / f"rho_shell{s:02d}.nii.gz", model.rho[s], np.eye(4))
+    io.save_like(out / "rho.nii.gz", model.rho, np.eye(4))
     io.save_like(out / "noise_field_d.nii.gz", model.d, affine)
     io.save_like(out / "sigma_p2s.nii.gz", model.sigma_p2s, affine)
     io.save_like(out / "mask.nii.gz", model.mask.astype(np.uint8), affine, dtype=np.uint8)
 
-    prov = dict(model=model.provenance, sigma_shell=model.sigma_shell)
+    prov = dict(model=model.provenance)
     if result is not None:
         io.save_like(out / "sigma_hat.nii.gz", result.sigma_hat, affine)
         io.save_like(out / "rank.nii.gz", result.rank, affine)
@@ -103,7 +95,7 @@ def _write_qc(directory, model, affine, result=None):
 
 
 def _plot_rho(path, model):
-    """Lag profiles per shell. Optional: skipped, loudly, without matplotlib."""
+    """Lag profiles along each axis. Optional: skipped, loudly, without matplotlib."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -111,20 +103,16 @@ def _plot_rho(path, model):
     except ImportError:
         return False
 
-    lag = model.lag
-    fig, axes = plt.subplots(1, model.n_shells, figsize=(4 * model.n_shells, 3.2),
-                             squeeze=False)
-    for s, ax in enumerate(axes[0]):
-        rho = model.rho[s]
-        k = np.arange(-lag, lag + 1)
-        ax.plot(k, rho[:, lag, 0], "o-", label="along x")
-        ax.plot(k, rho[lag, :, 0], "s-", label="along y")
-        ax.plot(np.arange(rho.shape[2]), rho[lag, lag, :], "^-", label="along z")
-        ax.axhline(0.0, lw=0.8, color="0.6")
-        ax.set_title(f"shell {s}")
-        ax.set_xlabel("lag (voxels)")
-        ax.set_ylabel("correlation")
-        ax.legend(fontsize=8)
+    lag, rho = model.lag, model.rho
+    fig, ax = plt.subplots(figsize=(4.5, 3.2))
+    k = np.arange(-lag, lag + 1)
+    ax.plot(k, rho[:, lag, 0], "o-", label="along x")
+    ax.plot(k, rho[lag, :, 0], "s-", label="along y")
+    ax.plot(np.arange(rho.shape[2]), rho[lag, lag, :], "^-", label="along z")
+    ax.axhline(0.0, lw=0.8, color="0.6")
+    ax.set_xlabel("lag (voxels)")
+    ax.set_ylabel("correlation")
+    ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
@@ -134,14 +122,14 @@ def _plot_rho(path, model):
 def main(argv=None):
     args = _parser().parse_args(argv)
     say = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
-    dwi, bvals, mask, affine, header, per_shell = _load(args)
+    dwi, bvals, mask, affine, header = _load(args)
     patch = tuple(args.patch)
 
     say(f"  {Path(args.input).name}  {dwi.shape}")
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
-                                 per_shell=per_shell, lowb=args.lowb)
-    lag1 = model.rho[0][model.lag + 1, model.lag, 0]
-    say(f"  noise model: {model.n_shells} shell(s), lag {model.lag}, "
+                                 lowb=args.lowb)
+    lag1 = model.rho[model.lag + 1, model.lag, 0]
+    say(f"  noise model: lag {model.lag}, "
         f"rho(x=1) {lag1:+.3f}, sigma_p2s median "
         f"{np.median(model.sigma_p2s[model.mask]):.1f}")
 

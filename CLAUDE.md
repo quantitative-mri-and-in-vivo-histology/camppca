@@ -43,10 +43,10 @@ patch shape, so it is computed on demand, never stored.
 | object | paper | code | notes |
 |---|---|---|---|
 | patch matrix, rows = voxels | X (M×N) | — | |
-| unit-diagonal patch correlation | C | `C`, stacked `Cs` | **not** `R` |
+| unit-diagonal patch correlation | C | `C` | **not** `R` |
 | lag correlation table | ρ(h) | `rho` | `rho[dx+lag, dy+lag, abs(dz)]`, 1.0 at zero lag |
 | patch noise covariance | Σ = σ²DCD | — | **paper only** — never materialized in code |
-| whitener | W = (DCD)^(-1/2) | `Wcol` + row division by `d` | **σ-free by design** |
+| whitener | W = (DCD)^(-1/2) | `whitener` + row division by `d` | **σ-free by design** |
 | relative level field | d(x) | `d` | **not** `g` — that is the g-factor |
 | diagonal level matrix | D = diag(d) | `D` | |
 | true noise level | σ | — | |
@@ -56,7 +56,6 @@ patch shape, so it is computed on demand, never stored.
 | aspect ratio | γ = N/M | — | |
 | box shape, e.g. (5,5,5) | — | `patch` | a **denoiser** knob, not a noise property |
 | max lag covered by `rho` | — | `lag` / `LAG` | |
-| volume → shell index | — | `group` | |
 
 ⚠ **The whitener is σ-free on purpose.** `W = (DCD)^(-1/2)`, *not* `Σ^(-1/2)`. Whitening
 by `Σ^(-1/2)` would divide the noise level out, MP-PCA would estimate σ̂ = 1, and the
@@ -76,9 +75,8 @@ stays in the data for the per-patch MP fit to find.
 | M | `P` = prod(patch) | voxels in a patch |
 | N | `N` | volumes |
 | — | `V` | mask voxels |
-| — | `S` | shells |
 
-In code these are spelled `n_vox`, `n_vols`, `n_mask`, `n_shells` — the bare letters were
+In code these are spelled `n_vox`, `n_vols`, `n_mask` — the bare letters were
 renamed once the self-test was green. `Mp`/`Np` became **`n_small`/`n_large`**: the
 reference had `Mp, Np = min(P, N), max(P, N)`, the *sorted* pair, so under this notation
 the old names read as patch-M and patch-N, which they never meant.
@@ -117,10 +115,14 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
         __init__.py        NoiseModel, estimate_noise_model() -> NoiseModel
         p2s.py             Patch2Self: residuals, rho, sigma_p2s        numpy
         masks.py           brain mask, stable region                    numpy
-      denoiser/
-        __init__.py        denoise(), denoise_with_noise_model() -> DenoiseResult
-        camppca.py         covariance-aware MP-PCA — the method         jax
-        mppca.py           plain white MP-PCA — baseline arm + the shared MP threshold
+      denoiser/          every JAX import in the package lives under here
+        __init__.py        denoise_camppca(), denoise_with_noise_model()
+        camppca.py         covariance-aware MP-PCA — the method
+        mppca.py           standard white-noise MP-PCA
+        mp_threshold.py    mp_threshold() — the Marchenko-Pastur cutoff rule
+        gather.py          patch extraction and the device-memory decision
+        result.py          DenoiseResult, what both denoisers return
+      patch.py             patch geometry — both halves of the seam need it
       io.py                nibabel edge
       cli.py               camppca denoise | estimate
       __init__.py          public names; XLA env var set before jax loads
@@ -128,12 +130,18 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
 One subpackage per half of the seam. The package name carries the noun, so files inside
 do not repeat it, and each `__init__.py` is that half's public face.
 
+**The public API is flat.** Everything a user calls is `camppca.<name>`:
+`denoise_camppca`, `denoise_mppca`, `denoise_with_noise_model`, `estimate_noise_model`,
+`brain_mask`, `NoiseModel`, `DenoiseResult`. Nothing public needs a `camppca.denoiser.`
+or `camppca.noise_model.` prefix.
+
 - **Never `estimate` or `model` bare** — they do not say *what* is estimated or modeled.
   It is always the **noise model**: `estimate_noise_model`, `denoise_with_noise_model`.
   This deviates from the port brief's frozen `estimate_noise` / `denoise_with_model`,
   deliberately.
-- `denoiser/camppca.py` is the method; `denoiser/mppca.py` is a **reference/baseline arm**
-  only. Say so in its module header — it is the one file not on the main path.
+- `mp_threshold.py`, `gather.py` and `result.py` sit in `denoiser/` because only the two
+  denoisers use them. `patch.py` sits above it because the estimator needs it too. That
+  split is what keeps JAX out of the estimator half.
 - `NoiseModel` lives in `noise_model/__init__.py`, not with the P2S math: a future
   alignment-based estimator builds the same object and must not import P2S to get it.
 - Flat, with `noise_model_p2s.py`-style prefixes, is the same structure with the noun
@@ -147,9 +155,11 @@ Breaking any of these corrupts results without an error:
 - Patch flattening is **C-order, z fastest**; `rho[dx+lag, dy+lag, abs(dz)]`. Paired —
   the two orders must agree.
 - `rho` is a correlation (unit at zero lag): **pattern only**. The absolute level comes
-  from the per-patch MP fit. Only *ratios* of `d` and the per-shell level matter.
+  from the per-patch MP fit. Only *ratios* of `d` matter.
 - **`d` is normalized by the median**, in both the row-scale field and per-patch.
-- Per-shell patterns are fit **within** each shell, never pooled across shells.
+- **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
+  once across every diffusion volume, and b0s stay out of that fit because their residual
+  level does not represent diffusion-weighted noise.
 - **Centre-voxel only** — no overlap averaging. Intentional; matches the MP theory the
   noise estimate rests on. Users coming from `dwidenoise` may expect averaging.
 - **P2S radius 0 is mandatory**, not a simplification. A radius>0 predictor regresses on
@@ -167,11 +177,11 @@ Breaking any of these corrupts results without an error:
 ## API rules
 
 - **`sigma_hat` is returned in data units.** The engine rescales the denoised image by
-  `d` at the center voxel but *not* `sigma_hat` (`whitened.py:208` vs `:211`), so the API
-  must apply that multiply by default. σ̂ is the headline metric — a normalization
-  convention must not leak into the reported number. Normalized form is opt-in.
-- Before porting, capture the reference `selftest()` output as a **golden baseline**.
-  "Selftest green" only means something against the pre-port numbers.
+  `d` at the center voxel but *not* `sigma_hat`, so the API must apply that multiply by
+  default. σ̂ is the headline metric — a normalization convention must not leak into the
+  reported number. Normalized form is opt-in.
+- `_effective_d` in `denoiser/__init__.py` is the **only** place `d` is normalized and
+  clipped. The engine takes the field as given.
 
 ## Gotchas
 

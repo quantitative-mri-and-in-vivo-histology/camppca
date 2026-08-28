@@ -7,11 +7,9 @@ gives ``sigma_p2s``, the absolute noise level.
 Radius 0 is mandatory, not a simplification: a radius>0 predictor regresses each voxel
 on its spatial neighbors, which biases the very spatial correlation being estimated.
 
-Ported verbatim from ``scripts/henriques/kernel_stability.py`` (see reference/), except
-that ``rho_region``'s ``lag``/``dzmax`` are required here -- upstream they defaulted to a
-module global and to 2, both wrong for any patch deeper than 3 slices.
-
-Pure numpy. Nothing here imports JAX.
+``rho_region`` takes ``lag`` and ``dzmax`` explicitly, with no defaults: both follow
+from the patch shape (``LAG = max(patch) - 1``), and any fixed default wraps the lag
+lookup around for a patch deeper than 3 slices -- silently, with no error.
 """
 
 import numpy as np
@@ -77,7 +75,7 @@ def noise_map(res, infl, dwi_cols):
     give you, because it does not expose the weights.
 
     ``dwi_cols`` selects the columns to average over (b0 residual levels are not
-    representative of DWI noise).  Kept explicit: the two canonical upstream call sites
-    disagree on the cut, so the policy belongs to the caller.
+    representative of DWI noise).  There is no single right cut, so the policy belongs to
+    the caller.
     """
     return np.sqrt(np.mean(res[:, dwi_cols] ** 2 / infl[None, dwi_cols], axis=1))

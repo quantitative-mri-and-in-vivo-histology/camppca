@@ -7,19 +7,15 @@ the input's affine and header.
 
 import json
 
+import nibabel as nib
 import numpy as np
 
-__all__ = ["load_dwi", "load_bvals", "save_like", "save_json"]
-
-
-def _nib():
-    import nibabel as nib          # imported lazily: the core never needs it
-    return nib
+__all__ = ["load_dwi", "load_bvals", "load_mask", "save_like", "save_json"]
 
 
 def load_dwi(path, dtype=np.float32):
     """Load a 4D image. Returns ``(data, affine, header)``."""
-    img = _nib().load(str(path))
+    img = nib.load(str(path))
     if img.ndim != 4:
         raise ValueError(f"{path}: expected a 4D image, got shape {img.shape}")
     return np.asanyarray(img.dataobj, dtype=dtype), img.affine, img.header
@@ -33,13 +29,17 @@ def load_bvals(path):
     return bvals
 
 
+def load_mask(path):
+    """Load a mask image as a boolean array."""
+    return np.asanyarray(nib.load(str(path)).dataobj) > 0.5
+
+
 def save_like(path, data, affine, header=None, dtype=np.float32):
     """Write ``data`` as a NIfTI carrying the input's geometry.
 
     The header is only reused when the array still has the input's shape -- a 3-D map
     written with a 4-D header would carry a stale dim[4].
     """
-    nib = _nib()
     arr = np.asarray(data, dtype)
     use_header = header if (header is not None and arr.ndim == 4) else None
     nib.save(nib.Nifti1Image(arr, affine, use_header), str(path))
