@@ -20,6 +20,7 @@ Pure numpy/scipy. Nothing here imports JAX.
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy.ndimage import uniform_filter
 
 from ..patch import check_patch, patch_offsets, required_lag
 from .masks import brain_mask, interior_region, stable_region
@@ -99,8 +100,41 @@ def _build_C(rho, patch, lag):
     return R
 
 
+def _pool_level(level, mask, size):
+    """Neighbourhood-average a per-voxel level in VARIANCE, over mask voxels only.
+
+    Args:
+        level: (X, Y, Z) per-voxel noise level, zero outside ``mask``.
+        mask: (X, Y, Z) bool, the voxels that count.
+        size: box width in voxels. 1 leaves the field untouched.
+
+    Returns:
+        (X, Y, Z) pooled level, zero outside ``mask``.
+
+    The average is over squares because the square is the unbiased quantity, being a
+    residual second moment. Averaging levels instead biases low. Each voxel's squared
+    level carries a relative sampling variance of 2/nu with nu residual columns, about 7%
+    in the level at nu = 40, and averaging n voxels divides that by n. A 3^3 box takes it
+    under 2%. The cost is blur, roughly h^2 * lap(d^2) / 24 for a box of width h, so
+    ``size`` trades sampling noise against real structure.
+
+    Both sums run over mask voxels only, so the edge is not pulled toward the background.
+    ``mode="constant"`` extends that past the array edge: the default, ``reflect``, would
+    mirror the rim back in and count it twice.
+    """
+    if size <= 1:
+        return level
+    kw = dict(size=size, mode="constant", cval=0.0)
+    num = uniform_filter(np.where(mask, level, 0.0) ** 2, **kw)
+    den = uniform_filter(mask.astype(np.float64), **kw)
+    pooled = np.zeros_like(level)
+    ok = mask & (den > 0)
+    pooled[ok] = np.sqrt(num[ok] / den[ok])
+    return pooled
+
+
 def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, lowb=100,
-                         seed=0):
+                         seed=0, pool=3):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
     ``dwi``    (X, Y, Z, N) diffusion data.
@@ -111,6 +145,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     ``ncol``   residual columns subsampled for the rho fit.  Deterministic given ``seed``,
                so re-estimating gives an identical model.
     ``lowb``   b-value at or below which a volume counts as a b0.
+    ``pool``   box width, in voxels, the relative level field ``d`` is averaged over.
+               Averaged in variance, over mask voxels only; see :func:`_pool_level`.
+               1 disables it. ``sigma_p2s`` is never pooled.
 
     One pattern is fit across all the diffusion volumes.  b0s are excluded from the fit:
     their residual level is not representative of diffusion-weighted noise.
@@ -122,6 +159,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     lag = required_lag(check_patch(patch))
     dzmax = lag
     rng = np.random.default_rng(seed)
+    pool = int(pool)
+    if pool < 1:
+        raise ValueError(f"pool must be >= 1 voxel, got {pool}")
 
     if bvals is None:
         bvals = np.zeros(n_vols)
@@ -173,11 +213,14 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
 
     sigma_p2s = np.zeros(mask.shape, np.float32)
     sigma_p2s[mask] = sigma_vox
+    level = np.zeros(mask.shape, np.float64)
+    level[mask] = sigma_vox
+    level = _pool_level(level, mask, pool)
     d = np.zeros(mask.shape, np.float32)
-    d[mask] = sigma_vox / np.median(sigma_vox)      # median, not mean -- see CLAUDE.md
+    d[mask] = level[mask] / np.median(level[mask])  # median, not mean -- see CLAUDE.md
 
     prov = dict(patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
-                ncol=int(ncol), seed=int(seed), lowb=float(lowb),
+                ncol=int(ncol), seed=int(seed), lowb=float(lowb), pool=pool,
                 n_mask=int(mask.sum()), n_vols=int(n_vols), n_dwi=int(dwi_idx.size),
                 erode=int(erode_used), n_interior=int(interior.sum()),
                 bvals_sha=_bvals_hash(bvals))

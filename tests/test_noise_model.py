@@ -6,7 +6,7 @@ import sys
 import numpy as np
 import pytest
 
-from camppca.noise_model import NoiseModel, estimate_noise_model
+from camppca.noise_model import NoiseModel, _pool_level, estimate_noise_model
 from camppca.patch import patch_offsets
 
 
@@ -179,3 +179,40 @@ def test_brain_mask_with_erode_zero_does_not_erode_to_nothing():
     b0[4:16, 4:16, 3:9] = 100.0
     assert brain_mask(b0, erode=0).sum() > 0
     assert brain_mask(b0, erode=0).sum() > brain_mask(b0, erode=2).sum()
+
+
+def test_pooling_averages_squares_and_ignores_voxels_outside_the_mask():
+    mask = np.zeros((3, 1, 1), bool)
+    mask[:2] = True
+    level = np.array([3.0, 4.0, 100.0]).reshape(3, 1, 1)
+
+    pooled = _pool_level(level, mask, 3)
+
+    # Voxel 0 sees itself and voxel 1; voxel 2 is out of the mask and contributes nothing.
+    assert pooled[0, 0, 0] == pytest.approx(np.sqrt((9 + 16) / 2))
+    assert pooled[1, 0, 0] == pytest.approx(np.sqrt((9 + 16) / 2))
+    assert pooled[2, 0, 0] == 0.0
+    assert pooled[0, 0, 0] > np.mean([3.0, 4.0]), "averaging levels would bias low"
+
+
+def test_pooling_of_size_one_is_a_no_op():
+    mask = np.ones((4, 4, 4), bool)
+    level = np.random.default_rng(0).uniform(1, 2, (4, 4, 4))
+    assert np.array_equal(_pool_level(level, mask, 1), level)
+
+
+def test_estimate_pools_d_but_leaves_sigma_p2s_alone():
+    dwi, bvals, mask, _ = _synthetic(np.random.default_rng(5))
+    raw = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), pool=1)
+    pooled = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+
+    assert pooled.provenance["pool"] == 3, "pooling is on by default"
+    assert np.array_equal(raw.sigma_p2s, pooled.sigma_p2s), "sigma_p2s is never pooled"
+    assert np.median(pooled.d[mask]) == pytest.approx(1.0, abs=1e-5)
+    assert pooled.d[mask].std() < 0.6 * raw.d[mask].std(), "pooling cuts sampling scatter"
+
+
+def test_estimate_rejects_a_pool_smaller_than_one_voxel():
+    dwi, bvals, mask, _ = _synthetic(np.random.default_rng(6))
+    with pytest.raises(ValueError, match="pool must be"):
+        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), pool=0)
