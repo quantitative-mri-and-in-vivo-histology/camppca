@@ -79,6 +79,17 @@ def test_patch_correlation_refuses_a_patch_deeper_than_the_measured_dz():
         model.patch_correlation((5, 5, 3))
 
 
+def test_patch_correlation_refuses_a_table_that_is_not_a_valid_correlation():
+    """Lag-1 correlation 0.6 alone is indefinite on 5 voxels: 1 - 1.2 cos(pi/6) < 0."""
+    lag = 4
+    rho = np.zeros((2 * lag + 1, 2 * lag + 1, 1))
+    rho[lag, lag, 0] = 1.0
+    rho[lag - 1, lag, 0] = rho[lag + 1, lag, 0] = 0.6
+    model = _model_with_rho(rho, lag)
+    with pytest.raises(ValueError, match="smallest eigenvalue of C"):
+        model.patch_correlation((5, 1, 1))
+
+
 def test_estimate_serves_a_one_slice_patch_on_a_thin_volume():
     """An (11, 11, 1) patch on 9 slices used to crash: dzmax followed the in-plane reach."""
     dwi, bvals, _, _ = _synthetic(np.random.default_rng(5), shape=(40, 40, 3))

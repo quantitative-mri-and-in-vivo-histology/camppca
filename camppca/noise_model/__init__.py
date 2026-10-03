@@ -35,6 +35,12 @@ __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask", "stable_region"]
 #: but the level is badly biased, measured ~50% high.
 MIN_VOLUMES = 10
 
+#: Smallest eigenvalue a patch correlation may have. A lag table can be valid for one
+#: patch and indefinite for a larger one. `_build_C` then projects it to a C with
+#: eigenvalues near zero, whitening divides by them, and sigma_hat collapses to ~1e-7
+#: everywhere without an error.
+MIN_EIGENVALUE = 1e-3
+
 
 @dataclass
 class NoiseModel:
@@ -68,7 +74,8 @@ class NoiseModel:
 
         ``C`` is ``rho`` re-indexed into the geometry of this patch, PSD-projected to unit
         diagonal.  Raises if the patch needs lags this model never measured: without the
-        check, the index runs off the table and numpy wraps around silently.
+        check, the index runs off the table and numpy wraps around silently.  Also raises
+        if ``C`` is near singular (see :data:`MIN_EIGENVALUE`).
         """
         patch = check_patch(patch)
         need = required_lag(patch)
@@ -82,7 +89,16 @@ class NoiseModel:
                 f"patch {tuple(int(v) for v in patch)} needs through-slice lag "
                 f"{patch[2] - 1}, but this noise model only covers {dzmax}. Re-estimate "
                 f"with the deeper patch.")
-        return _build_C(self.rho, patch, self.lag)
+        C = _build_C(self.rho, patch, self.lag)
+        smallest = float(np.linalg.eigvalsh(C)[0])
+        if smallest < MIN_EIGENVALUE:
+            raise ValueError(
+                f"rho is not a valid correlation for patch "
+                f"{tuple(int(v) for v in patch)}: the smallest eigenvalue of C is "
+                f"{smallest:.2e}, below {MIN_EIGENVALUE:g}. Whitening divides by it, and "
+                f"sigma_hat would collapse toward zero. Estimate the noise model at this "
+                f"patch.")
+        return C
 
 
 def _build_C(rho, patch, lag):
