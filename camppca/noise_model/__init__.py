@@ -46,7 +46,8 @@ class NoiseModel:
     ``sigma_p2s``  (X, Y, Z) absolute P2S noise level.  An INPUT that drives whitening --
                    not to be confused with ``sigma_hat``, the MP-PCA output.
     ``mask``       (X, Y, Z) bool, the voxels the model was estimated on.
-    ``lag``        max lag ``rho`` covers; bounds the patch this model can serve.
+    ``lag``        max in-plane lag ``rho`` covers; with ``rho.shape[2] - 1``, the
+                   through-slice one, it bounds the patch this model can serve.
     """
 
     rho: np.ndarray
@@ -75,6 +76,12 @@ class NoiseModel:
             raise ValueError(
                 f"patch {tuple(int(v) for v in patch)} needs lag {need}, but this noise "
                 f"model only covers lag {self.lag}. Re-estimate with the larger patch.")
+        dzmax = self.rho.shape[2] - 1
+        if patch[2] - 1 > dzmax:
+            raise ValueError(
+                f"patch {tuple(int(v) for v in patch)} needs through-slice lag "
+                f"{patch[2] - 1}, but this noise model only covers {dzmax}. Re-estimate "
+                f"with the deeper patch.")
         return _build_C(self.rho, patch, self.lag)
 
 
@@ -156,8 +163,13 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
     n_vols = dwi.shape[3]
-    lag = required_lag(check_patch(patch))
-    dzmax = lag
+    patch = check_patch(patch)
+    if np.any(patch > np.asarray(dwi.shape[:3])):
+        # The denoiser wrap-pads, so a patch deeper than the volume holds one slice twice.
+        raise ValueError(f"patch {tuple(int(v) for v in patch)} is larger than the "
+                         f"volume {dwi.shape[:3]}")
+    lag = required_lag(patch)
+    dzmax = int(patch[2]) - 1
     rng = np.random.default_rng(seed)
     pool = int(pool)
     if pool < 1:

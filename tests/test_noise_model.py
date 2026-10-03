@@ -72,11 +72,38 @@ def test_patch_correlation_refuses_an_even_patch():
         model.patch_correlation((4, 5, 5))
 
 
+def test_patch_correlation_refuses_a_patch_deeper_than_the_measured_dz():
+    model = _model_with_rho(_separable_rho(4)[:, :, :1], lag=4)
+    model.patch_correlation((5, 5, 1))
+    with pytest.raises(ValueError, match="through-slice lag 2.*covers 0"):
+        model.patch_correlation((5, 5, 3))
+
+
+def test_estimate_serves_a_one_slice_patch_on_a_thin_volume():
+    """An (11, 11, 1) patch on 9 slices used to crash: dzmax followed the in-plane reach."""
+    dwi, bvals, _, _ = _synthetic(np.random.default_rng(5), shape=(40, 40, 3))
+    mask = np.zeros(dwi.shape[:3], bool)
+    mask[4:36, 4:36, :] = True
+    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 1))
+
+    assert model.rho.shape == (9, 9, 1)
+    assert np.isfinite(model.rho).all()
+    assert model.patch_correlation((5, 5, 1)).shape == (25, 25)
+
+
+def test_estimate_refuses_a_patch_larger_than_the_volume():
+    dwi, bvals, _, _ = _synthetic(np.random.default_rng(6), shape=(20, 20, 3))
+    mask = np.zeros(dwi.shape[:3], bool)
+    mask[3:17, 3:17, :] = True
+    with pytest.raises(ValueError, match="larger than the volume"):
+        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 5))
+
+
 def test_estimate_fits_one_pattern_over_every_diffusion_volume():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(0))
     model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
 
-    assert model.rho.shape == (9, 9, 5)
+    assert model.rho.shape == (9, 9, 3), "through-slice reach follows the patch depth"
     assert model.lag == 4
     assert model.provenance["n_vols"] == bvals.size
     assert model.provenance["n_dwi"] == int((bvals > 100).sum()), "b0s stay out of the fit"

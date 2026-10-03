@@ -24,12 +24,14 @@ def patch_size(patch):
 
 
 def required_lag(patch):
-    """The lag ``rho`` must cover for this patch: ``max(patch) - 1``.
+    """The in-plane lag ``rho`` must cover for this patch: ``max(patch[0], patch[1]) - 1``.
 
     Any smaller and lag lookup runs off the table -- which numpy answers with a
-    wraparound, not an error.
+    wraparound, not an error.  The through-slice reach is separate: ``patch[2] - 1``,
+    which is ``rho.shape[2] - 1``.
     """
-    return int(max(np.asarray(patch, int))) - 1
+    patch = np.asarray(patch, int)
+    return int(max(patch[0], patch[1])) - 1
 
 
 def check_patch(patch):
