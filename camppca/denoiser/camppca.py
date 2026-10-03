@@ -35,6 +35,7 @@ import numpy as np
 from ..patch import check_patch, patch_size
 from .gather import patch_tiles
 from .mp_threshold import mp_threshold
+from .shrink import shrink_weight, signal_alignment
 
 
 def sqrtm_psd(A, p=0.5, floor=1e-10):
@@ -73,38 +74,45 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str):
     return whitened, evals, evecs, rank, sigma_hat
 
 
-def _denoise_tile(patches, whitener, centre_row, n_small: int, n_large: int, algo: str):
+def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, algo: str,
+                  shrink: str):
     """Denoise a batch of whitened patches, returning the centre voxel of each.
 
     Args:
         patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
         whitener: (n_vox, n_vox) ``C^(-1/2)``.
         centre_row: (n_vox,) the centre row of ``C^(1/2)``, all that unwhitening needs.
+        C: (n_vox, n_vox) the patch correlation itself; only "lr" reads it.
         n_small: the smaller of ``n_vox`` and ``n_vols``.
         n_large: the larger of them.
         algo: which Marchenko-Pastur variant to cut with.
+        shrink: "hard", "gd" or "lr"; see :mod:`camppca.denoiser.shrink`.
 
     Returns:
         ``(signal, sigma_hat, rank)``: (B, n_vols) denoised centre spectra in whitened
         units, (B,) fitted noise level, (B,) retained component count.
     """
-    n_vols = patches.shape[2]
+    n_vox, n_vols = patches.shape[1], patches.shape[2]
 
-    whitened, _, evecs, rank, sigma_hat = _whiten_split(
+    whitened, evals, evecs, rank, sigma_hat = _whiten_split(
         patches, whitener, n_small, n_large, algo)
 
     centre = jnp.einsum("p,bpm->bm", centre_row, whitened)  # e_c^T C^(1/2) Yw
     coords = jnp.einsum("bm,bmk->bk", centre, evecs)
     keep = jnp.arange(n_vols)[None, :] < rank[:, None]
-    signal = jnp.einsum("bk,bnk->bn", jnp.where(keep, coords, 0.0), evecs)
+    kept = jnp.where(keep, coords, 0.0)
+    if shrink != "hard":
+        alignment = signal_alignment(whitened, evecs, evals, C) if shrink == "lr" else None
+        kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)
+    signal = jnp.einsum("bk,bnk->bn", kept, evecs)
     return signal, sigma_hat, rank
 
 
-_denoise_tile_jit = partial(jax.jit, static_argnums=(3, 4, 5))(_denoise_tile)
+_denoise_tile_jit = partial(jax.jit, static_argnums=(4, 5, 6, 7))(_denoise_tile)
 
 
 def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=256,
-                     d_field=None):
+                     d_field=None, shrink="hard"):
     """MP-PCA on the patch whitened by ``C^(-1/2)``.
 
     Args:
@@ -120,6 +128,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
             on the way out. What it adds over a per-patch sigma is the within-patch
             heteroscedasticity, which widens the noise bulk the same way off-diagonal
             colour does.
+        shrink: weight on the kept components; see :mod:`camppca.denoiser.shrink`.
 
     Returns:
         ``(denoised, sigma_hat, rank)``. ``sigma_hat`` is in d-normalized units; the
@@ -140,6 +149,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
 
     whitener = jnp.asarray(sqrtm_psd(C, -0.5), jnp.float32)
     centre_row = jnp.asarray(sqrtm_psd(C, 0.5)[center], jnp.float32)
+    C_device = jnp.asarray(C, jnp.float32)
 
     # The level field rides along as one extra column, so it is wrap-padded and gathered
     # by exactly the same indices as the data.
@@ -159,7 +169,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
             patches, levels = block[:, :, :n_vols], block[:, :, n_vols]
             patches = patches / levels[:, :, None]          # D^(-1): homoscedastic rows
         signal, tile_sigma, tile_rank = _denoise_tile_jit(
-            patches, whitener, centre_row, n_small, n_large, algo)
+            patches, whitener, centre_row, C_device, n_small, n_large, algo, shrink)
         if levels is not None:
             signal = signal * levels[:, center, None]       # back to data units at the centre
         denoised[coords] = np.asarray(signal)

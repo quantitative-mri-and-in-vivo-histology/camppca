@@ -31,12 +31,13 @@ from ..patch import check_patch, patch_size
 from .gather import patch_tiles
 from .mp_threshold import mp_threshold
 from .result import DenoiseResult
+from .shrink import RULES, check_shrink, shrink_weight
 
 __all__ = ["denoise_mppca"]
 
 
 def _denoise_tile(patches: jax.Array, center: int, n_small: int, n_large: int,
-                  algorithm: str) -> tuple[jax.Array, jax.Array, jax.Array]:
+                  algorithm: str, shrink: str) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Denoise a batch of patches, returning the centre voxel of each.
 
     Args:
@@ -45,12 +46,13 @@ def _denoise_tile(patches: jax.Array, center: int, n_small: int, n_large: int,
         n_small: the smaller of ``n_vox`` and ``n_vols``.
         n_large: the larger of them.
         algorithm: which Marchenko-Pastur variant to cut with.
+        shrink: "hard" or "gd"; see :mod:`camppca.denoiser.shrink`.
 
     Returns:
         ``(signal, sigma_hat, rank)``: (B, n_vols) denoised centre spectra, (B,) fitted
         noise level, (B,) retained component count.
     """
-    n_vols = patches.shape[2]
+    n_vox, n_vols = patches.shape[1], patches.shape[2]
 
     gram = jnp.einsum("bvn,bvm->bnm", patches, patches)
     evals, evecs = jnp.linalg.eigh(gram)                    # ascending
@@ -61,16 +63,19 @@ def _denoise_tile(patches: jax.Array, center: int, n_small: int, n_large: int,
 
     coords = jnp.einsum("bn,bnm->bm", patches[:, center, :], evecs)
     keep = jnp.arange(n_vols)[None, :] < rank[:, None]
-    signal = jnp.einsum("bm,bnm->bn", jnp.where(keep, coords, 0.0), evecs)
+    kept = jnp.where(keep, coords, 0.0)
+    if shrink != "hard":
+        kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols)
+    signal = jnp.einsum("bm,bnm->bn", kept, evecs)
     return signal, sigma_hat, rank
 
 
-_denoise_tile_jit = jax.jit(_denoise_tile, static_argnums=(1, 2, 3, 4))
+_denoise_tile_jit = jax.jit(_denoise_tile, static_argnums=(1, 2, 3, 4, 5))
 
 
 def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 5),
                   algorithm: str = "cordero-grande", tile: int = 256,
-                  on_device: bool | None = None) -> DenoiseResult:
+                  on_device: bool | None = None, shrink: str = "hard") -> DenoiseResult:
     """Denoise a 4D volume with standard MP-PCA.
 
     Args:
@@ -83,16 +88,20 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
         tile: maximum patches per device batch, to bound memory.
         on_device: patch-gather strategy, see :func:`~camppca.denoiser.gather.patch_tiles`. The
             default decides from free device memory.
+        shrink: weight on the kept components, "hard" (default), "gd" or "lr"; see
+            :mod:`camppca.denoiser.shrink`. With white noise "lr" is "gd".
 
     Returns:
         A :class:`~camppca.denoiser.result.DenoiseResult` with ``model`` unset, since standard
         MP-PCA does not use a noise model.
 
     Raises:
-        ValueError: if ``dwi`` is not 4D, ``mask`` does not match its spatial shape, or
-            ``patch`` is not three odd positive integers.
+        ValueError: if ``dwi`` is not 4D, ``mask`` does not match its spatial shape,
+            ``patch`` is not three odd positive integers, or ``shrink`` is unknown.
     """
     patch = check_patch(patch)
+    shrink = check_shrink(shrink)
+    tile_shrink = "gd" if shrink == "lr" else shrink   # C = I: the correction is exactly 1
     dwi = np.asarray(dwi, np.float32)
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X, Y, Z, N), got shape {dwi.shape}")
@@ -114,7 +123,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
 
     for coords, patches in patch_tiles(dwi, mask, patch, tile=tile, on_device=on_device):
         signal, tile_sigma, tile_rank = _denoise_tile_jit(
-            patches, center, n_small, n_large, algorithm)
+            patches, center, n_small, n_large, algorithm, tile_shrink)
         denoised[coords] = np.asarray(signal)
         sigma_hat[coords] = np.asarray(tile_sigma)
         rank[coords] = np.asarray(tile_rank)
@@ -122,5 +131,5 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,
         provenance=dict(method="mppca", patch=tuple(int(v) for v in patch),
-                        algorithm=algorithm,
-                        rule="hard threshold, no shrinkage, centre-voxel only"))
+                        algorithm=algorithm, shrink=shrink,
+                        rule=f"{RULES[tile_shrink]}, centre-voxel only"))
