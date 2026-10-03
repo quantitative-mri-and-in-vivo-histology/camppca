@@ -1,0 +1,273 @@
+"""The loop kernel: refine rho until it explains the MP-PCA bulk of every patch at once.
+
+MP-PCA splits each whitened patch into kept directions and a bulk. Given a kernel, the
+bulk of every patch must have the covariance that kernel says. A patch's bulk covariance
+is ``(I - Q_b) Sigma (I - Q_b)^T``, with ``Q_b`` the projector onto its kept directions in
+data units, so all patches together give one linear equation for ``Sigma``::
+
+    mean_b (I - Q_b) Sigma (I - Q_b)^T  =  S_pooled
+
+One round whitens every sampled patch with the current ``C``, splits it with the
+denoiser's own code (:func:`~camppca.denoiser.camppca._whiten_split`), solves that equation by
+Richardson iteration, and averages ``Sigma`` over lags into the next table. The current
+kernel enters a round only through each patch's rank and kept directions. Directions a
+patch kept are NOT filled in with the current kernel's values; that is what keeps the
+loop from drifting.
+
+The rounds stop when U of the patch correlation changes by less than :data:`LOOP_TOL`.
+U closes about half its remaining gap each round, and a start from P2S can dip and turn,
+so a looser tolerance stops early on a single small step.
+
+Directions EVERY patch keeps, such as the smooth patch-mean pattern, are invisible to the
+bulk, and the Richardson solve leaves them at zero. That is harmless inside the loop but
+not for describing the kernel, so the returned table is one least-squares fit over lag
+classes at the fixed point, with those directions truncated at :data:`RCOND`. It is not
+used inside the loop: there the smooth power it fills in pulls smooth leftover signal into
+the bulk, and the kernel runs away.
+
+Patch rows are divided by the clipped level field before whitening, exactly as the
+denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens.
+
+⚠ The loop runs in float64. The Richardson solve leaves the patch-mean direction at
+zero, so the next ``C`` is near singular there and whitening amplifies that direction by
+~3e4. MP-PCA keeps it and the bulk is untouched, but only in float64: in float32 its
+rounding error spills into the bulk and the ranks run to the maximum within one round.
+"""
+
+import warnings
+from functools import partial
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+from scipy.ndimage import binary_erosion
+
+from ..denoiser import _effective_d
+from ..denoiser.camppca import _whiten_split, sqrtm_psd
+from ..patch import patch_offsets
+from . import _build_C
+
+__all__ = ["loop_kernel"]
+
+N_CENTRES = 3000        # sampled patches the bulk is pooled over
+LOOP_TOL = 1e-3         # stop when U of C changes by less than this between rounds
+MAX_ROUNDS = 20
+N_INNER = 30            # Richardson steps per round
+RCOND = 1e-2            # design directions below this share of the largest are unobservable
+TILE = 256              # patches per device batch in the split
+ALGO = "cordero-grande"
+
+
+def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed):
+    """Refine a kernel until it is consistent with the MP-PCA bulk of the patches.
+
+    Args:
+        dwi: (X, Y, Z, N) data. Every volume enters, as every volume enters the denoiser.
+        mask: (X, Y, Z) bool.
+        d: (X, Y, Z) relative level field. Clipped by ``_effective_d`` as the denoiser
+            clips it.
+        rho_start: (2*lag+1, 2*lag+1, dzmax+1) table to start from.
+        patch: the patch the kernel must serve, as a length-3 int array.
+        lag: in-plane reach of ``rho_start``.
+        seed: seeds the choice of patch centres.
+
+    Returns:
+        ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
+        lag, and a dict with ``rounds``, ``converged``, ``u_kernel`` (U of the returned
+        table's patch correlation) and ``n_centres``.
+
+    Raises:
+        ValueError: if no mask voxel has its whole patch inside the mask.
+    """
+    patch = np.asarray(patch, int)
+    dzmax = rho_start.shape[2] - 1
+    centres = _sample_centres(mask, patch, np.random.default_rng(seed))
+    patches = _gather(dwi, _effective_d(d, mask), centres, patch)
+
+    with jax.enable_x64(True):
+        C = _build_C(rho_start, patch, lag)
+        u_prev = _sphericity_excess(C)
+        converged = False
+        for rounds in range(1, MAX_ROUNDS + 1):  # noqa: B007 - read after the loop
+            S, A, Bm, _ = _split(patches, C)
+            sigma = np.asarray(_solve(jnp.asarray(S), A, Bm))
+            C = _build_C(_lag_table(sigma, patch, lag, dzmax), patch, lag)
+            u = _sphericity_excess(C)
+            if abs(u - u_prev) < LOOP_TOL:
+                converged = True
+                break
+            u_prev = u
+        if not converged:
+            warnings.warn(f"loop kernel did not converge in {MAX_ROUNDS} rounds; U changed "
+                          f"by {abs(u - u_prev):.4f} in the last one, against a tolerance "
+                          f"of {LOOP_TOL}", RuntimeWarning, stacklevel=3)
+
+        S, A, Bm, _ = _split(patches, C)
+        rho = _stationary_table(S, A, Bm, patch, lag, dzmax)
+    info = dict(rounds=rounds, converged=converged,
+                u_kernel=_sphericity_excess(_build_C(rho, patch, lag)),
+                n_centres=int(patches.shape[0]))
+    return rho, info
+
+
+def _sphericity_excess(C):
+    """U = n tr(C^2) / tr(C)^2 - 1 of a unit-diagonal C; zero when C is white."""
+    return float((C ** 2).sum() / len(C) - 1.0)
+
+
+def _sample_centres(mask, patch, rng):
+    """Up to :data:`N_CENTRES` mask voxels whose whole patch lies inside the mask."""
+    eligible = binary_erosion(mask, structure=np.ones(tuple(patch), bool), border_value=0)
+    idx = np.flatnonzero(eligible)
+    if idx.size == 0:
+        raise ValueError(f"no mask voxel has its whole {tuple(int(v) for v in patch)} "
+                         "patch inside the mask, so the loop has no patch to fit")
+    pick = np.sort(rng.choice(idx, size=min(N_CENTRES, idx.size), replace=False))
+    return np.unravel_index(pick, mask.shape)
+
+
+def _gather(dwi, d_eff, centres, patch):
+    """(B, n_vox, N) float64 patches around ``centres``, rows divided by ``d_eff``.
+
+    Rows in :func:`~camppca.patch.patch_offsets` order. Every patch lies inside the
+    volume, so no padding is needed.
+    """
+    offsets = patch_offsets(patch) - patch // 2
+    ix, iy, iz = (c[:, None] + offsets[None, :, k] for k, c in enumerate(centres))
+    patches = np.asarray(dwi[ix, iy, iz, :], np.float64)
+    return patches / np.asarray(d_eff, np.float64)[ix, iy, iz][:, :, None]
+
+
+@partial(jax.jit, static_argnums=(3, 4))
+def _split_tile(patches, whitener, root, n_small: int, n_large: int):
+    """One tile's share of the pooled bulk, and the factors of each kept projector.
+
+    Returns:
+        ``(bulk, A, Bm, rank)``: (n_vox, n_vox) sum over the tile of
+        ``Rw Rw^T / (N sigma_hat^2)``, still whitened; (B, n_vox, n_vols) ``C^(1/2) U``
+        and ``C^(-1/2) U``, whose product ``A Bm^T`` is the kept projector ``Q_b`` in data
+        units, zero beyond each patch's rank; (B,) ranks.
+    """
+    n_vols = patches.shape[2]
+    whitened, evals, evecs, rank, sigma_hat = _whiten_split(
+        patches, whitener, n_small, n_large, ALGO)
+    keep = (jnp.arange(n_vols)[None, :] < rank[:, None])[:, None, :]
+    coords = jnp.einsum("bpn,bnk->bpk", whitened, evecs)
+    kept = jnp.where(keep, coords, 0.0)
+    resid = whitened - jnp.einsum("bpk,bnk->bpn", kept, evecs)
+    weight = 1.0 / (n_vols * sigma_hat ** 2)
+    bulk = jnp.einsum("bpn,bqn,b->pq", resid, resid, weight)
+    U = jnp.where(keep, coords / jnp.sqrt(jnp.maximum(evals, 1e-12))[:, None, :], 0.0)
+    A = jnp.einsum("pq,bqk->bpk", root, U)
+    Bm = jnp.einsum("pq,bqk->bpk", whitener, U)
+    return bulk, A, Bm, rank
+
+
+def _split(patches, C):
+    """Whiten every patch by ``C``, split it, and pool the bulk. Call under float64.
+
+    Returns:
+        ``(S, A, Bm, rank)``: (n_vox, n_vox) pooled bulk covariance in data units per unit
+        noise variance; (B, n_vox, r) device arrays ``A`` and ``Bm``, with r the largest
+        rank rounded up to a multiple of 8 so few shapes get compiled; (B,) ranks.
+    """
+    n_b, n_vox, n_vols = patches.shape
+    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+    root64 = sqrtm_psd(C, 0.5)
+    whitener = jnp.asarray(sqrtm_psd(C, -0.5))
+    root = jnp.asarray(root64)
+
+    bulk = np.zeros((n_vox, n_vox))
+    A, Bm, rank = [], [], []
+    for start in range(0, n_b, TILE):
+        t_bulk, t_A, t_Bm, t_rank = _split_tile(
+            jnp.asarray(patches[start:start + TILE]), whitener, root, n_small, n_large)
+        r = int(t_rank.max())
+        bulk += np.asarray(t_bulk)
+        A.append(np.asarray(t_A[:, :, :r]))
+        Bm.append(np.asarray(t_Bm[:, :, :r]))
+        rank.append(np.asarray(t_rank))
+    r_max = max(8, -(-max(a.shape[2] for a in A) // 8) * 8)
+
+    def stack(parts):
+        return jnp.asarray(np.concatenate(
+            [np.pad(p, ((0, 0), (0, 0), (0, r_max - p.shape[2]))) for p in parts]))
+
+    S = root64 @ bulk @ root64 / n_b
+    return S, stack(A), stack(Bm), np.concatenate(rank)
+
+
+def _bulk_operator(sigma, A, Bm, Qm):
+    """``mean_b (I - Q_b) sigma (I - Q_b)^T``, with ``Q_b = A_b Bm_b^T``."""
+    inner = jnp.einsum("bpk,bpl->bkl", Bm, jnp.einsum("pq,bql->bpl", sigma, Bm))
+    cross = jnp.einsum("bpl,bql->pq", jnp.einsum("bpk,bkl->bpl", A, inner), A)
+    return sigma - Qm @ sigma - sigma @ Qm.T + cross / A.shape[0]
+
+
+@jax.jit
+def _solve(S, A, Bm):
+    """The ``Sigma`` whose pooled bulk is ``S``: Richardson iteration from ``S`` itself."""
+    Qm = jnp.einsum("bpk,bqk->pq", A, Bm) / A.shape[0]
+
+    def step(_, sigma):
+        sigma = S + sigma - _bulk_operator(sigma, A, Bm, Qm)
+        return 0.5 * (sigma + sigma.T)
+
+    return jax.lax.fori_loop(0, N_INNER, step, S)
+
+
+def _lag_table(sigma, patch, lag, dzmax):
+    """Average a (n_vox, n_vox) covariance over voxel pairs with the same lag.
+
+    Returns a ``rho[dx+lag, dy+lag, |dz|]`` table with unit zero lag. Lags the patch
+    never spans stay zero.
+    """
+    off = patch_offsets(patch)
+    d = off[:, None, :] - off[None, :, :]
+    idx = (d[..., 0] + lag, d[..., 1] + lag, np.abs(d[..., 2]))
+    table = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
+    count = np.zeros_like(table)
+    np.add.at(table, idx, sigma)
+    np.add.at(count, idx, 1.0)
+    table /= np.maximum(count, 1.0)
+    return table / table[lag, lag, 0]
+
+
+def _lag_classes(patch):
+    """Every voxel pair's lag class, and the (dx, dy, |dz|) of each class.
+
+    ``(dx, dy, dz)`` and ``(-dx, -dy, dz)`` share a class, because a table indexed by
+    ``|dz|`` cannot tell them apart.
+    """
+    off = patch_offsets(patch)
+    d = off[:, None, :] - off[None, :, :]
+    dx, dy, dz = d[..., 0], d[..., 1], np.abs(d[..., 2])
+    flip = (dx < 0) | ((dx == 0) & (dy < 0))
+    dx, dy = np.where(flip, -dx, dx), np.where(flip, -dy, dy)
+    lags, cls = np.unique(np.stack([dx, dy, dz], -1).reshape(-1, 3), axis=0,
+                          return_inverse=True)
+    return cls.reshape(dx.shape), lags
+
+
+@partial(jax.jit, static_argnums=(3,))
+def _design(cls, A, Bm, n_classes: int):
+    """The bulk operator applied to every lag class's indicator matrix, (K, n_vox, n_vox)."""
+    Qm = jnp.einsum("bpk,bqk->pq", A, Bm) / A.shape[0]
+    return jax.lax.map(lambda c: _bulk_operator((cls == c).astype(A.dtype), A, Bm, Qm),
+                       jnp.arange(n_classes))
+
+
+def _stationary_table(S, A, Bm, patch, lag, dzmax):
+    """The smallest stationary kernel whose bulk fits ``S``, as a lag table.
+
+    One least squares over lag classes, with the design's unobservable directions
+    truncated at :data:`RCOND`.
+    """
+    cls, lags = _lag_classes(patch)
+    design = np.asarray(_design(jnp.asarray(cls), A, Bm, len(lags)))
+    design = design.reshape(len(lags), -1).T
+    values = np.linalg.lstsq(design, S.ravel(), rcond=RCOND)[0]
+    table = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
+    for v, (dx, dy, dz) in zip(values, lags, strict=True):
+        table[dx + lag, dy + lag, dz] = table[-dx + lag, -dy + lag, dz] = v
+    return table / table[lag, lag, 0]

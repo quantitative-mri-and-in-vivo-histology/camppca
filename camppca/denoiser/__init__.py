@@ -6,7 +6,8 @@ alignment-based estimator feeds the same code.
 
 ``camppca.py`` is the covariance-aware method, ``mppca.py`` the standard white-noise one.
 What they share lives in ``mp_threshold.py``, ``gather.py`` and ``result.py``, next to
-them. JAX lives in this subpackage and nowhere else in the package.
+them. The loop kernel estimator in ``noise_model/loop.py`` reuses the split,
+``sqrtm_psd`` and ``_effective_d`` from here.
 
 Every public name here is re-exported from ``camppca`` itself.
 """

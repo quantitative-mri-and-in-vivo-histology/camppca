@@ -1,8 +1,5 @@
 """The noise model object, the derived patch correlation C, and the estimator."""
 
-import subprocess
-import sys
-
 import numpy as np
 import pytest
 
@@ -149,13 +146,6 @@ def test_estimate_rejects_mismatched_bvals():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(4))
     with pytest.raises(ValueError, match="bvals has"):
         estimate_noise_model(dwi, bvals[:-1], mask, patch=(5, 5, 3))
-
-
-def test_the_noise_model_half_never_imports_jax():
-    """The seam, mechanically: the estimator must stay importable without JAX."""
-    code = ("import camppca, camppca.noise_model, camppca.patch, sys; "
-            "assert 'jax' not in sys.modules, sorted(m for m in sys.modules if 'jax' in m)")
-    subprocess.run([sys.executable, "-c", code], check=True, cwd="/workspace")
 
 
 def test_too_few_diffusion_volumes_is_refused_not_silently_nan():

@@ -14,7 +14,8 @@ This half of the seam is source-specific: here rho comes from Patch2Self residua
 future alignment-based estimator builds the same :class:`NoiseModel` a different way and
 feeds the same engine, so nothing downstream may assume P2S.
 
-Pure numpy/scipy. Nothing here imports JAX.
+P2S is numpy/scipy. The loop kernel (``loop.py``) runs MP-PCA's own split, so it uses
+JAX and the denoiser's internals.
 """
 
 from dataclasses import dataclass, field
@@ -157,7 +158,7 @@ def _pool_level(level, mask, size):
 
 
 def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, lowb=100,
-                         seed=0, pool=3):
+                         seed=0, pool=3, kernel="loop"):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
     ``dwi``    (X, Y, Z, N) diffusion data.
@@ -171,6 +172,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     ``pool``   box width, in voxels, the relative level field ``d`` is averaged over.
                Averaged in variance, over mask voxels only; see :func:`_pool_level`.
                1 disables it. ``sigma_p2s`` is never pooled.
+    ``kernel`` "loop" (default) refines the P2S pattern until it explains the MP-PCA bulk
+               of the patches; see :mod:`camppca.noise_model.loop`. "p2s" returns the
+               P2S pattern itself, which is always the loop's start.
 
     One pattern is fit across all the diffusion volumes.  b0s are excluded from the fit:
     their residual level is not representative of diffusion-weighted noise.
@@ -186,6 +190,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
                          f"volume {dwi.shape[:3]}")
     lag = required_lag(patch)
     dzmax = int(patch[2]) - 1
+    if kernel not in ("loop", "p2s"):
+        raise ValueError(f"kernel must be 'loop' or 'p2s', got {kernel!r}")
     rng = np.random.default_rng(seed)
     pool = int(pool)
     if pool < 1:
@@ -251,7 +257,16 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
                 ncol=int(ncol), seed=int(seed), lowb=float(lowb), pool=pool,
                 n_mask=int(mask.sum()), n_vols=int(n_vols), n_dwi=int(dwi_idx.size),
                 erode=int(erode_used), n_interior=int(interior.sum()),
-                bvals_sha=_bvals_hash(bvals))
+                bvals_sha=_bvals_hash(bvals), kernel=kernel)
+
+    if kernel == "loop":
+        # Imported here: loop.py uses denoiser internals, and the denoiser imports this
+        # package, so a top-level import would be circular.
+        from .loop import loop_kernel
+        rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed)
+        prov.update(loop_rounds=info["rounds"], loop_converged=info["converged"],
+                    u_kernel=info["u_kernel"], n_centres=info["n_centres"])
+
     return NoiseModel(rho=rho, d=d, sigma_p2s=sigma_p2s, mask=mask, lag=lag,
                       provenance=prov)
 

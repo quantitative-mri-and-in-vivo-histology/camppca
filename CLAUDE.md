@@ -1,7 +1,13 @@
 # camppca — scope and notation
 
-**CAMP-PCA: Covariance-Aware Marchenko–Pastur PCA.** MP-PCA denoising for diffusion MRI
-that accounts for spatially correlated noise.
+**`camppca` — covariance-aware MP-PCA.** The implementation of the denoising algorithm
+described in the manuscript at
+`~/gdrive/UKE/manuscripts/covar_denoising/initial/`, which cites this repository in its Data
+and Code Availability section. MP-PCA denoising for diffusion MRI that accounts for
+spatially correlated noise.
+
+⚠ **The name is `camppca`** — lower case, no hyphen, settled 2026-08-28 to match the package
+and the paper. Not CAMP-PCA, not CAMPPCA. Expanded as *covariance-aware MP-PCA*.
 
 Standard MP-PCA assumes white noise. Real EPI reconstruction (GRAPPA/SENSE, partial
 Fourier, apodization) correlates noise across neighboring voxels, so MP-PCA
@@ -98,7 +104,23 @@ The two halves meet at **the noise model** (`rho` + `d`). A follow-up paper esti
 `rho` from the alignment/interpolation operator and feeds the same engine, so the engine
 must never assume `rho` came from P2S.
 
-The estimator half is pure numpy/scipy. The engine is JAX.
+P2S is numpy/scipy. The engine is JAX, and so is the loop kernel, which reuses the
+engine's own split. The old rule that the estimator never imports JAX was dropped
+2026-10-03 with the loop.
+
+### The loop kernel
+
+`estimate_noise_model(kernel="loop")`, the default, starts from the P2S `rho` and refines
+it until it explains the MP-PCA bulk of 3000 sampled patches at once
+(`noise_model/loop.py`). Rows are divided by `d` first, as the denoiser divides them.
+Every volume enters, b0s included, because the denoiser whitens them all. The b0
+exclusion above is for the P2S fit only. `kernel="p2s"` skips the loop.
+
+⚠ **The loop runs in float64** (`jax.enable_x64`). Its Richardson solve leaves the
+patch-mean direction empty, so each round's `C` is near singular there. In float32 the
+amplified direction's rounding error floods the bulk and the ranks hit the maximum
+within one round. Measured: float64 and float32-with-an-eigenvalue-floor agree to 0.001
+in U, so this is purely numerical.
 
 ### Two whiteners, one result
 
@@ -115,7 +137,8 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
         __init__.py        NoiseModel, estimate_noise_model() -> NoiseModel
         p2s.py             Patch2Self: residuals, rho, sigma_p2s        numpy
         masks.py           brain mask, stable region                    numpy
-      denoiser/          every JAX import in the package lives under here
+        loop.py            the loop kernel, refines rho from P2S        JAX, float64
+      denoiser/
         __init__.py        denoise_camppca(), denoise_with_noise_model()
         camppca.py         covariance-aware MP-PCA — the method
         mppca.py           standard white-noise MP-PCA
@@ -139,9 +162,11 @@ or `camppca.noise_model.` prefix.
   It is always the **noise model**: `estimate_noise_model`, `denoise_with_noise_model`.
   This deviates from the port brief's frozen `estimate_noise` / `denoise_with_model`,
   deliberately.
-- `mp_threshold.py`, `gather.py` and `result.py` sit in `denoiser/` because only the two
-  denoisers use them. `patch.py` sits above it because the estimator needs it too. That
-  split is what keeps JAX out of the estimator half.
+- `mp_threshold.py`, `gather.py` and `result.py` sit in `denoiser/`. `patch.py` sits
+  above it because P2S needs it too.
+- `loop.py` imports denoiser internals, and `denoiser/__init__.py` imports
+  `noise_model`. So `estimate_noise_model` imports `loop` inside the function, or the
+  import is circular.
 - `NoiseModel` lives in `noise_model/__init__.py`, not with the P2S math: a future
   alignment-based estimator builds the same object and must not import P2S to get it.
 - Flat, with `noise_model_p2s.py`-style prefixes, is the same structure with the noun
@@ -151,7 +176,13 @@ or `camppca.noise_model.` prefix.
 
 Breaking any of these corrupts results without an error:
 
-- `LAG = max(patch) - 1`, and `dzmax = LAG`. Smaller, and lag lookup wraps around.
+- `LAG = max(patch[0], patch[1]) - 1` in-plane, and `dzmax = patch[2] - 1`. Smaller, and
+  lag lookup wraps around. `dzmax` used to equal `LAG`, which crashed a one-slice patch
+  on a thin volume.
+- `C` must have smallest eigenvalue ≥ 1e-3 (`MIN_EIGENVALUE`). A table valid for one
+  patch can be indefinite for a larger one, and whitening by a near-singular `C` sends
+  σ̂ to ~1e-7. `patch_correlation` raises. `_build_C` still projects silently, because
+  the loop needs that each round.
 - Patch flattening is **C-order, z fastest**; `rho[dx+lag, dy+lag, abs(dz)]`. Paired —
   the two orders must agree.
 - `rho` is a correlation (unit at zero lag): **pattern only**. The absolute level comes

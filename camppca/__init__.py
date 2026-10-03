@@ -19,8 +19,7 @@ __all__ = ["NoiseModel", "DenoiseResult", "brain_mask", "denoise_camppca",
            "denoise_mppca", "denoise_with_noise_model", "estimate_noise_model",
            "__version__"]
 
-# Lazy: importing a denoiser pulls in JAX. `estimate_noise_model` and `brain_mask` stay
-# JAX-free, and staying that way is asserted in the test suite.
+# Lazy: importing a denoiser pulls in JAX, so `import camppca` stays light.
 _LAZY = {"denoise_camppca": "denoiser", "denoise_mppca": "denoiser",
          "denoise_with_noise_model": "denoiser", "DenoiseResult": "denoiser"}
 

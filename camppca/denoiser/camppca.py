@@ -45,6 +45,34 @@ def sqrtm_psd(A, p=0.5, floor=1e-10):
     return 0.5 * (B + B.T)
 
 
+def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str):
+    """Whiten a batch of patches and split each spectrum at the Marchenko-Pastur edge.
+
+    Shared with the loop kernel estimator, so both split a patch with the same code.
+
+    Args:
+        patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
+        whitener: (n_vox, n_vox) ``C^(-1/2)``.
+        n_small: the smaller of ``n_vox`` and ``n_vols``.
+        n_large: the larger of them.
+        algo: which Marchenko-Pastur variant to cut with.
+
+    Returns:
+        ``(whitened, evals, evecs, rank, sigma_hat)``: (B, n_vox, n_vols) whitened
+        patches, (B, n_vols) descending Gram eigenvalues, (B, n_vols, n_vols) their
+        eigenvectors as columns in the same order, (B,) retained component count, (B,)
+        fitted noise level.
+    """
+    whitened = jnp.einsum("pq,bqn->bpn", whitener, patches)
+    gram = jnp.einsum("bpn,bpm->bnm", whitened, whitened)
+    evals, evecs = jnp.linalg.eigh(gram)                    # ascending
+    evals = jnp.maximum(evals[:, ::-1], 0.0)                # descending
+    evecs = evecs[:, :, ::-1]
+
+    rank, sigma_hat = mp_threshold(evals, n_small, n_large, algo)
+    return whitened, evals, evecs, rank, sigma_hat
+
+
 def _denoise_tile(patches, whitener, centre_row, n_small: int, n_large: int, algo: str):
     """Denoise a batch of whitened patches, returning the centre voxel of each.
 
@@ -62,13 +90,8 @@ def _denoise_tile(patches, whitener, centre_row, n_small: int, n_large: int, alg
     """
     n_vols = patches.shape[2]
 
-    whitened = jnp.einsum("pq,bqn->bpn", whitener, patches)
-    gram = jnp.einsum("bpn,bpm->bnm", whitened, whitened)
-    evals, evecs = jnp.linalg.eigh(gram)                    # ascending
-    evals = jnp.maximum(evals[:, ::-1], 0.0)                # descending
-    evecs = evecs[:, :, ::-1]
-
-    rank, sigma_hat = mp_threshold(evals, n_small, n_large, algo)
+    whitened, _, evecs, rank, sigma_hat = _whiten_split(
+        patches, whitener, n_small, n_large, algo)
 
     centre = jnp.einsum("p,bpm->bm", centre_row, whitened)  # e_c^T C^(1/2) Yw
     coords = jnp.einsum("bm,bmk->bk", centre, evecs)
