@@ -122,7 +122,9 @@ exclusion above is for the P2S fit only. `kernel="p2s"` skips the loop.
 patch-mean direction empty, so each round's `C` is near singular there. In float32 the
 amplified direction's rounding error floods the bulk and the ranks hit the maximum
 within one round. Measured: float64 and float32-with-an-eigenvalue-floor agree to 0.001
-in U, so this is purely numerical.
+in U, so this is purely numerical. The one exception is the final least squares: its
+design is built in float32 from the float64 factors (same table within 1e-4 at 7³, the
+build ~20x faster on a GPU).
 
 ### Two whiteners, one result
 

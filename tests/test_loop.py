@@ -8,6 +8,7 @@ depend on where it starts, and that the batched solve is the per-patch algebra.
 import warnings
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -225,3 +226,23 @@ def test_an_unknown_algo_is_refused_before_the_estimate(dataset):
     dwi, bvals, mask = dataset
     with pytest.raises(ValueError, match="algo must be"):
         estimate_noise_model(dwi, bvals, mask, patch=PATCH, algo="exp3")
+
+
+def test_the_float32_design_gives_the_float64_table(dataset, model):
+    """The final least squares builds its design in float32; check it against float64."""
+    dwi, _, mask = dataset
+    centres = loop._sample_centres(mask, PATCH, np.random.default_rng(2))
+    patches = loop._gather(dwi, _effective_d(model.d, mask), centres, PATCH)
+    with jax.enable_x64(True):
+        S, A, Bm, _ = loop._split(patches, model.patch_correlation(PATCH), "cordero-grande")
+        table = loop._stationary_table(S, A, Bm, PATCH, LAG, PATCH[2] - 1)
+        cls, lags = loop._lag_classes(PATCH)
+        design = np.asarray(loop._design(jnp.asarray(cls), A, Bm, len(lags)))
+    values = np.linalg.lstsq(design.reshape(len(lags), -1).T, S.ravel(),
+                             rcond=loop.RCOND)[0]
+    ref = np.zeros_like(table)
+    for v, (dx, dy, dz) in zip(values, lags, strict=True):
+        ref[dx + LAG, dy + LAG, dz] = ref[-dx + LAG, -dy + LAG, dz] = v
+    ref /= ref[LAG, LAG, 0]
+
+    assert np.abs(table - ref).max() < 1e-4
