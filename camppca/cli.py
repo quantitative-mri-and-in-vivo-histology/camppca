@@ -126,18 +126,19 @@ def main(argv=None):
     patch = tuple(args.patch)
 
     say(f"  {Path(args.input).name}  {dwi.shape}")
+    noise_field = not getattr(args, "no_noise_field", False)   # estimate has no such flag
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
-                                 lowb=args.lowb)
-    lag1 = model.rho[model.lag + 1, model.lag, 0]
-    say(f"  noise model: lag {model.lag}, "
-        f"rho(x=1) {lag1:+.3f}, sigma_p2s median "
+                                 lowb=args.lowb, noise_field=noise_field)
+    # A patch one voxel wide in-plane gives lag 0: no x=1 entry to show.
+    lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
+    say(f"  noise model: lag {model.lag}{lag1}, sigma_p2s median "
         f"{np.median(model.sigma_p2s[model.mask]):.1f}")
 
     result = None
     if args.command == "denoise":
         from .denoiser import denoise_with_noise_model
         result = denoise_with_noise_model(dwi, model, patch=patch,
-                                          noise_field=not args.no_noise_field)
+                                          noise_field=noise_field)
         io.save_like(args.output, result.denoised, affine, header)
         say(f"  wrote {args.output}")
         if args.noise:

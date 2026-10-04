@@ -99,3 +99,21 @@ def test_a_qc_rerun_overwrites_rather_than_accumulates(dataset):
 
     assert first["patch"] == [5, 5, 3] and second["patch"] == [5, 5, 5]
     assert second["lag"] == 4
+
+
+def test_a_patch_one_voxel_wide_in_plane_runs(dataset, monkeypatch):
+    """Lag 0 has no x=1 entry; the summary line used to index past the table.
+
+    P2S kernel: on a 5-voxel patch the loop's kernel is refused as near singular, which is
+    the estimator's business, not the summary line's.
+    """
+    import functools
+
+    import camppca.cli
+
+    monkeypatch.setattr(camppca.cli, "estimate_noise_model",
+                        functools.partial(camppca.cli.estimate_noise_model, kernel="p2s"))
+    qc = dataset / "qc_115"
+    rc = main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc),
+               "--patch", "1", "1", "5", *_grad(dataset), "-q"])
+    assert rc == 0

@@ -14,7 +14,8 @@ This half of the seam is source-specific: here rho comes from Patch2Self residua
 future alignment-based estimator builds the same :class:`NoiseModel` a different way and
 feeds the same engine, so nothing downstream may assume P2S.
 
-Pure numpy/scipy. Nothing here imports JAX.
+P2S is numpy/scipy. The loop kernel (``loop.py``) runs MP-PCA's own split, so it uses
+JAX and the denoiser's internals.
 """
 
 from dataclasses import dataclass, field
@@ -35,6 +36,12 @@ __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask", "stable_region"]
 #: but the level is badly biased, measured ~50% high.
 MIN_VOLUMES = 10
 
+#: Smallest eigenvalue a patch correlation may have. A lag table can be valid for one
+#: patch and indefinite for a larger one. `_build_C` then projects it to a C with
+#: eigenvalues near zero, whitening divides by them, and sigma_hat collapses to ~1e-7
+#: everywhere without an error.
+MIN_EIGENVALUE = 1e-3
+
 
 @dataclass
 class NoiseModel:
@@ -46,7 +53,8 @@ class NoiseModel:
     ``sigma_p2s``  (X, Y, Z) absolute P2S noise level.  An INPUT that drives whitening --
                    not to be confused with ``sigma_hat``, the MP-PCA output.
     ``mask``       (X, Y, Z) bool, the voxels the model was estimated on.
-    ``lag``        max lag ``rho`` covers; bounds the patch this model can serve.
+    ``lag``        max in-plane lag ``rho`` covers; with ``rho.shape[2] - 1``, the
+                   through-slice one, it bounds the patch this model can serve.
     """
 
     rho: np.ndarray
@@ -67,7 +75,8 @@ class NoiseModel:
 
         ``C`` is ``rho`` re-indexed into the geometry of this patch, PSD-projected to unit
         diagonal.  Raises if the patch needs lags this model never measured: without the
-        check, the index runs off the table and numpy wraps around silently.
+        check, the index runs off the table and numpy wraps around silently.  Also raises
+        if ``C`` is near singular (see :data:`MIN_EIGENVALUE`).
         """
         patch = check_patch(patch)
         need = required_lag(patch)
@@ -75,7 +84,22 @@ class NoiseModel:
             raise ValueError(
                 f"patch {tuple(int(v) for v in patch)} needs lag {need}, but this noise "
                 f"model only covers lag {self.lag}. Re-estimate with the larger patch.")
-        return _build_C(self.rho, patch, self.lag)
+        dzmax = self.rho.shape[2] - 1
+        if patch[2] - 1 > dzmax:
+            raise ValueError(
+                f"patch {tuple(int(v) for v in patch)} needs through-slice lag "
+                f"{patch[2] - 1}, but this noise model only covers {dzmax}. Re-estimate "
+                f"with the deeper patch.")
+        C = _build_C(self.rho, patch, self.lag)
+        smallest = float(np.linalg.eigvalsh(C)[0])
+        if smallest < MIN_EIGENVALUE:
+            raise ValueError(
+                f"rho is not a valid correlation for patch "
+                f"{tuple(int(v) for v in patch)}: the smallest eigenvalue of C is "
+                f"{smallest:.2e}, below {MIN_EIGENVALUE:g}. Whitening divides by it, and "
+                f"sigma_hat would collapse toward zero. Estimate the noise model at this "
+                f"patch.")
+        return C
 
 
 def _build_C(rho, patch, lag):
@@ -134,7 +158,8 @@ def _pool_level(level, mask, size):
 
 
 def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, lowb=100,
-                         seed=0, pool=3):
+                         seed=0, pool=3, kernel="loop", algo="cordero-grande",
+                         noise_field=True):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
     ``dwi``    (X, Y, Z, N) diffusion data.
@@ -148,6 +173,12 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     ``pool``   box width, in voxels, the relative level field ``d`` is averaged over.
                Averaged in variance, over mask voxels only; see :func:`_pool_level`.
                1 disables it. ``sigma_p2s`` is never pooled.
+    ``kernel`` "loop" (default) refines the P2S pattern until it explains the MP-PCA bulk
+               of the patches; see :mod:`camppca.noise_model.loop`. "p2s" returns the
+               P2S pattern itself, which is always the loop's start.
+    ``algo``, ``noise_field``  the denoiser settings the loop fits the kernel to: the MP
+               rule, and whether rows are divided by ``d``. Pass the ones you will denoise
+               with. Ignored for "p2s".
 
     One pattern is fit across all the diffusion volumes.  b0s are excluded from the fit:
     their residual level is not representative of diffusion-weighted noise.
@@ -156,8 +187,19 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
     n_vols = dwi.shape[3]
-    lag = required_lag(check_patch(patch))
-    dzmax = lag
+    patch = check_patch(patch)
+    if np.any(patch > np.asarray(dwi.shape[:3])):
+        # The denoiser wrap-pads, so a patch deeper than the volume holds one slice twice.
+        raise ValueError(f"patch {tuple(int(v) for v in patch)} is larger than the "
+                         f"volume {dwi.shape[:3]}")
+    lag = required_lag(patch)
+    dzmax = int(patch[2]) - 1
+    if kernel not in ("loop", "p2s"):
+        raise ValueError(f"kernel must be 'loop' or 'p2s', got {kernel!r}")
+    from ..denoiser.mp_threshold import ALGORITHMS  # here: denoiser imports this package
+
+    if algo not in ALGORITHMS:
+        raise ValueError(f"algo must be one of {ALGORITHMS}, got {algo!r}")
     rng = np.random.default_rng(seed)
     pool = int(pool)
     if pool < 1:
@@ -223,9 +265,28 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
                 ncol=int(ncol), seed=int(seed), lowb=float(lowb), pool=pool,
                 n_mask=int(mask.sum()), n_vols=int(n_vols), n_dwi=int(dwi_idx.size),
                 erode=int(erode_used), n_interior=int(interior.sum()),
-                bvals_sha=_bvals_hash(bvals))
-    return NoiseModel(rho=rho, d=d, sigma_p2s=sigma_p2s, mask=mask, lag=lag,
-                      provenance=prov)
+                bvals_sha=_bvals_hash(bvals), kernel=kernel)
+
+    if kernel == "loop":
+        # Imported here: loop.py uses denoiser internals, and the denoiser imports this
+        # package, so a top-level import would be circular.
+        from .loop import loop_kernel
+        rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algo=algo,
+                                noise_field=noise_field)
+        prov.update(loop_rounds=info["rounds"], loop_converged=info["converged"],
+                    u_kernel=info["u_kernel"], n_centres=info["n_centres"],
+                    loop_algo=algo, loop_noise_field=bool(noise_field))
+
+    model = NoiseModel(rho=rho, d=d, sigma_p2s=sigma_p2s, mask=mask, lag=lag,
+                       provenance=prov)
+    if kernel == "loop":
+        # Fail here, not at denoising after the estimate is spent.
+        try:
+            model.patch_correlation(patch)
+        except ValueError as err:
+            raise ValueError(f"the loop kernel is not usable: {err} kernel='p2s' skips "
+                             "the loop.") from err
+    return model
 
 
 def _bvals_hash(bvals):

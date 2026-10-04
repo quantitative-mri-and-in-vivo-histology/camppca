@@ -1,8 +1,5 @@
 """The noise model object, the derived patch correlation C, and the estimator."""
 
-import subprocess
-import sys
-
 import numpy as np
 import pytest
 
@@ -72,11 +69,52 @@ def test_patch_correlation_refuses_an_even_patch():
         model.patch_correlation((4, 5, 5))
 
 
+def test_patch_correlation_refuses_a_patch_deeper_than_the_measured_dz():
+    model = _model_with_rho(_separable_rho(4)[:, :, :1], lag=4)
+    model.patch_correlation((5, 5, 1))
+    with pytest.raises(ValueError, match="through-slice lag 2.*covers 0"):
+        model.patch_correlation((5, 5, 3))
+
+
+def test_patch_correlation_refuses_a_table_that_is_not_a_valid_correlation():
+    """Lag-1 correlation 0.6 alone is indefinite on 5 voxels: 1 - 1.2 cos(pi/6) < 0."""
+    lag = 4
+    rho = np.zeros((2 * lag + 1, 2 * lag + 1, 1))
+    rho[lag, lag, 0] = 1.0
+    rho[lag - 1, lag, 0] = rho[lag + 1, lag, 0] = 0.6
+    model = _model_with_rho(rho, lag)
+    with pytest.raises(ValueError, match="smallest eigenvalue of C"):
+        model.patch_correlation((5, 1, 1))
+
+
+def test_estimate_serves_a_one_slice_patch_on_a_thin_volume():
+    """A one-slice patch on a thin volume used to crash: dzmax followed the in-plane reach.
+
+    Reported for (11, 11, 1) on 9 slices; (5, 5, 1) on 3 slices is the same failure, smaller.
+    """
+    dwi, bvals, _, _ = _synthetic(np.random.default_rng(5), shape=(40, 40, 3))
+    mask = np.zeros(dwi.shape[:3], bool)
+    mask[4:36, 4:36, :] = True
+    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 1))
+
+    assert model.rho.shape == (9, 9, 1)
+    assert np.isfinite(model.rho).all()
+    assert model.patch_correlation((5, 5, 1)).shape == (25, 25)
+
+
+def test_estimate_refuses_a_patch_larger_than_the_volume():
+    dwi, bvals, _, _ = _synthetic(np.random.default_rng(6), shape=(20, 20, 3))
+    mask = np.zeros(dwi.shape[:3], bool)
+    mask[3:17, 3:17, :] = True
+    with pytest.raises(ValueError, match="larger than the volume"):
+        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 5))
+
+
 def test_estimate_fits_one_pattern_over_every_diffusion_volume():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(0))
     model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
 
-    assert model.rho.shape == (9, 9, 5)
+    assert model.rho.shape == (9, 9, 3), "through-slice reach follows the patch depth"
     assert model.lag == 4
     assert model.provenance["n_vols"] == bvals.size
     assert model.provenance["n_dwi"] == int((bvals > 100).sum()), "b0s stay out of the fit"
@@ -111,13 +149,6 @@ def test_estimate_rejects_mismatched_bvals():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(4))
     with pytest.raises(ValueError, match="bvals has"):
         estimate_noise_model(dwi, bvals[:-1], mask, patch=(5, 5, 3))
-
-
-def test_the_noise_model_half_never_imports_jax():
-    """The seam, mechanically: the estimator must stay importable without JAX."""
-    code = ("import camppca, camppca.noise_model, camppca.patch, sys; "
-            "assert 'jax' not in sys.modules, sorted(m for m in sys.modules if 'jax' in m)")
-    subprocess.run([sys.executable, "-c", code], check=True, cwd="/workspace")
 
 
 def test_too_few_diffusion_volumes_is_refused_not_silently_nan():
