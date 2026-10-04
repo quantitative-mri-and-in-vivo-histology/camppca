@@ -122,8 +122,11 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
     rank = np.zeros(dwi.shape[:3], np.int32)
 
     for coords, patches in patch_tiles(dwi, mask, patch, tile=tile, on_device=on_device):
-        signal, tile_sigma, tile_rank = _denoise_tile_jit(
-            patches, center, n_small, n_large, algorithm, tile_shrink)
+        # Full float32 matmuls: on recent NVIDIA GPUs the default is TF32, about three
+        # significant digits, and GPU results would drift from CPU ones.
+        with jax.default_matmul_precision("highest"):
+            signal, tile_sigma, tile_rank = _denoise_tile_jit(
+                patches, center, n_small, n_large, algorithm, tile_shrink)
         denoised[coords] = np.asarray(signal)
         sigma_hat[coords] = np.asarray(tile_sigma)
         rank[coords] = np.asarray(tile_rank)

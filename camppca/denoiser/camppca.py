@@ -168,8 +168,11 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
         else:
             patches, levels = block[:, :, :n_vols], block[:, :, n_vols]
             patches = patches / levels[:, :, None]          # D^(-1): homoscedastic rows
-        signal, tile_sigma, tile_rank = _denoise_tile_jit(
-            patches, whitener, centre_row, C_device, n_small, n_large, algo, shrink)
+        # Full float32 matmuls: on recent NVIDIA GPUs the default is TF32, about three
+        # significant digits, and GPU results would drift from CPU ones.
+        with jax.default_matmul_precision("highest"):
+            signal, tile_sigma, tile_rank = _denoise_tile_jit(
+                patches, whitener, centre_row, C_device, n_small, n_large, algo, shrink)
         if levels is not None:
             signal = signal * levels[:, center, None]       # back to data units at the centre
         denoised[coords] = np.asarray(signal)

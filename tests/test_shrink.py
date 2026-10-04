@@ -1,5 +1,6 @@
 """Shrinkage of the kept components: "gd" and "lr" against the hard threshold."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -48,8 +49,9 @@ def test_gd_weight_is_gavish_donohos_shrinker(n_vox, n_vols):
 def test_lr_with_white_noise_is_gd():
     X, evals, evecs = _spectra(np.random.default_rng(1), 75, 40)
     sigma = jnp.ones(len(evals))
-    q = signal_alignment(jnp.asarray(X), jnp.asarray(evecs), jnp.asarray(evals),
-                         jnp.eye(75))
+    with jax.default_matmul_precision("highest"):     # as the engine calls it; GPU: not TF32
+        q = signal_alignment(jnp.asarray(X), jnp.asarray(evecs), jnp.asarray(evals),
+                             jnp.eye(75))
 
     np.testing.assert_allclose(np.asarray(q[:, :3]), 1.0, atol=1e-6)
     np.testing.assert_allclose(
@@ -114,7 +116,7 @@ def test_shrinkage_changes_the_weights_only(dataset):
             assert np.array_equal(results[k].sigma_hat, results["hard"].sigma_hat)
             assert not np.array_equal(results[k].denoised[mask], results["hard"].denoised[mask])
         assert results["gd"].provenance["shrink"] == "gd"
-    np.testing.assert_allclose(out["lr"].denoised, out["gd"].denoised, atol=1e-3)
+    np.testing.assert_allclose(out["lr"].denoised, out["gd"].denoised, rtol=1e-5)
     assert np.array_equal(std["lr"].denoised, std["gd"].denoised)
 
 
