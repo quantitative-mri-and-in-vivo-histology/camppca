@@ -57,7 +57,7 @@ patch shape, so it is computed on demand, never stored.
 | diagonal level matrix | D = diag(d) | `D` | |
 | true noise level | σ | — | |
 | MP estimate | σ̂ | `sigma_hat` | hats are for estimates only |
-| P2S level (ratios only) | σ_P2S | `sigma_p2s` | `d = sigma_p2s / median(sigma_p2s)` |
+| P2S level (ratios only) | σ_P2S | `sigma_p2s` | `d` = `sigma_p2s` pooled over a 3³ box |
 | retained rank | P | `rank` | ⚠ see the P collision below |
 | aspect ratio | γ = N/M | — | |
 | box shape, e.g. (5,5,5) | — | `patch` | a **denoiser** knob, not a noise property |
@@ -191,7 +191,10 @@ Breaking any of these corrupts results without an error:
   the two orders must agree.
 - `rho` is a correlation (unit at zero lag): **pattern only**. The absolute level comes
   from the per-patch MP fit. Only *ratios* of `d` matter.
-- **`d` is normalized by the median**, in both the row-scale field and per-patch.
+- **`d` is defined up to scale.** Rows are divided by it and the centre voxel multiplied
+  back, so a constant cancels in the denoised image, the rank and σ̂ in data units (×0.25
+  is bit-identical; a generic factor flips near-tied MP cuts by float32 rounding).
+  Outside the mask, which edge patches include, `d` is its median over the mask.
 - **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
   once across every diffusion volume, and b0s stay out of that fit because their residual
   level does not represent diffusion-weighted noise.
@@ -215,10 +218,10 @@ Breaking any of these corrupts results without an error:
 
 - **`sigma_hat` is returned in data units.** The engine rescales the denoised image by
   `d` at the center voxel but *not* `sigma_hat`, so the API must apply that multiply by
-  default. σ̂ is the headline metric — a normalization convention must not leak into the
-  reported number. Normalized form is opt-in.
-- `_effective_d` in `denoiser/__init__.py` is the **only** place `d` is normalized and
-  clipped. The engine takes the field as given.
+  default. σ̂ is the headline metric — the scale of `d` must not leak into the reported
+  number.
+- `_effective_d` in `denoiser/__init__.py` is the **only** place `d` is guarded (bad or
+  outside-mask voxels get the median). The engine takes the field as given.
 
 ## Gotchas
 
