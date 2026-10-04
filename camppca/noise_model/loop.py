@@ -284,9 +284,17 @@ def _stationary_table(S, A, Bm, patch, lag, dzmax):
 
     One least squares over lag classes, with the design's unobservable directions
     truncated at :data:`RCOND`.
+
+    The design is built in float32 from the float64 factors, at full matmul precision,
+    and solved in float64. It is one linear map of fixed factors, so it does not meet the
+    baseline problem the rounds have. Measured at 7^3 on a tensor phantom: the same table
+    within 1e-4, the same sigma_hat, and the build ~20x faster on a GPU (75 s to 4 s).
     """
     cls, lags = _lag_classes(patch)
-    design = np.asarray(_design(jnp.asarray(cls), A, Bm, len(lags)))
+    with jax.default_matmul_precision("highest"):
+        design = _design(jnp.asarray(cls), jnp.asarray(A, jnp.float32),
+                         jnp.asarray(Bm, jnp.float32), len(lags))
+    design = np.asarray(design, np.float64)
     design = design.reshape(len(lags), -1).T
     values = np.linalg.lstsq(design, S.ravel(), rcond=RCOND)[0]
     table = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
