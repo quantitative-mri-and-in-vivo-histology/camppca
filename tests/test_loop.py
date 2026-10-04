@@ -155,3 +155,42 @@ def test_a_mask_too_thin_for_the_patch_is_refused():
     mask[3:17, 3:17, 2:4] = True               # two slices, the patch needs three
     with pytest.raises(ValueError, match="no mask voxel has its whole"):
         loop._sample_centres(mask, PATCH, np.random.default_rng(0))
+
+
+def test_lags_the_patch_never_spans_keep_the_p2s_values(dataset):
+    """A 3 x 5 patch has in-plane lag 4 but spans only |dx| <= 2."""
+    dwi, bvals, mask = dataset
+    patch = (3, 5, 3)
+    p2s = estimate_noise_model(dwi, bvals, mask, patch=patch, kernel="p2s")
+    looped = estimate_noise_model(dwi, bvals, mask, patch=patch)
+    lag = looped.lag
+
+    assert lag == 4
+    for dx in (3, 4):
+        np.testing.assert_array_equal(looped.rho[lag + dx], p2s.rho[lag + dx])
+        np.testing.assert_array_equal(looped.rho[lag - dx], p2s.rho[lag - dx])
+    assert not np.array_equal(looped.rho[lag + 1], p2s.rho[lag + 1]), "spanned lags move"
+
+
+def test_the_convergence_warning_reports_the_last_change(dataset, model, monkeypatch):
+    dwi, _, mask = dataset
+    monkeypatch.setattr(loop, "MAX_ROUNDS", 1)
+    monkeypatch.setattr(loop, "LOOP_TOL", 0.0)
+    with pytest.warns(RuntimeWarning, match="did not converge") as caught:
+        loop.loop_kernel(dwi, mask, model.d, model.rho, PATCH, LAG, seed=0)
+    assert "by 0.0000" not in str(caught[0].message)
+
+
+def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
+    """Lag-1 correlation 0.7 alone is indefinite on 5 voxels."""
+    dwi, bvals, mask = dataset
+
+    def indefinite(S, A, Bm, patch, lag, dzmax):
+        rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
+        rho[lag, lag, 0] = 1.0
+        rho[lag - 1, lag, 0] = rho[lag + 1, lag, 0] = 0.7
+        return rho
+
+    monkeypatch.setattr(loop, "_stationary_table", indefinite)
+    with pytest.raises(ValueError, match="loop kernel is not usable"):
+        estimate_noise_model(dwi, bvals, mask, patch=PATCH)

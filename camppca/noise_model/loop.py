@@ -26,7 +26,12 @@ used inside the loop: there the smooth power it fills in pulls smooth leftover s
 the bulk, and the kernel runs away.
 
 Patch rows are divided by the clipped level field before whitening, exactly as the
-denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens.
+denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens. The
+split uses the default rule, Cordero-Grande. Denoising with ``noise_field=False`` or
+another ``algo`` uses a kernel that was fitted to a different split.
+
+Lags the patch never spans, such as ``|dx| > 2`` for a 3 x 7 patch whose table reaches
+lag 6, carry no information from the bulk. They keep the starting table's values.
 
 ⚠ The loop runs in float64. The Richardson solve leaves the patch-mean direction at
 zero, so the next ``C`` is near singular there and whitening amplifies that direction by
@@ -73,7 +78,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed):
 
     Returns:
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
-        lag, and a dict with ``rounds``, ``converged``, ``u_kernel`` (U of the returned
+        lag and ``rho_start``'s values at lags the patch never spans, and a dict with ``rounds``, ``converged``, ``u_kernel`` (U of the returned
         table's patch correlation) and ``n_centres``.
 
     Raises:
@@ -93,17 +98,20 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed):
             sigma = np.asarray(_solve(jnp.asarray(S), A, Bm))
             C = _build_C(_lag_table(sigma, patch, lag, dzmax), patch, lag)
             u = _sphericity_excess(C)
-            if abs(u - u_prev) < LOOP_TOL:
+            change = abs(u - u_prev)
+            if change < LOOP_TOL:
                 converged = True
                 break
             u_prev = u
         if not converged:
             warnings.warn(f"loop kernel did not converge in {MAX_ROUNDS} rounds; U changed "
-                          f"by {abs(u - u_prev):.4f} in the last one, against a tolerance "
+                          f"by {change:.4f} in the last one, against a tolerance "
                           f"of {LOOP_TOL}", RuntimeWarning, stacklevel=3)
 
         S, A, Bm, _ = _split(patches, C)
         rho = _stationary_table(S, A, Bm, patch, lag, dzmax)
+    unspanned = ~_spanned(patch, lag, dzmax)
+    rho[unspanned] = rho_start[unspanned]
     info = dict(rounds=rounds, converged=converged,
                 u_kernel=_sphericity_excess(_build_C(rho, patch, lag)),
                 n_centres=int(patches.shape[0]))
@@ -231,6 +239,15 @@ def _lag_table(sigma, patch, lag, dzmax):
     np.add.at(count, idx, 1.0)
     table /= np.maximum(count, 1.0)
     return table / table[lag, lag, 0]
+
+
+def _spanned(patch, lag, dzmax):
+    """Bool table: the ``rho[dx+lag, dy+lag, |dz|]`` entries some voxel pair in the patch has."""
+    off = patch_offsets(patch)
+    d = off[:, None, :] - off[None, :, :]
+    spanned = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1), bool)
+    spanned[d[..., 0] + lag, d[..., 1] + lag, np.abs(d[..., 2])] = True
+    return spanned
 
 
 def _lag_classes(patch):

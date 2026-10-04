@@ -267,8 +267,16 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
         prov.update(loop_rounds=info["rounds"], loop_converged=info["converged"],
                     u_kernel=info["u_kernel"], n_centres=info["n_centres"])
 
-    return NoiseModel(rho=rho, d=d, sigma_p2s=sigma_p2s, mask=mask, lag=lag,
-                      provenance=prov)
+    model = NoiseModel(rho=rho, d=d, sigma_p2s=sigma_p2s, mask=mask, lag=lag,
+                       provenance=prov)
+    if kernel == "loop":
+        # Fail here, not at denoising after the estimate is spent.
+        try:
+            model.patch_correlation(patch)
+        except ValueError as err:
+            raise ValueError(f"the loop kernel is not usable: {err} kernel='p2s' skips "
+                             "the loop.") from err
+    return model
 
 
 def _bvals_hash(bvals):

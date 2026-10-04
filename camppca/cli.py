@@ -128,9 +128,9 @@ def main(argv=None):
     say(f"  {Path(args.input).name}  {dwi.shape}")
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
                                  lowb=args.lowb)
-    lag1 = model.rho[model.lag + 1, model.lag, 0]
-    say(f"  noise model: lag {model.lag}, "
-        f"rho(x=1) {lag1:+.3f}, sigma_p2s median "
+    # A patch one voxel wide in-plane gives lag 0: no x=1 entry to show.
+    lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
+    say(f"  noise model: lag {model.lag}{lag1}, sigma_p2s median "
         f"{np.median(model.sigma_p2s[model.mask]):.1f}")
 
     result = None

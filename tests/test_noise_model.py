@@ -88,7 +88,10 @@ def test_patch_correlation_refuses_a_table_that_is_not_a_valid_correlation():
 
 
 def test_estimate_serves_a_one_slice_patch_on_a_thin_volume():
-    """An (11, 11, 1) patch on 9 slices used to crash: dzmax followed the in-plane reach."""
+    """A one-slice patch on a thin volume used to crash: dzmax followed the in-plane reach.
+
+    Reported for (11, 11, 1) on 9 slices; (5, 5, 1) on 3 slices is the same failure, smaller.
+    """
     dwi, bvals, _, _ = _synthetic(np.random.default_rng(5), shape=(40, 40, 3))
     mask = np.zeros(dwi.shape[:3], bool)
     mask[4:36, 4:36, :] = True

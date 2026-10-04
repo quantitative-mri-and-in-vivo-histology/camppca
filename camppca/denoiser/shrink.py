@@ -26,6 +26,9 @@ with ``s_k^2 = 1 - c_k^2``, ``mu_tau_k = c_k^2 / (q_k - s_k^2)`` and
 ``q_k = u_k^T C u_k / (tr C / n_vox)``, ``u_k`` the k-th left singular vector of the
 whitened patch. Where ``q_k <= s_k^2`` there is no valid ``tau_k`` and "lr" falls back to
 "gd". The weight on the component is ``t_k / sw_k``, and 0 below the edge.
+
+``q_k`` measures noise loudness with ``C`` alone. With ``noise_field=True`` the rows were
+divided by ``d`` first, so the level variation inside the patch is not part of it.
 """
 
 from __future__ import annotations
