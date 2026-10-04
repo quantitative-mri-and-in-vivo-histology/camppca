@@ -120,12 +120,13 @@ def test_estimate_fits_one_pattern_over_every_diffusion_volume():
     assert model.provenance["n_dwi"] == int((bvals > 100).sum()), "b0s stay out of the fit"
 
 
-def test_estimate_recovers_the_noise_level_and_a_unit_median_field():
+def test_estimate_recovers_the_noise_level_and_d_is_the_pooled_level():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(1))
     model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+    pooled = _pool_level(np.where(mask, model.sigma_p2s, 0.0).astype(np.float64), mask, 3)
 
     assert np.median(model.sigma_p2s[mask]) == pytest.approx(sigma, rel=0.1)
-    assert np.median(model.d[mask]) == pytest.approx(1.0, abs=1e-5), "d is median-normalized"
+    np.testing.assert_allclose(model.d[mask], pooled[mask], rtol=1e-6)
     assert np.all(model.d[~mask] == 0)
 
 
@@ -239,7 +240,7 @@ def test_estimate_pools_d_but_leaves_sigma_p2s_alone():
 
     assert pooled.provenance["pool"] == 3, "pooling is on by default"
     assert np.array_equal(raw.sigma_p2s, pooled.sigma_p2s), "sigma_p2s is never pooled"
-    assert np.median(pooled.d[mask]) == pytest.approx(1.0, abs=1e-5)
+    assert np.median(pooled.d[mask]) == pytest.approx(np.median(raw.d[mask]), rel=0.02)
     assert pooled.d[mask].std() < 0.6 * raw.d[mask].std(), "pooling cuts sampling scatter"
 
 

@@ -69,8 +69,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
     Args:
         dwi: (X, Y, Z, N) data. Every volume enters, as every volume enters the denoiser.
         mask: (X, Y, Z) bool.
-        d: (X, Y, Z) relative level field. Clipped by ``_effective_d`` as the denoiser
-            clips it.
+        d: (X, Y, Z) level field. Guarded by ``_effective_d`` as the denoiser guards it.
         rho_start: (2*lag+1, 2*lag+1, dzmax+1) table to start from.
         patch: the patch the kernel must serve, as a length-3 int array.
         lag: in-plane reach of ``rho_start``.

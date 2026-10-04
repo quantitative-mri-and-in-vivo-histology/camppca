@@ -50,7 +50,6 @@ def test_denoise_writes_image_noise_map_and_qc(dataset, capsys):
         assert (qc / name).exists(), name
 
     prov = json.loads((qc / "provenance.json").read_text())
-    assert prov["denoise"]["sigma_units"] == "data"
     assert prov["model"]["n_dwi"] < prov["model"]["n_vols"], "b0s stay out of the fit"
 
 

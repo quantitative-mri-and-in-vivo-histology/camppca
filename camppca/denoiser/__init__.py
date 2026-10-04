@@ -26,11 +26,13 @@ from .shrink import RULES, check_shrink
 __all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",
            "denoise_with_noise_model"]
 
-D_CLIP = (0.2, 5.0)
-
-
 def _effective_d(d, mask):
-    """Median-normalize and clip the level field. The one place this happens.
+    """The level field as the engine uses it. The one place ``d`` is guarded.
+
+    ``d`` is defined up to scale: rows are divided by it and the centre voxel multiplied
+    back, so a constant cancels in the denoised image, the rank and ``sigma_hat`` in data
+    units. Voxels that are non-finite, not positive, or outside the mask, which edge
+    patches include, get the median of ``d`` over the mask.
 
     The engine takes the field as given and rescales the denoised image by it at the centre
     voxel, but NOT ``sigma_hat``. Putting sigma_hat back into data units therefore means
@@ -41,13 +43,11 @@ def _effective_d(d, mask):
     good = np.isfinite(d) & (d > 0) & mask
     if not good.any():
         raise ValueError("noise field d is empty or non-positive everywhere in the mask")
-    d = d / np.median(d[good])
-    return np.clip(np.where(np.isfinite(d) & (d > 0), d, 1.0), *D_CLIP)
+    return np.where(good, d, np.median(d[good])).astype(np.float32)
 
 
 def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
-                             algo="cordero-grande", tile=256, sigma_units="data",
-                             shrink="hard"):
+                             algo="cordero-grande", tile=256, shrink="hard"):
     """Denoise in the whitened domain, given a noise model.
 
     ``model``        a :class:`~camppca.noise_model.NoiseModel`.  Raises if ``patch`` is
@@ -55,16 +55,12 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
     ``noise_field``  apply the model's relative level field ``d`` (Sigma = sigma^2 D C D).
                      Adds the WITHIN-patch heteroscedasticity, which widens the noise bulk
                      the same way off-diagonal colour does.
-    ``sigma_units``  "data" (default) returns ``sigma_hat`` in the input's units; "d" leaves
-                     it d-normalized, as the engine produces it.
     ``shrink``       weight on the kept components: "hard" (default), "gd" or "lr"; see
                      :mod:`camppca.denoiser.shrink`.
 
     The rule -- Exp2 / Cordero-Grande, centre-voxel-only, hard threshold unless ``shrink``
     says otherwise -- is the method.
     """
-    if sigma_units not in ("data", "d"):
-        raise ValueError(f"sigma_units must be 'data' or 'd', got {sigma_units!r}")
     shrink = check_shrink(shrink)
     patch = check_patch(patch)
     dwi = np.asarray(dwi)
@@ -87,13 +83,13 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
         dwi, model.mask, C, patch=tuple(int(v) for v in patch), algo=algo, tile=tile,
         d_field=d_eff, shrink=shrink)
 
-    if d_eff is not None and sigma_units == "data":
+    if d_eff is not None:
         # The engine rescales the IMAGE by d at the centre voxel but not sigma_hat.
-        # Do it here, or the normalization convention leaks into the headline number.
+        # Do it here, or the scale of d leaks into the headline number.
         sigma_hat = sigma_hat * d_eff
 
     prov = dict(method="camppca", patch=tuple(int(v) for v in patch), algo=algo,
-                noise_field=bool(noise_field), sigma_units=sigma_units, shrink=shrink,
+                noise_field=bool(noise_field), shrink=shrink,
                 rule=f"Cordero-Grande/Exp2, {RULES[shrink]}, centre-voxel only",
                 model=dict(model.provenance))
     return DenoiseResult(denoised=denoised, sigma_hat=sigma_hat, rank=rank, model=model,
@@ -101,8 +97,7 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
 
 
 def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=True,
-                    algo="cordero-grande", tile=256, sigma_units="data", shrink="hard",
-                    **estimate_kwargs):
+                    algo="cordero-grande", tile=256, shrink="hard", **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
     Equivalent to ``estimate_noise_model`` followed by ``denoise_with_noise_model``; the
@@ -113,5 +108,4 @@ def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=Tru
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch, algo=algo,
                                  noise_field=noise_field, **estimate_kwargs)
     return denoise_with_noise_model(dwi, model, patch=patch, noise_field=noise_field,
-                                    algo=algo, tile=tile, sigma_units=sigma_units,
-                                    shrink=shrink)
+                                    algo=algo, tile=tile, shrink=shrink)

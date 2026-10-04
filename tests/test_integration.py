@@ -148,15 +148,26 @@ def test_denoise_reduces_variance_and_keeps_shape(dataset):
     assert (dwi - result.denoised)[mask].std() < SIGMA_TRUE * 1.2
 
 
-def test_sigma_units_switch(dataset, model):
-    dwi, _, mask = dataset
-    data = denoise_with_noise_model(dwi, model, patch=(5, 5, 3), sigma_units="data")
-    norm = denoise_with_noise_model(dwi, model, patch=(5, 5, 3), sigma_units="d")
+def test_the_scale_of_d_cancels(dataset, model):
+    """Rows are divided by d and the centre multiplied back, so a constant drops out.
 
-    assert not np.allclose(data.sigma_hat[mask], norm.sigma_hat[mask])
-    assert np.array_equal(data.denoised, norm.denoised), "only sigma_hat's units change"
-    with pytest.raises(ValueError, match="sigma_units"):
-        denoise_with_noise_model(dwi, model, patch=(5, 5, 3), sigma_units="nope")
+    A power of two scales every float exactly, so x0.25 must be bit-identical. A generic
+    factor may flip a near-tied MP cut by float32 rounding, in a small share of voxels.
+    """
+    from dataclasses import replace
+
+    dwi, _, mask = dataset
+    ref = denoise_with_noise_model(dwi, model, patch=(5, 5, 3))
+    quarter = denoise_with_noise_model(dwi, replace(model, d=model.d * 0.25), patch=(5, 5, 3))
+    odd = denoise_with_noise_model(dwi, replace(model, d=model.d * 7.3), patch=(5, 5, 3))
+
+    for name in ("denoised", "sigma_hat", "rank"):
+        assert np.array_equal(getattr(quarter, name), getattr(ref, name)), name
+    assert (odd.rank[mask] != ref.rank[mask]).mean() < 0.005
+    same = odd.rank == ref.rank
+    # float32 eigenvalues next to the baseline component: measured up to 6e-4 relative
+    np.testing.assert_allclose(odd.sigma_hat[same & mask], ref.sigma_hat[same & mask],
+                               rtol=2e-3)
 
 
 def test_denoise_refuses_a_patch_the_model_cannot_serve(dataset, model):

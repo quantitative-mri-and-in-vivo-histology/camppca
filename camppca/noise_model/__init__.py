@@ -49,7 +49,8 @@ class NoiseModel:
 
     ``rho``        (2*lag+1, 2*lag+1, dzmax+1) correlation lag table, unit at zero lag.
                    PATTERN ONLY -- carries no level.
-    ``d``          (X, Y, Z) relative level field, median-normalized.  Only ratios matter.
+    ``d``          (X, Y, Z) level field, defined up to scale: the P2S level pooled over
+                   a ``pool``^3 box.  Only ratios matter.  Zero outside ``mask``.
     ``sigma_p2s``  (X, Y, Z) absolute P2S noise level.  An INPUT that drives whitening --
                    not to be confused with ``sigma_hat``, the MP-PCA output.
     ``mask``       (X, Y, Z) bool, the voxels the model was estimated on.
@@ -259,7 +260,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     level[mask] = sigma_vox
     level = _pool_level(level, mask, pool)
     d = np.zeros(mask.shape, np.float32)
-    d[mask] = level[mask] / np.median(level[mask])  # median, not mean -- see CLAUDE.md
+    d[mask] = level[mask]
 
     prov = dict(patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
                 ncol=int(ncol), seed=int(seed), lowb=float(lowb), pool=pool,
