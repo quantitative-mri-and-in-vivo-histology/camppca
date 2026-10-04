@@ -5,6 +5,8 @@ is large. These tests check that the loop keeps the kernel right, converges, doe
 depend on where it starts, and that the batched solve is the per-patch algebra.
 """
 
+import warnings
+
 import jax
 import numpy as np
 import pytest
@@ -122,7 +124,7 @@ def test_the_batched_split_and_solve_are_the_per_patch_algebra(dataset, model):
     C = model.patch_correlation(PATCH)
 
     with jax.enable_x64(True):
-        S, A, Bm, rank = loop._split(patches, C)
+        S, A, Bm, rank = loop._split(patches, C, "cordero-grande")
         sigma = np.asarray(loop._solve(S, A, Bm))
         A, Bm = np.asarray(A), np.asarray(Bm)
     S_ref, Q_ref = _reference_split(patches, C, rank)
@@ -194,3 +196,32 @@ def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
     monkeypatch.setattr(loop, "_stationary_table", indefinite)
     with pytest.raises(ValueError, match="loop kernel is not usable"):
         estimate_noise_model(dwi, bvals, mask, patch=PATCH)
+
+
+def test_the_loop_fits_to_the_denoisers_settings(dataset, model):
+    dwi, bvals, mask = dataset
+    other = estimate_noise_model(dwi, bvals, mask, patch=PATCH, algo="veraart",
+                                 noise_field=False)
+
+    assert (model.provenance["loop_algo"], model.provenance["loop_noise_field"]) == \
+        ("cordero-grande", True)
+    assert (other.provenance["loop_algo"], other.provenance["loop_noise_field"]) == \
+        ("veraart", False)
+    assert not np.array_equal(other.rho, model.rho)
+
+
+def test_denoising_with_other_settings_than_the_loop_fitted_warns(dataset, model):
+    from camppca import denoise_with_noise_model
+
+    dwi, _, _ = dataset
+    with pytest.warns(RuntimeWarning, match="re-estimate|Re-estimate"):
+        denoise_with_noise_model(dwi, model, patch=PATCH, noise_field=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        denoise_with_noise_model(dwi, model, patch=PATCH)
+
+
+def test_an_unknown_algo_is_refused_before_the_estimate(dataset):
+    dwi, bvals, mask = dataset
+    with pytest.raises(ValueError, match="algo must be"):
+        estimate_noise_model(dwi, bvals, mask, patch=PATCH, algo="exp3")

@@ -112,7 +112,9 @@ engine's own split. The old rule that the estimator never imports JAX was droppe
 
 `estimate_noise_model(kernel="loop")`, the default, starts from the P2S `rho` and refines
 it until it explains the MP-PCA bulk of 3000 sampled patches at once
-(`noise_model/loop.py`). Rows are divided by `d` first, as the denoiser divides them.
+(`noise_model/loop.py`). It fits to the denoiser's own split: `algo` and `noise_field`
+are passed to `estimate_noise_model`, recorded in provenance, and a mismatch at denoising
+warns.
 Every volume enters, b0s included, because the denoiser whitens them all. The b0
 exclusion above is for the P2S fit only. `kernel="p2s"` skips the loop.
 

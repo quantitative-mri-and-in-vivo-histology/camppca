@@ -12,6 +12,8 @@ them. The loop kernel estimator in ``noise_model/loop.py`` reuses the split,
 Every public name here is re-exported from ``camppca`` itself.
 """
 
+import warnings
+
 import numpy as np
 
 from ..noise_model import estimate_noise_model
@@ -72,6 +74,12 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
         raise ValueError(f"dwi spatial shape {dwi.shape[:3]} != model mask "
                          f"{model.mask.shape}")
 
+    fitted = (model.provenance.get("loop_algo"), model.provenance.get("loop_noise_field"))
+    if model.provenance.get("kernel") == "loop" and fitted != (algo, bool(noise_field)):
+        warnings.warn(f"the loop kernel was fitted with algo={fitted[0]!r}, "
+                      f"noise_field={fitted[1]}, but this denoise uses algo={algo!r}, "
+                      f"noise_field={bool(noise_field)}. Re-estimate with the same settings.",
+                      RuntimeWarning, stacklevel=2)
     C = model.patch_correlation(patch)
     d_eff = _effective_d(model.d, model.mask) if noise_field else None
 
@@ -102,8 +110,8 @@ def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=Tru
     intermediates.
     """
     check_shrink(shrink)                   # before the estimate, which can take a while
-    model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
-                                 **estimate_kwargs)
+    model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch, algo=algo,
+                                 noise_field=noise_field, **estimate_kwargs)
     return denoise_with_noise_model(dwi, model, patch=patch, noise_field=noise_field,
                                     algo=algo, tile=tile, sigma_units=sigma_units,
                                     shrink=shrink)

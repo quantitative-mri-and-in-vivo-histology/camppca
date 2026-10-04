@@ -27,8 +27,13 @@ with ``s_k^2 = 1 - c_k^2``, ``mu_tau_k = c_k^2 / (q_k - s_k^2)`` and
 whitened patch. Where ``q_k <= s_k^2`` there is no valid ``tau_k`` and "lr" falls back to
 "gd". The weight on the component is ``t_k / sw_k``, and 0 below the edge.
 
-``q_k`` measures noise loudness with ``C`` alone. With ``noise_field=True`` the rows were
-divided by ``d`` first, so the level variation inside the patch is not part of it.
+``q_k`` measures noise loudness with ``C`` alone, which fits camppca's centre-voxel output.
+The loss that matters is the error at the centre voxel, whose level ``d_c`` scales every
+component equally and so drops out of the weights; the other voxels' levels never enter.
+Leeb & Romanov's own loss is the error over the whole patch in data units. There the way
+back is ``D C^(1/2)``, and ``q_k = |D C^(1/2) u_k|^2 / mean(d^2)`` would be the right
+measure. That version belongs with patch averaging, where every voxel of a patch reaches
+the output.
 """
 
 from __future__ import annotations

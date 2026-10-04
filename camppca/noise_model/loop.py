@@ -27,8 +27,8 @@ the bulk, and the kernel runs away.
 
 Patch rows are divided by the clipped level field before whitening, exactly as the
 denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens. The
-split uses the default rule, Cordero-Grande. Denoising with ``noise_field=False`` or
-another ``algo`` uses a kernel that was fitted to a different split.
+MP rule (``algo``) and whether rows are divided by ``d`` (``noise_field``) are the
+denoiser's settings, passed in, so the kernel is fitted to the split it will serve.
 
 Lags the patch never spans, such as ``|dx| > 2`` for a 3 x 7 patch whose table reaches
 lag 6, carry no information from the bulk. They keep the starting table's values.
@@ -60,10 +60,10 @@ MAX_ROUNDS = 20
 N_INNER = 30            # Richardson steps per round
 RCOND = 1e-2            # design directions below this share of the largest are unobservable
 TILE = 256              # patches per device batch in the split
-ALGO = "cordero-grande"
 
 
-def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed):
+def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande",
+                noise_field=True):
     """Refine a kernel until it is consistent with the MP-PCA bulk of the patches.
 
     Args:
@@ -75,11 +75,14 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed):
         patch: the patch the kernel must serve, as a length-3 int array.
         lag: in-plane reach of ``rho_start``.
         seed: seeds the choice of patch centres.
+        algo: the MP rule the denoiser will cut with.
+        noise_field: whether the denoiser will divide rows by ``d``.
 
     Returns:
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
-        lag and ``rho_start``'s values at lags the patch never spans, and a dict with ``rounds``, ``converged``, ``u_kernel`` (U of the returned
-        table's patch correlation) and ``n_centres``.
+        lag and ``rho_start``'s values at lags the patch never spans, and a dict with
+        ``rounds``, ``converged``, ``u_kernel`` (U of the returned table's patch
+        correlation) and ``n_centres``.
 
     Raises:
         ValueError: if no mask voxel has its whole patch inside the mask.
@@ -87,14 +90,15 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed):
     patch = np.asarray(patch, int)
     dzmax = rho_start.shape[2] - 1
     centres = _sample_centres(mask, patch, np.random.default_rng(seed))
-    patches = _gather(dwi, _effective_d(d, mask), centres, patch)
+    levels = _effective_d(d, mask) if noise_field else np.ones(mask.shape, np.float32)
+    patches = _gather(dwi, levels, centres, patch)
 
     with jax.enable_x64(True):
         C = _build_C(rho_start, patch, lag)
         u_prev = _sphericity_excess(C)
         converged = False
         for rounds in range(1, MAX_ROUNDS + 1):  # noqa: B007 - read after the loop
-            S, A, Bm, _ = _split(patches, C)
+            S, A, Bm, _ = _split(patches, C, algo)
             sigma = np.asarray(_solve(jnp.asarray(S), A, Bm))
             C = _build_C(_lag_table(sigma, patch, lag, dzmax), patch, lag)
             u = _sphericity_excess(C)
@@ -108,7 +112,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed):
                           f"by {change:.4f} in the last one, against a tolerance "
                           f"of {LOOP_TOL}", RuntimeWarning, stacklevel=3)
 
-        S, A, Bm, _ = _split(patches, C)
+        S, A, Bm, _ = _split(patches, C, algo)
         rho = _stationary_table(S, A, Bm, patch, lag, dzmax)
     unspanned = ~_spanned(patch, lag, dzmax)
     rho[unspanned] = rho_start[unspanned]
@@ -146,8 +150,8 @@ def _gather(dwi, d_eff, centres, patch):
     return patches / np.asarray(d_eff, np.float64)[ix, iy, iz][:, :, None]
 
 
-@partial(jax.jit, static_argnums=(3, 4))
-def _split_tile(patches, whitener, root, n_small: int, n_large: int):
+@partial(jax.jit, static_argnums=(3, 4, 5))
+def _split_tile(patches, whitener, root, n_small: int, n_large: int, algo: str):
     """One tile's share of the pooled bulk, and the factors of each kept projector.
 
     Returns:
@@ -158,7 +162,7 @@ def _split_tile(patches, whitener, root, n_small: int, n_large: int):
     """
     n_vols = patches.shape[2]
     whitened, evals, evecs, rank, sigma_hat = _whiten_split(
-        patches, whitener, n_small, n_large, ALGO)
+        patches, whitener, n_small, n_large, algo)
     keep = (jnp.arange(n_vols)[None, :] < rank[:, None])[:, None, :]
     coords = jnp.einsum("bpn,bnk->bpk", whitened, evecs)
     kept = jnp.where(keep, coords, 0.0)
@@ -171,7 +175,7 @@ def _split_tile(patches, whitener, root, n_small: int, n_large: int):
     return bulk, A, Bm, rank
 
 
-def _split(patches, C):
+def _split(patches, C, algo):
     """Whiten every patch by ``C``, split it, and pool the bulk. Call under float64.
 
     Returns:
@@ -189,7 +193,8 @@ def _split(patches, C):
     A, Bm, rank = [], [], []
     for start in range(0, n_b, TILE):
         t_bulk, t_A, t_Bm, t_rank = _split_tile(
-            jnp.asarray(patches[start:start + TILE]), whitener, root, n_small, n_large)
+            jnp.asarray(patches[start:start + TILE]), whitener, root, n_small, n_large,
+            algo)
         r = int(t_rank.max())
         bulk += np.asarray(t_bulk)
         A.append(np.asarray(t_A[:, :, :r]))

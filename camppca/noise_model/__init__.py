@@ -158,7 +158,8 @@ def _pool_level(level, mask, size):
 
 
 def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, lowb=100,
-                         seed=0, pool=3, kernel="loop"):
+                         seed=0, pool=3, kernel="loop", algo="cordero-grande",
+                         noise_field=True):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
     ``dwi``    (X, Y, Z, N) diffusion data.
@@ -175,6 +176,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     ``kernel`` "loop" (default) refines the P2S pattern until it explains the MP-PCA bulk
                of the patches; see :mod:`camppca.noise_model.loop`. "p2s" returns the
                P2S pattern itself, which is always the loop's start.
+    ``algo``, ``noise_field``  the denoiser settings the loop fits the kernel to: the MP
+               rule, and whether rows are divided by ``d``. Pass the ones you will denoise
+               with. Ignored for "p2s".
 
     One pattern is fit across all the diffusion volumes.  b0s are excluded from the fit:
     their residual level is not representative of diffusion-weighted noise.
@@ -192,6 +196,10 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
     dzmax = int(patch[2]) - 1
     if kernel not in ("loop", "p2s"):
         raise ValueError(f"kernel must be 'loop' or 'p2s', got {kernel!r}")
+    from ..denoiser.mp_threshold import ALGORITHMS  # here: denoiser imports this package
+
+    if algo not in ALGORITHMS:
+        raise ValueError(f"algo must be one of {ALGORITHMS}, got {algo!r}")
     rng = np.random.default_rng(seed)
     pool = int(pool)
     if pool < 1:
@@ -263,9 +271,11 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), ncol=40, l
         # Imported here: loop.py uses denoiser internals, and the denoiser imports this
         # package, so a top-level import would be circular.
         from .loop import loop_kernel
-        rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed)
+        rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algo=algo,
+                                noise_field=noise_field)
         prov.update(loop_rounds=info["rounds"], loop_converged=info["converged"],
-                    u_kernel=info["u_kernel"], n_centres=info["n_centres"])
+                    u_kernel=info["u_kernel"], n_centres=info["n_centres"],
+                    loop_algo=algo, loop_noise_field=bool(noise_field))
 
     model = NoiseModel(rho=rho, d=d, sigma_p2s=sigma_p2s, mask=mask, lag=lag,
                        provenance=prov)
