@@ -199,3 +199,6 @@ reference/
 # Internal notes. docs/ may hold user-facing documentation; docs/local/ never
 # leaves this machine.
 **/docs/local/
+
+# uv lockfile: local to each environment (e.g. the CUDA build of JAX lives only in .venv).
+uv.lock
