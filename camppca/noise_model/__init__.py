@@ -159,7 +159,8 @@ def _pool_level(level, mask, size):
 
 
 def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, seed=0,
-                         pool=3, algo="cordero-grande", noise_field=True, level_rounds=0):
+                         pool=3, algo="cordero-grande", noise_field=True, level_rounds=0,
+                         workers=None):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
     ``dwi``    (X, Y, Z, N) diffusion data.  Every volume enters, b0s included, because the
@@ -175,6 +176,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, 
                and whether rows are divided by ``d``.  Pass the ones you will denoise with.
     ``level_rounds``  how many times ``d`` is re-estimated from the whitened patches.
                0, the default, keeps standard MP-PCA's level.
+    ``workers``  pinned CPU processes for the passes over every voxel and the loop's
+               split, see :mod:`camppca.pool`. The default is one per physical core.
+               1 runs everything in this process, on the default JAX device.
 
     The level field ``d`` is standard MP-PCA's ``sigma_hat`` at every mask voxel, pooled
     ``pool``^3.  Unpooled, its rank grain made ``C`` near singular on strongly correlated
@@ -242,18 +246,18 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, 
     rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     rho[lag, lag, 0] = 1.0
     if noise_field:
-        level = whitened_level(dwi, mask, None, patch, algo)
+        level = whitened_level(dwi, mask, None, patch, algo, workers=workers)
         d = _level_field(level, mask, pool)
     else:
         d = mask.astype(np.float32)
     rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algo=algo,
-                            noise_field=noise_field)
+                            noise_field=noise_field, workers=workers)
 
     rounds_run, change, spread = 0, None, None
     for rounds_run in range(1, (level_rounds if noise_field else 0) + 1):  # noqa: B007
         d_eff = _effective_d(d, mask)
         s = whitened_level(dwi, mask, _build_C(rho, patch, lag), patch, algo,
-                           d_field=d_eff)
+                           d_field=d_eff, workers=workers)
         q25, q50, q75 = np.percentile(s[mask], (25, 50, 75))
         spread = float((q75 - q25) / q50)
         new = _level_field(d_eff * s, mask, pool)
@@ -263,7 +267,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, 
             break
         d = new
         rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algo=algo,
-                                noise_field=noise_field)
+                                noise_field=noise_field, workers=workers)
 
     prov = dict(patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
                 seed=int(seed), lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),

@@ -40,6 +40,7 @@ rounding error spills into the bulk and the ranks run to the maximum within one 
 """
 
 import warnings
+from contextlib import ExitStack
 from functools import partial
 
 import jax
@@ -50,6 +51,7 @@ from scipy.ndimage import binary_erosion
 from ..denoiser import _effective_d
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..patch import patch_offsets
+from ..pool import get_pool, resolve_workers, shared_volume
 from . import _build_C
 
 __all__ = ["loop_kernel"]
@@ -60,10 +62,11 @@ MAX_ROUNDS = 20
 N_INNER = 30            # Richardson steps per round
 RCOND = 1e-2            # design directions below this share of the largest are unobservable
 TILE = 256              # patches per device batch in the split
+POOL_TILE = 32          # the same in a pool worker: ~1/8 the memory, and faster per core
 
 
 def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande",
-                noise_field=True):
+                noise_field=True, workers=None):
     """Refine a kernel until it is consistent with the MP-PCA bulk of the patches.
 
     Args:
@@ -76,6 +79,9 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
         seed: seeds the choice of patch centres.
         algo: the MP rule the denoiser will cut with.
         noise_field: whether the denoiser will divide rows by ``d``.
+        workers: pinned CPU processes the sampled patches are split over each round,
+            see :mod:`camppca.pool`. Each gathers and splits its own share. The solve and
+            the final least squares stay in this process.
 
     Returns:
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
@@ -88,16 +94,30 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
     """
     patch = np.asarray(patch, int)
     dzmax = rho_start.shape[2] - 1
+    workers = resolve_workers(workers)
     centres = _sample_centres(mask, patch, np.random.default_rng(seed))
     levels = _effective_d(d, mask) if noise_field else np.ones(mask.shape, np.float32)
-    patches = _gather(dwi, levels, centres, patch)
 
-    with jax.enable_x64(True):
+    with ExitStack() as stack, jax.enable_x64(True):
+        if workers > 1:
+            path = stack.enter_context(shared_volume(dwi, levels))
+            chunks = [tuple(c[part] for c in centres)
+                      for part in np.array_split(np.arange(centres[0].size), workers)]
+
+            def split(C):
+                return _split_pooled(get_pool(workers), path, dwi.shape[3], chunks, patch,
+                                     C, algo)
+        else:
+            patches = _gather(dwi, levels, centres, patch)
+
+            def split(C):
+                return _split(patches, C, algo)
+
         C = _build_C(rho_start, patch, lag)
         u_prev = _sphericity_excess(C)
         converged = False
         for rounds in range(1, MAX_ROUNDS + 1):  # noqa: B007 - read after the loop
-            S, A, Bm, _ = _split(patches, C, algo)
+            S, A, Bm, _ = split(C)
             sigma = np.asarray(_solve(jnp.asarray(S), A, Bm))
             C = _build_C(_lag_table(sigma, patch, lag, dzmax), patch, lag)
             u = _sphericity_excess(C)
@@ -111,13 +131,13 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
                           f"by {change:.4f} in the last one, against a tolerance "
                           f"of {LOOP_TOL}", RuntimeWarning, stacklevel=3)
 
-        S, A, Bm, _ = _split(patches, C, algo)
+        S, A, Bm, _ = split(C)
         rho = _stationary_table(S, A, Bm, patch, lag, dzmax)
     unspanned = ~_spanned(patch, lag, dzmax)
     rho[unspanned] = rho_start[unspanned]
     info = dict(rounds=rounds, converged=converged,
                 u_kernel=_sphericity_excess(_build_C(rho, patch, lag)),
-                n_centres=int(patches.shape[0]))
+                n_centres=int(centres[0].size))
     return rho, info
 
 
@@ -174,39 +194,76 @@ def _split_tile(patches, whitener, root, n_small: int, n_large: int, algo: str):
     return bulk, A, Bm, rank
 
 
-def _split(patches, C, algo):
-    """Whiten every patch by ``C``, split it, and pool the bulk. Call under float64.
+def _split_chunk(patches, C, algo, tile=TILE):
+    """Whiten and split a batch of patches ``tile`` at a time. Call under float64.
 
     Returns:
-        ``(S, A, Bm, rank)``: (n_vox, n_vox) pooled bulk covariance in data units per unit
-        noise variance; (B, n_vox, r) device arrays ``A`` and ``Bm``, with r the largest
-        rank rounded up to a multiple of 8 so few shapes get compiled; (B,) ranks.
+        ``(bulk, A, Bm, rank)``: (n_vox, n_vox) whitened bulk summed over the batch; lists
+        of each tile's ``A`` and ``Bm``, cut to the tile's largest rank; (B,) ranks.
     """
     n_b, n_vox, n_vols = patches.shape
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
-    root64 = sqrtm_psd(C, 0.5)
     whitener = jnp.asarray(sqrtm_psd(C, -0.5))
-    root = jnp.asarray(root64)
+    root = jnp.asarray(sqrtm_psd(C, 0.5))
 
     bulk = np.zeros((n_vox, n_vox))
     A, Bm, rank = [], [], []
-    for start in range(0, n_b, TILE):
+    for start in range(0, n_b, tile):
         t_bulk, t_A, t_Bm, t_rank = _split_tile(
-            jnp.asarray(patches[start:start + TILE]), whitener, root, n_small, n_large,
+            jnp.asarray(patches[start:start + tile]), whitener, root, n_small, n_large,
             algo)
         r = int(t_rank.max())
         bulk += np.asarray(t_bulk)
         A.append(np.asarray(t_A[:, :, :r]))
         Bm.append(np.asarray(t_Bm[:, :, :r]))
         rank.append(np.asarray(t_rank))
+    return bulk, A, Bm, np.concatenate(rank)
+
+
+def _assemble(C, chunks):
+    """Pool the chunks' bulks and stack their factors, in chunk order.
+
+    Returns:
+        ``(S, A, Bm, rank)``: (n_vox, n_vox) pooled bulk covariance in data units per unit
+        noise variance; (B, n_vox, r) device arrays ``A`` and ``Bm``, with r the largest
+        rank rounded up to a multiple of 8 so few shapes get compiled; (B,) ranks.
+    """
+    root64 = sqrtm_psd(C, 0.5)
+    bulk = sum(chunk[0] for chunk in chunks)
+    A = [a for chunk in chunks for a in chunk[1]]
+    Bm = [b for chunk in chunks for b in chunk[2]]
+    rank = np.concatenate([chunk[3] for chunk in chunks])
     r_max = max(8, -(-max(a.shape[2] for a in A) // 8) * 8)
 
     def stack(parts):
         return jnp.asarray(np.concatenate(
             [np.pad(p, ((0, 0), (0, 0), (0, r_max - p.shape[2]))) for p in parts]))
 
-    S = root64 @ bulk @ root64 / n_b
-    return S, stack(A), stack(Bm), np.concatenate(rank)
+    S = root64 @ bulk @ root64 / rank.size
+    return S, stack(A), stack(Bm), rank
+
+
+def _split(patches, C, algo):
+    """Whiten every patch by ``C``, split it, and pool the bulk. Call under float64.
+
+    Returns what :func:`_assemble` returns.
+    """
+    return _assemble(C, [_split_chunk(patches, C, algo)])
+
+
+def _split_task(args):
+    """One worker's share of a round: gather its patches from the shared file, split."""
+    path, n_vols, centres, patch, C, algo = args
+    vol = np.load(path, mmap_mode="r")
+    with jax.enable_x64(True):
+        patches = _gather(vol[..., :n_vols], vol[..., n_vols], centres, patch)
+        return _split_chunk(patches, C, algo, POOL_TILE)
+
+
+def _split_pooled(pool, path, n_vols, chunks, patch, C, algo):
+    """:func:`_split` with the patches gathered and split in the worker pool."""
+    tasks = [(path, n_vols, chunk, patch, C, algo) for chunk in chunks]
+    return _assemble(C, list(pool.map(_split_task, tasks)))
 
 
 def _bulk_operator(sigma, A, Bm, Qm):

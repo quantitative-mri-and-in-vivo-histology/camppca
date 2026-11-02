@@ -47,7 +47,7 @@ def _effective_d(d, mask):
 
 
 def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
-                             algo="cordero-grande", tile=256, shrink="hard"):
+                             algo="cordero-grande", tile=256, shrink="hard", workers=None):
     """Denoise in the whitened domain, given a noise model.
 
     ``model``        a :class:`~camppca.noise_model.NoiseModel`.  Raises if ``patch`` is
@@ -57,6 +57,9 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
                      the same way off-diagonal colour does.
     ``shrink``       weight on the kept components: "hard" (default), "gd" or "lr"; see
                      :mod:`camppca.denoiser.shrink`.
+    ``workers``      pinned CPU processes to split the volume over, see
+                     :mod:`camppca.pool`. The default is one per physical core. 1 runs in
+                     this process, on the default JAX device.
 
     The rule -- Exp2 / Cordero-Grande, centre-voxel-only, hard threshold unless ``shrink``
     says otherwise -- is the method.
@@ -81,7 +84,7 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
 
     denoised, sigma_hat, rank = denoise_whitened(
         dwi, model.mask, C, patch=tuple(int(v) for v in patch), algo=algo, tile=tile,
-        d_field=d_eff, shrink=shrink)
+        d_field=d_eff, shrink=shrink, workers=workers)
 
     if d_eff is not None:
         # The engine rescales the IMAGE by d at the centre voxel but not sigma_hat.
@@ -97,7 +100,8 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
 
 
 def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=True,
-                    algo="cordero-grande", tile=256, shrink="hard", **estimate_kwargs):
+                    algo="cordero-grande", tile=256, shrink="hard", workers=None,
+                    **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
     Equivalent to ``estimate_noise_model`` followed by ``denoise_with_noise_model``; the
@@ -106,6 +110,7 @@ def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=Tru
     """
     check_shrink(shrink)                   # before the estimate, which can take a while
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch, algo=algo,
-                                 noise_field=noise_field, **estimate_kwargs)
+                                 noise_field=noise_field, workers=workers,
+                                 **estimate_kwargs)
     return denoise_with_noise_model(dwi, model, patch=patch, noise_field=noise_field,
-                                    algo=algo, tile=tile, shrink=shrink)
+                                    algo=algo, tile=tile, shrink=shrink, workers=workers)

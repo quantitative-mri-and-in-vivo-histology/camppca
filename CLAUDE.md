@@ -162,6 +162,7 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
         gather.py          patch extraction and the device-memory decision
         result.py          DenoiseResult, what both denoisers return
       patch.py             patch geometry — both halves of the seam need it
+      pool.py              pinned CPU process pool — both halves use it
       io.py                nibabel edge
       cli.py               camppca denoise | estimate
       __init__.py          public names; XLA env var set before jax loads
@@ -233,6 +234,23 @@ Breaking any of these corrupts results without an error:
   outside-mask voxels get the median). The engine takes the field as given.
 
 ## Gotchas
+
+- **Every full-volume pass and the loop's split run in a pinned process pool by default**
+  (`pool.py`, `workers=None` = one per physical core, `workers=1` = in-process on the
+  default device). Measured 2026-11-02 on the EDDEN crop at 297 volumes and 7³: estimate
+  64 s pooled against 102 s in one process on an RTX 4060 Ti; main with P2S took 74 s.
+  - Processes, not threads: OpenBLAS serializes concurrent eigh calls.
+  - ⚠ Each worker is pinned to one core before its first JAX call. XLA sizes its CPU
+    thread pool from the affinity mask and the idle threads spin. XLA_FLAGS did not stop it.
+  - Workers do not re-import `__main__`, so functions defined there cannot be sent to
+    them. Only camppca's own functions run in the pool.
+  - A pooled pass is the serial CPU pass bit for bit. The loop is not: its split rounds
+    differently on one thread, and a near-tied float64 rank moves `rho` by about 1e-4.
+  - Memory: about 350 MB per idle worker, a peak near 1.4 GB per worker during the loop.
+    19 GB for 16 workers on the crop.
+  - What is left of the 64 s: five Richardson solves at about 5 s each, in float64 on the
+    GPU and no faster on the CPU. Six splits at about 4 s each, which scale only about 5x
+    on 16 cores. The final fit at 6 s.
 
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a

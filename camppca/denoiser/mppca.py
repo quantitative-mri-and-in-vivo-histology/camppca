@@ -23,11 +23,14 @@ References: Veraart 2016, Cordero-Grande 2019, Ades-Aron 2020.
 
 from __future__ import annotations
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from ..patch import check_patch, patch_size
+from ..pool import resolve_workers, run_slabs
 from .gather import patch_tiles
 from .mp_threshold import mp_threshold
 from .result import DenoiseResult
@@ -73,9 +76,37 @@ def _denoise_tile(patches: jax.Array, center: int, n_small: int, n_large: int,
 _denoise_tile_jit = jax.jit(_denoise_tile, static_argnums=(1, 2, 3, 4, 5))
 
 
+def _denoise_arrays(dwi, mask, patch, algorithm, tile, on_device, shrink):
+    """The tile loop of :func:`denoise_mppca`, in this process, on checked inputs.
+
+    Returns:
+        ``(denoised, sigma_hat, rank)``, full-size, with voxels outside ``mask`` left as
+        the input and zero.
+    """
+    n_vox, n_vols = patch_size(patch), dwi.shape[3]
+    center = n_vox // 2
+    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+
+    denoised = dwi.copy()
+    sigma_hat = np.zeros(dwi.shape[:3], np.float32)
+    rank = np.zeros(dwi.shape[:3], np.int32)
+
+    for coords, patches in patch_tiles(dwi, mask, patch, tile=tile, on_device=on_device):
+        # Full float32 matmuls: on recent NVIDIA GPUs the default is TF32, about three
+        # significant digits, and GPU results would drift from CPU ones.
+        with jax.default_matmul_precision("highest"):
+            signal, tile_sigma, tile_rank = _denoise_tile_jit(
+                patches, center, n_small, n_large, algorithm, shrink)
+        denoised[coords] = np.asarray(signal)
+        sigma_hat[coords] = np.asarray(tile_sigma)
+        rank[coords] = np.asarray(tile_rank)
+    return denoised, sigma_hat, rank
+
+
 def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 5),
                   algorithm: str = "cordero-grande", tile: int = 256,
-                  on_device: bool | None = None, shrink: str = "hard") -> DenoiseResult:
+                  on_device: bool | None = None, shrink: str = "hard",
+                  workers: int | None = None) -> DenoiseResult:
     """Denoise a 4D volume with standard MP-PCA.
 
     Args:
@@ -90,6 +121,9 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
             default decides from free device memory.
         shrink: weight on the kept components, "hard" (default), "gd" or "lr"; see
             :mod:`camppca.denoiser.shrink`. With white noise "lr" is "gd".
+        workers: pinned CPU processes to split the volume over, see
+            :mod:`camppca.pool`. The default is one per physical core. 1 runs in this
+            process, on the default JAX device.
 
     Returns:
         A :class:`~camppca.denoiser.result.DenoiseResult` with ``model`` unset, since standard
@@ -113,23 +147,18 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
             raise ValueError(
                 f"mask shape {mask.shape} does not match dwi spatial shape {dwi.shape[:3]}")
 
-    n_vox, n_vols = patch_size(patch), dwi.shape[3]
-    center = n_vox // 2
-    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+    workers = resolve_workers(workers)
 
-    denoised = dwi.copy()
-    sigma_hat = np.zeros(dwi.shape[:3], np.float32)
-    rank = np.zeros(dwi.shape[:3], np.int32)
-
-    for coords, patches in patch_tiles(dwi, mask, patch, tile=tile, on_device=on_device):
-        # Full float32 matmuls: on recent NVIDIA GPUs the default is TF32, about three
-        # significant digits, and GPU results would drift from CPU ones.
-        with jax.default_matmul_precision("highest"):
-            signal, tile_sigma, tile_rank = _denoise_tile_jit(
-                patches, center, n_small, n_large, algorithm, tile_shrink)
-        denoised[coords] = np.asarray(signal)
-        sigma_hat[coords] = np.asarray(tile_sigma)
-        rank[coords] = np.asarray(tile_rank)
+    if workers > 1:
+        outputs = (dwi.copy(), np.zeros(dwi.shape[:3], np.float32),
+                   np.zeros(dwi.shape[:3], np.int32))
+        run_slabs(partial(_denoise_arrays, patch=patch, algorithm=algorithm, tile=tile,
+                          on_device=on_device, shrink=tile_shrink),
+                  dwi, mask, patch, outputs, workers)
+        denoised, sigma_hat, rank = outputs
+    else:
+        denoised, sigma_hat, rank = _denoise_arrays(dwi, mask, patch, algorithm, tile,
+                                                    on_device, tile_shrink)
 
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,

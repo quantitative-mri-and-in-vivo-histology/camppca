@@ -48,6 +48,9 @@ def _add_common(p):
     p.add_argument("--level-rounds", type=int, default=0, metavar="N",
                    help="re-estimate the level field d from the whitened patches up to N "
                         "times (default: 0, keep standard MP-PCA's level)")
+    p.add_argument("--workers", type=int, default=None, metavar="N",
+                   help="pinned CPU processes to split the work over (default: one per "
+                        "physical core; 1 runs in one process, on the GPU if there is one)")
     p.add_argument("-q", "--quiet", action="store_true")
 
 
@@ -132,7 +135,7 @@ def main(argv=None):
     noise_field = not getattr(args, "no_noise_field", False)   # estimate has no such flag
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
                                  lowb=args.lowb, noise_field=noise_field,
-                                 level_rounds=args.level_rounds)
+                                 level_rounds=args.level_rounds, workers=args.workers)
     # A patch one voxel wide in-plane gives lag 0: no x=1 entry to show.
     lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
     say(f"  noise model: lag {model.lag}{lag1}, U {model.provenance['u_kernel']:.3f}")
@@ -141,7 +144,7 @@ def main(argv=None):
     if args.command == "denoise":
         from .denoiser import denoise_with_noise_model
         result = denoise_with_noise_model(dwi, model, patch=patch,
-                                          noise_field=noise_field)
+                                          noise_field=noise_field, workers=args.workers)
         io.save_like(args.output, result.denoised, affine, header)
         say(f"  wrote {args.output}")
         if args.noise:

@@ -1,0 +1,139 @@
+"""The pinned process pool: slabs cover the volume once, and pooling changes nothing.
+
+On the CPU a pooled pass is the serial pass, bit for bit: each slab carries a half-patch
+border, so every inner voxel sees the same patch. The serial runs here are pinned to the
+CPU device, because a GPU rounds differently and flips near-tied MP cuts.
+"""
+
+import subprocess
+import sys
+import textwrap
+
+import jax
+import numpy as np
+import pytest
+
+from camppca import NoiseModel, denoise_mppca, denoise_with_noise_model
+from camppca.denoiser.camppca import whitened_level
+from camppca.noise_model import _build_C, loop
+from camppca.pool import default_workers, resolve_workers, slab_edges
+
+SHAPE = (24, 20, 12)
+N_VOLS = 60
+PATCH = (5, 5, 3)
+LAG = 4
+
+
+@pytest.fixture(scope="module")
+def dataset():
+    rng = np.random.default_rng(0)
+    signal = rng.standard_normal(SHAPE + (3,)) @ rng.standard_normal((3, N_VOLS))
+    dwi = (signal * 20 + 300 + rng.standard_normal(SHAPE + (N_VOLS,)) * 8).astype(np.float32)
+    mask = np.zeros(SHAPE, bool)
+    mask[3:21, 3:17, 2:10] = True
+    return dwi, mask
+
+
+@pytest.fixture(scope="module")
+def model(dataset):
+    """A correlated kernel and a level field that varies, so both whitening steps act."""
+    _, mask = dataset
+    rho = np.zeros((2 * LAG + 1, 2 * LAG + 1, PATCH[2]))
+    for i in range(-LAG, LAG + 1):
+        for j in range(-LAG, LAG + 1):
+            rho[i + LAG, j + LAG, 0] = 0.4 ** abs(i) * 0.2 ** abs(j)
+    d = np.where(mask, np.linspace(1.0, 2.0, SHAPE[0])[:, None, None], 0).astype(np.float32)
+    return NoiseModel(rho=rho, d=d, mask=mask, lag=LAG)
+
+
+def on_cpu():
+    return jax.default_device(jax.devices("cpu")[0])
+
+
+def test_slabs_cover_every_filled_slice_once_and_balance_the_mask():
+    mask = np.zeros((30, 6, 6), bool)
+    mask[2:12] = True
+    mask[16:28, :3] = True                  # half as many voxels per slice, after a gap
+
+    edges = slab_edges(mask, 4)
+
+    covered = np.concatenate([np.arange(lo, hi) for lo, hi in edges])
+    assert np.array_equal(covered, np.flatnonzero(mask.any((1, 2)))), "once, no gaps"
+    counts = [mask[lo:hi].sum() for lo, hi in edges]
+    assert max(counts) <= 2 * min(counts)
+
+
+def test_more_slabs_than_slices_gives_one_slab_per_slice():
+    mask = np.zeros((5, 4, 4), bool)
+    mask[1:4] = True
+    assert slab_edges(mask, 16) == [(1, 2), (2, 3), (3, 4)]
+    assert slab_edges(np.zeros((5, 4, 4), bool), 4) == []
+
+
+def test_worker_count_is_checked():
+    assert default_workers() >= 1
+    assert resolve_workers(None) == default_workers()
+    with pytest.raises(ValueError, match="workers must be"):
+        resolve_workers(0)
+
+
+def test_pooled_mppca_is_the_serial_pass(dataset):
+    dwi, mask = dataset
+    with on_cpu():
+        serial = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
+    for workers in (2, 3):
+        pooled = denoise_mppca(dwi, mask, patch=PATCH, workers=workers)
+        np.testing.assert_array_equal(pooled.denoised, serial.denoised)
+        np.testing.assert_array_equal(pooled.sigma_hat, serial.sigma_hat)
+        np.testing.assert_array_equal(pooled.rank, serial.rank)
+
+
+def test_pooled_camppca_is_the_serial_pass(dataset, model):
+    dwi, _ = dataset
+    with on_cpu():
+        serial = denoise_with_noise_model(dwi, model, patch=PATCH, workers=1)
+    pooled = denoise_with_noise_model(dwi, model, patch=PATCH, workers=3)
+    np.testing.assert_array_equal(pooled.denoised, serial.denoised)
+    np.testing.assert_array_equal(pooled.sigma_hat, serial.sigma_hat)
+    np.testing.assert_array_equal(pooled.rank, serial.rank)
+
+
+def test_pooled_level_pass_is_the_serial_pass(dataset, model):
+    dwi, mask = dataset
+    C = model.patch_correlation(PATCH)
+    with on_cpu():
+        serial = whitened_level(dwi, mask, C, PATCH, d_field=model.d, workers=1)
+    pooled = whitened_level(dwi, mask, C, PATCH, d_field=model.d, workers=3)
+    np.testing.assert_array_equal(pooled, serial)
+
+
+def test_the_pooled_loop_lands_on_the_serial_kernel(dataset, model):
+    """Not bit for bit: the split's matmuls round differently on one thread, and in
+    float64 a near-tied patch rank can flip, which moves the kernel by about 1e-4."""
+    dwi, mask = dataset
+    white = np.zeros_like(model.rho)
+    white[LAG, LAG, 0] = 1.0
+    with on_cpu():
+        serial, _ = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
+                                     workers=1)
+    pooled, info = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
+                                    workers=3)
+    assert info["converged"]
+    np.testing.assert_allclose(pooled, serial, atol=1e-3)
+    assert np.linalg.eigvalsh(_build_C(pooled, np.array(PATCH), LAG))[0] > 1e-3
+
+
+def test_a_script_without_a_main_guard_runs(tmp_path):
+    """Spawned workers do not re-run the caller's script."""
+    script = tmp_path / "unguarded.py"
+    script.write_text(textwrap.dedent("""
+        import numpy as np
+        from camppca import denoise_mppca
+        dwi = np.random.default_rng(0).standard_normal((12, 10, 8, 40)).astype(np.float32)
+        result = denoise_mppca(dwi, patch=(3, 3, 3), workers=2)
+        print("done", int(np.isfinite(result.denoised).all()))
+    """))
+    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                         timeout=300)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.split()[-2:] == ["done", "1"]

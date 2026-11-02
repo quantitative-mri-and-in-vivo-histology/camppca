@@ -33,6 +33,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..patch import check_patch, patch_size
+from ..pool import resolve_workers, run_slabs
 from .gather import patch_tiles
 from .mp_threshold import mp_threshold
 from .shrink import shrink_weight, signal_alignment
@@ -131,7 +132,7 @@ def _with_level_column(dwi, d_field):
 
 
 def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=256,
-                   d_field=None):
+                   d_field=None, workers=None):
     """The MP noise level of every mask voxel's whitened patch, without denoising.
 
     The split :func:`denoise_whitened` makes, stopped once ``sigma_hat`` is known: only the
@@ -147,6 +148,7 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=25
         algo: which Marchenko-Pastur variant to cut with.
         tile: maximum patches per device batch.
         d_field: (X, Y, Z) level field, already guarded, or None.
+        workers: pinned CPU processes to split the volume over, see :mod:`camppca.pool`.
 
     Returns:
         (X, Y, Z) ``sigma_hat`` in d-normalized units, zero outside ``mask``.
@@ -154,6 +156,11 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=25
     dwi = np.asarray(dwi, np.float32)
     mask = np.asarray(mask, bool)
     patch = check_patch(patch)
+    if resolve_workers(workers) > 1:
+        return run_slabs(partial(whitened_level, C=C, patch=patch, algo=algo, tile=tile,
+                                 workers=1),
+                         dwi, mask, patch, (np.zeros(dwi.shape[:3], np.float32),),
+                         resolve_workers(workers), d_field=d_field)[0]
     n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
@@ -170,7 +177,7 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=25
 
 
 def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=256,
-                     d_field=None, shrink="hard"):
+                     d_field=None, shrink="hard", workers=None):
     """MP-PCA on the patch whitened by ``C^(-1/2)``.
 
     Args:
@@ -187,6 +194,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
             heteroscedasticity, which widens the noise bulk the same way off-diagonal
             colour does.
         shrink: weight on the kept components; see :mod:`camppca.denoiser.shrink`.
+        workers: pinned CPU processes to split the volume over, see :mod:`camppca.pool`.
 
     Returns:
         ``(denoised, sigma_hat, rank)``. ``sigma_hat`` is in d-normalized units; the
@@ -204,6 +212,14 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
     if C.shape != (n_vox, n_vox):
         raise ValueError(f"C must be ({n_vox}, {n_vox}) for patch "
                          f"{tuple(int(v) for v in patch)}, got {C.shape}")
+
+    workers = resolve_workers(workers)
+    if workers > 1:
+        outputs = (dwi.copy(), np.zeros(dwi.shape[:3], np.float32),
+                   np.zeros(dwi.shape[:3], np.int32))
+        return run_slabs(partial(denoise_whitened, C=C, patch=patch, algo=algo, tile=tile,
+                                 shrink=shrink, workers=1),
+                         dwi, mask, patch, outputs, workers, d_field=d_field)
 
     whitener = jnp.asarray(sqrtm_psd(C, -0.5), jnp.float32)
     centre_row = jnp.asarray(sqrtm_psd(C, 0.5)[center], jnp.float32)

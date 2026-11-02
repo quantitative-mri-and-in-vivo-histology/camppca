@@ -75,6 +75,10 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
 
 ## Notes
 
+- **The work runs in a pool of CPU processes**, one per physical core, even with a GPU.
+  On a 16-core machine that was faster than an RTX 4060 Ti. `workers=1` (`--workers 1`)
+  runs everything in one process, on the GPU if JAX has one. Expect about 1.4 GB of memory
+  per worker at the peak.
 - **Output is centre-voxel only**, with no overlap averaging. Intentional — it matches the
   MP theory the noise estimate rests on — but it differs from what `dwidenoise` users expect.
 - **Keep ≳ 50 volumes in the pooled patch.** The noise-level estimator degenerates as the
