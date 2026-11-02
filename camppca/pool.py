@@ -28,17 +28,24 @@ import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
+from functools import partial
 from multiprocessing.context import SpawnContext, SpawnProcess
 from pathlib import Path
 
 import numpy as np
 
 __all__ = ["default_workers", "resolve_workers", "get_pool", "shared_volume",
-           "slab_edges", "run_slabs"]
+           "voxel_chunks", "run_slabs"]
 
 # Set while the workers start, so they load numpy, OpenBLAS and JAX with it.
 _WORKER_ENV = dict(JAX_PLATFORMS="cpu", OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
                    MKL_NUM_THREADS="1")
+
+#: Patches per tile inside a worker. A full 256-patch tile is ~100 MB at 297 volumes, and
+#: 16 workers streaming such tiles fight over memory bandwidth: a whitened voxel cost
+#: 6.8 ms at 16 workers against 3.2 ms at 2. With 8-patch tiles it cost 3.2 ms at 16.
+#: Flat from 2 to 8.
+POOL_TILE = 8
 
 _POOL = None
 _POOL_WORKERS = 0
@@ -183,27 +190,21 @@ def shared_volume(dwi, d_field=None, pad=(0, 0, 0)):
         os.unlink(name)
 
 
-def slab_edges(mask, n_slabs: int) -> list[tuple[int, int]]:
-    """x ranges holding about equal numbers of mask voxels, skipping empty x slices.
+def voxel_chunks(mask, n_chunks: int, multiple: int) -> list[np.ndarray]:
+    """The mask voxels in C order, cut into about ``n_chunks`` runs.
+
+    Each run but the last holds a whole number of ``multiple`` voxels. With
+    ``multiple`` the engine's tile size, every tile a worker computes is full, so
+    each worker compiles its tile function once instead of once per leftover size.
 
     Returns:
-        Up to ``n_slabs`` ``(lo, hi)`` pairs. Together they cover every x slice that
-        holds a mask voxel exactly once.
+        Flat voxel indices, one array per chunk, covering every mask voxel once.
     """
-    per_x = np.asarray(mask, bool).sum((1, 2))
-    filled = np.flatnonzero(per_x)
-    if filled.size == 0:
+    idx = np.flatnonzero(np.asarray(mask, bool))
+    if idx.size == 0:
         return []
-    cut = np.searchsorted(np.cumsum(per_x[filled]),
-                          np.arange(1, n_slabs) * per_x.sum() / n_slabs, side="right")
-    edges = []
-    for part in np.split(filled, np.unique(cut)):
-        if part.size == 0:
-            continue
-        # Split again wherever empty slices interrupt a part, so no slab spans them.
-        for run in np.split(part, np.flatnonzero(np.diff(part) > 1) + 1):
-            edges.append((int(run[0]), int(run[-1]) + 1))
-    return edges
+    size = max(1, -(-idx.size // (n_chunks * multiple))) * multiple
+    return [idx[start:start + size] for start in range(0, idx.size, size)]
 
 
 def _slab_task(args):
@@ -216,12 +217,15 @@ def _slab_task(args):
         outputs = fn(block, inner)
     if not isinstance(outputs, tuple):
         outputs = (outputs,)
-    region = tuple(slice(p, p + n) for p, n in zip(pad, inner.shape - 2 * np.asarray(pad), strict=True))
-    return lo, hi, tuple(np.asarray(o[region]) for o in outputs)
+    return tuple(np.asarray(o[inner]) for o in outputs)
 
 
-def run_slabs(fn, dwi, mask, patch, outputs, workers: int, d_field=None):
-    """Run a per-voxel pass on x slabs in the worker pool and stitch the results.
+def run_slabs(fn, dwi, mask, patch, outputs, workers: int, tile: int, d_field=None):
+    """Run a per-voxel pass over the worker pool in equal voxel chunks.
+
+    Each chunk is a run of mask voxels in C order. Its worker gets the x slab those
+    voxels span, with a half-patch border, so every voxel sees its whole patch and the
+    result is the serial one. About 8 chunks per worker keep the workers evenly busy.
 
     Args:
         fn: picklable ``fn(dwi, mask[, d_field=...])`` returning one (X, Y, Z, ...) array
@@ -231,26 +235,33 @@ def run_slabs(fn, dwi, mask, patch, outputs, workers: int, d_field=None):
         mask: (X, Y, Z) bool, the voxels to compute.
         patch: the patch shape; its half sets the slab border.
         outputs: the full-size arrays to write into, holding what voxels outside the
-            mask must keep. Slabs overwrite their whole inner region, which ``fn`` leaves
-            at those same values outside the mask.
+            mask must keep. Only mask voxels are written.
         workers: pool size.
+        tile: the caller's tile size. Workers use at most :data:`POOL_TILE`.
         d_field: (X, Y, Z) level field passed on to ``fn``, or None.
 
     Returns:
         ``outputs``, filled.
     """
+    from .denoiser.gather import effective_tile  # here: the denoiser imports this module
+
     pad = tuple(int(p) // 2 for p in patch)
+    shape = mask.shape
+    tile = min(int(tile), POOL_TILE)
+    fn = partial(fn, tile=tile)
+    multiple = effective_tile(tile, dwi.shape[3] + (d_field is not None))
     pool = get_pool(workers)
-    tasks = []
+    futures = {}
     with shared_volume(dwi, d_field, pad) as path:
-        for lo, hi in slab_edges(mask, 2 * workers):
-            inner = np.zeros((hi - lo + 2 * pad[0],) + tuple(
-                s + 2 * p for s, p in zip(mask.shape[1:], pad[1:], strict=True)), bool)
-            inner[pad[0]:pad[0] + hi - lo, pad[1]:pad[1] + mask.shape[1],
-                  pad[2]:pad[2] + mask.shape[2]] = mask[lo:hi]
-            tasks.append((fn, path, lo, hi, pad, dwi.shape[3], d_field is not None, inner))
-        for future in as_completed([pool.submit(_slab_task, task) for task in tasks]):
-            lo, hi, parts = future.result()
-            for out, part in zip(outputs, parts, strict=True):
-                out[lo:hi] = part
+        for chunk in voxel_chunks(mask, 8 * workers, multiple):
+            ix, iy, iz = np.unravel_index(chunk, shape)
+            lo, hi = int(ix[0]), int(ix[-1]) + 1
+            inner = np.zeros((hi - lo + 2 * pad[0], shape[1] + 2 * pad[1],
+                              shape[2] + 2 * pad[2]), bool)
+            inner[ix - lo + pad[0], iy + pad[1], iz + pad[2]] = True
+            task = (fn, path, lo, hi, pad, dwi.shape[3], d_field is not None, inner)
+            futures[pool.submit(_slab_task, task)] = (ix, iy, iz)
+        for future in as_completed(futures):
+            for out, part in zip(outputs, future.result(), strict=True):
+                out[futures[future]] = part
     return outputs

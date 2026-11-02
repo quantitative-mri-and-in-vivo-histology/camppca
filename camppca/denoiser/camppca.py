@@ -31,6 +31,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
+import scipy.linalg
 
 from ..patch import check_patch, patch_size
 from ..pool import resolve_workers, run_slabs
@@ -112,16 +113,35 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
 _denoise_tile_jit = partial(jax.jit, static_argnums=(4, 5, 6, 7))(_denoise_tile)
 
 
-@partial(jax.jit, static_argnums=(2, 3, 4))
+@jax.jit
+def _whitened_gram(patches, whitener):
+    """(B, n_vols, n_vols) Gram of each whitened patch. ``whitener`` None skips whitening."""
+    whitened = patches if whitener is None else jnp.einsum("pq,bqn->bpn", whitener, patches)
+    return jnp.einsum("bpn,bpm->bnm", whitened, whitened)
+
+
+@partial(jax.jit, static_argnums=(1, 2, 3))
+def _mp_level(evals, n_small: int, n_large: int, algo: str):
+    return mp_threshold(jnp.maximum(evals, 0.0), n_small, n_large, algo)[1]
+
+
+_eigvalsh_lapack = partial(scipy.linalg.eigh, eigvals_only=True, driver="evd",
+                           check_finite=False)
+
+
 def _level_tile(patches, whitener, n_small: int, n_large: int, algo: str):
     """The fitted noise level of each whitened patch, from the eigenvalues alone.
 
-    ``whitener`` None skips whitening, as standard MP-PCA does.
+    On the CPU the eigenvalues come from LAPACK directly, one matrix at a time. JAX's
+    ``eigvalsh`` computes the eigenvectors and drops them: 2.2 ms per matrix at
+    n = 297 on one core, against 1.2 ms for values only.
     """
-    whitened = patches if whitener is None else jnp.einsum("pq,bqn->bpn", whitener, patches)
-    gram = jnp.einsum("bpn,bpm->bnm", whitened, whitened)
-    evals = jnp.maximum(jnp.linalg.eigvalsh(gram)[:, ::-1], 0.0)   # descending
-    return mp_threshold(evals, n_small, n_large, algo)[1]
+    gram = _whitened_gram(patches, whitener)
+    if next(iter(gram.devices())).platform == "cpu":
+        evals = np.stack([_eigvalsh_lapack(g) for g in np.asarray(gram)])
+    else:
+        evals = jnp.linalg.eigvalsh(gram)
+    return _mp_level(jnp.asarray(evals)[:, ::-1], n_small, n_large, algo)   # descending
 
 
 def _with_level_column(dwi, d_field):
@@ -160,7 +180,7 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=25
         return run_slabs(partial(whitened_level, C=C, patch=patch, algo=algo, tile=tile,
                                  workers=1),
                          dwi, mask, patch, (np.zeros(dwi.shape[:3], np.float32),),
-                         resolve_workers(workers), d_field=d_field)[0]
+                         resolve_workers(workers), tile, d_field=d_field)[0]
     n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
@@ -219,7 +239,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
                    np.zeros(dwi.shape[:3], np.int32))
         return run_slabs(partial(denoise_whitened, C=C, patch=patch, algo=algo, tile=tile,
                                  shrink=shrink, workers=1),
-                         dwi, mask, patch, outputs, workers, d_field=d_field)
+                         dwi, mask, patch, outputs, workers, tile, d_field=d_field)
 
     whitener = jnp.asarray(sqrtm_psd(C, -0.5), jnp.float32)
     centre_row = jnp.asarray(sqrtm_psd(C, 0.5)[center], jnp.float32)

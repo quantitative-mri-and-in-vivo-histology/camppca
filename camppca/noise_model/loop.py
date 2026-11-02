@@ -62,7 +62,7 @@ MAX_ROUNDS = 20
 N_INNER = 30            # Richardson steps per round
 RCOND = 1e-2            # design directions below this share of the largest are unobservable
 TILE = 256              # patches per device batch in the split
-POOL_TILE = 32          # the same in a pool worker: ~1/8 the memory, and faster per core
+POOL_TILE = 8           # the same in a pool worker: small tiles stay in cache, see pool.POOL_TILE
 
 
 def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande",

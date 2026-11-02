@@ -154,7 +154,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
                    np.zeros(dwi.shape[:3], np.int32))
         run_slabs(partial(_denoise_arrays, patch=patch, algorithm=algorithm, tile=tile,
                           on_device=on_device, shrink=tile_shrink),
-                  dwi, mask, patch, outputs, workers)
+                  dwi, mask, patch, outputs, workers, tile)
         denoised, sigma_hat, rank = outputs
     else:
         denoised, sigma_hat, rank = _denoise_arrays(dwi, mask, patch, algorithm, tile,

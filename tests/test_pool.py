@@ -1,7 +1,7 @@
-"""The pinned process pool: slabs cover the volume once, and pooling changes nothing.
+"""The pinned process pool: chunks cover the mask once, and pooling changes nothing.
 
-On the CPU a pooled pass is the serial pass, bit for bit: each slab carries a half-patch
-border, so every inner voxel sees the same patch. The serial runs here are pinned to the
+On the CPU a pooled pass is the serial pass, bit for bit: each chunk's slab carries a
+half-patch border, so every voxel sees the same patch. The serial runs here are pinned to the
 CPU device, because a GPU rounds differently and flips near-tied MP cuts.
 """
 
@@ -14,9 +14,10 @@ import numpy as np
 import pytest
 
 from camppca import NoiseModel, denoise_mppca, denoise_with_noise_model
+from camppca.denoiser import _effective_d
 from camppca.denoiser.camppca import whitened_level
 from camppca.noise_model import _build_C, loop
-from camppca.pool import default_workers, resolve_workers, slab_edges
+from camppca.pool import default_workers, resolve_workers, voxel_chunks
 
 SHAPE = (24, 20, 12)
 N_VOLS = 60
@@ -50,24 +51,17 @@ def on_cpu():
     return jax.default_device(jax.devices("cpu")[0])
 
 
-def test_slabs_cover_every_filled_slice_once_and_balance_the_mask():
+def test_chunks_cover_every_mask_voxel_once_in_whole_tiles():
     mask = np.zeros((30, 6, 6), bool)
     mask[2:12] = True
-    mask[16:28, :3] = True                  # half as many voxels per slice, after a gap
+    mask[16:28, :3] = True
 
-    edges = slab_edges(mask, 4)
+    chunks = voxel_chunks(mask, 4, multiple=64)
 
-    covered = np.concatenate([np.arange(lo, hi) for lo, hi in edges])
-    assert np.array_equal(covered, np.flatnonzero(mask.any((1, 2)))), "once, no gaps"
-    counts = [mask[lo:hi].sum() for lo, hi in edges]
-    assert max(counts) <= 2 * min(counts)
-
-
-def test_more_slabs_than_slices_gives_one_slab_per_slice():
-    mask = np.zeros((5, 4, 4), bool)
-    mask[1:4] = True
-    assert slab_edges(mask, 16) == [(1, 2), (2, 3), (3, 4)]
-    assert slab_edges(np.zeros((5, 4, 4), bool), 4) == []
+    assert np.array_equal(np.concatenate(chunks), np.flatnonzero(mask)), "once, in order"
+    assert all(c.size % 64 == 0 for c in chunks[:-1]), "full tiles but the last"
+    assert 2 <= len(chunks) <= 4, "rounding up to whole tiles only ever merges chunks"
+    assert voxel_chunks(np.zeros((5, 4, 4), bool), 4, 64) == []
 
 
 def test_worker_count_is_checked():
@@ -101,9 +95,10 @@ def test_pooled_camppca_is_the_serial_pass(dataset, model):
 def test_pooled_level_pass_is_the_serial_pass(dataset, model):
     dwi, mask = dataset
     C = model.patch_correlation(PATCH)
+    d_eff = _effective_d(model.d, mask)
     with on_cpu():
-        serial = whitened_level(dwi, mask, C, PATCH, d_field=model.d, workers=1)
-    pooled = whitened_level(dwi, mask, C, PATCH, d_field=model.d, workers=3)
+        serial = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=1)
+    pooled = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=3)
     np.testing.assert_array_equal(pooled, serial)
 
 

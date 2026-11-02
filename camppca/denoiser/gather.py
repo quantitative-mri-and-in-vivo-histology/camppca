@@ -23,7 +23,7 @@ import numpy as np
 
 from ..patch import check_patch, patch_offsets
 
-__all__ = ["gather_budget_bytes", "patch_tiles"]
+__all__ = ["effective_tile", "gather_budget_bytes", "patch_tiles"]
 
 # Bytes of Gram and eigh workspace one tile may use. Caps the tile size on top of the
 # caller's request, so a long volume series does not blow up the device.
@@ -49,6 +49,11 @@ def gather_budget_bytes() -> float:
         return max(_CPU_BUDGET_BYTES, free - _DEVICE_HEADROOM_BYTES)
     except Exception:                       # noqa: BLE001 - any probe failure means fall back
         return _CPU_BUDGET_BYTES
+
+
+def effective_tile(tile: int, n_vols: int) -> int:
+    """The tile :func:`patch_tiles` uses: ``tile``, lowered to bound the per-tile workspace."""
+    return min(int(tile), max(1, int(_TILE_WORKSPACE_BYTES / (n_vols * n_vols))))
 
 
 def patch_tiles(dwi: np.ndarray, mask: np.ndarray, patch, tile: int = 256,
@@ -82,7 +87,7 @@ def patch_tiles(dwi: np.ndarray, mask: np.ndarray, patch, tile: int = 256,
     pad_x, pad_y, pad_z = padded.shape[:3]
     xs, ys, zs = np.where(mask)
 
-    tile = min(int(tile), max(1, int(_TILE_WORKSPACE_BYTES / (n_vols * n_vols))))
+    tile = effective_tile(tile, n_vols)
     if on_device is None:
         on_device = (pad_x * pad_y * pad_z * n_vols * 4) < gather_budget_bytes()
 
