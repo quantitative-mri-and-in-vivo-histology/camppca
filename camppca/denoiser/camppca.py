@@ -111,6 +111,64 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
 _denoise_tile_jit = partial(jax.jit, static_argnums=(4, 5, 6, 7))(_denoise_tile)
 
 
+@partial(jax.jit, static_argnums=(2, 3, 4))
+def _level_tile(patches, whitener, n_small: int, n_large: int, algo: str):
+    """The fitted noise level of each whitened patch, from the eigenvalues alone.
+
+    ``whitener`` None skips whitening, as standard MP-PCA does.
+    """
+    whitened = patches if whitener is None else jnp.einsum("pq,bqn->bpn", whitener, patches)
+    gram = jnp.einsum("bpn,bpm->bnm", whitened, whitened)
+    evals = jnp.maximum(jnp.linalg.eigvalsh(gram)[:, ::-1], 0.0)   # descending
+    return mp_threshold(evals, n_small, n_large, algo)[1]
+
+
+def _with_level_column(dwi, d_field):
+    """The level field as one extra column, wrap-padded and gathered with the data."""
+    if d_field is None:
+        return dwi
+    return np.concatenate([dwi, np.asarray(d_field, np.float32)[..., None]], axis=3)
+
+
+def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=256,
+                   d_field=None):
+    """The MP noise level of every mask voxel's whitened patch, without denoising.
+
+    The split :func:`denoise_whitened` makes, stopped once ``sigma_hat`` is known: only the
+    eigenvalues are computed and nothing is reconstructed. With ``C`` None and no
+    ``d_field`` this is standard MP-PCA's ``sigma_hat``.
+
+    Args:
+        dwi: (X, Y, Z, N) data.
+        mask: (X, Y, Z) boolean.
+        C: (n_vox, n_vox) patch correlation with unit diagonal, or None for white noise,
+            which skips the whitening multiply.
+        patch: box shape, three odd integers.
+        algo: which Marchenko-Pastur variant to cut with.
+        tile: maximum patches per device batch.
+        d_field: (X, Y, Z) level field, already guarded, or None.
+
+    Returns:
+        (X, Y, Z) ``sigma_hat`` in d-normalized units, zero outside ``mask``.
+    """
+    dwi = np.asarray(dwi, np.float32)
+    mask = np.asarray(mask, bool)
+    patch = check_patch(patch)
+    n_vols = dwi.shape[3]
+    n_vox = patch_size(patch)
+    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+    whitener = None if C is None else jnp.asarray(
+        sqrtm_psd(np.asarray(C, np.float64), -0.5), jnp.float32)
+
+    level = np.zeros(dwi.shape[:3], np.float32)
+    for coords, block in patch_tiles(_with_level_column(dwi, d_field), mask, patch,
+                                     tile=tile):
+        patches = block if d_field is None else block[:, :, :n_vols] / block[:, :, n_vols:]
+        with jax.default_matmul_precision("highest"):
+            level[coords] = np.asarray(_level_tile(patches, whitener, n_small, n_large, algo))
+    return level
+
+
 def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=256,
                      d_field=None, shrink="hard"):
     """MP-PCA on the patch whitened by ``C^(-1/2)``.
@@ -153,10 +211,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
 
     # The level field rides along as one extra column, so it is wrap-padded and gathered
     # by exactly the same indices as the data.
-    if d_field is None:
-        volumes = dwi
-    else:
-        volumes = np.concatenate([dwi, np.asarray(d_field, np.float32)[..., None]], axis=3)
+    volumes = _with_level_column(dwi, d_field)
 
     denoised = dwi.copy()
     sigma_hat = np.zeros(dwi.shape[:3], np.float32)

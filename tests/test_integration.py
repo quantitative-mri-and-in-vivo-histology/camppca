@@ -4,16 +4,6 @@ Injects spatially correlated noise with an analytically known rho and sigma, the
 the whole chain: the estimator recovers both, whitening collapses the patch off-diagonals
 toward the i.i.d. floor, and the MP fit lands on the true level -- where standard,
 white-noise MP-PCA does not.
-
-⚠ The mask here is deliberately large. P2S fits N-1 predictors across the mask voxels, so
-at small V the in-sample overfitting deflates BOTH rho and sigma. Measured at N = 60:
-
-    V = 576    p/V = 0.10    rho_x1 0.589 / 0.665    sigma 7.95 / 10
-    V = 2904   p/V = 0.020   rho_x1 0.649 / 0.665    sigma 9.53 / 10
-    V = 11560  p/V = 0.005   rho_x1 0.657 / 0.665    sigma 9.82 / 10
-
-Real data sits near p/V = 1e-4, so this never bites in practice -- but a small synthetic
-test will read as a broken estimator if you let it.
 """
 
 import numpy as np
@@ -52,7 +42,7 @@ def dataset():
     signal = rng.standard_normal(shape + (rank,)) @ rng.standard_normal((rank, n_vols))
     dwi = signal * 25 + 400 + _colored_noise(rng, shape, n_vols, SIGMA_TRUE)
     mask = np.zeros(shape, bool)
-    mask[4:36, 4:36, 2:10] = True          # V = 8192, p/V = 0.007
+    mask[4:36, 4:36, 2:10] = True
     return dwi, bvals, mask
 
 
@@ -72,11 +62,6 @@ def test_estimator_recovers_the_injected_correlation(model):
         assert rho[lag + k, lag, 0] == pytest.approx(want_x[lag + k], abs=0.03)
         assert rho[lag, lag + k, 0] == pytest.approx(want_y[lag + k], abs=0.03)
     assert abs(rho[lag, lag, 1]) < 0.05, "z was never correlated"
-
-
-def test_estimator_recovers_the_injected_noise_level(model, dataset):
-    _, _, mask = dataset
-    assert np.median(model.sigma_p2s[mask]) == pytest.approx(SIGMA_TRUE, rel=0.05)
 
 
 def test_whitening_collapses_the_patch_off_diagonals(model, dataset):

@@ -1,4 +1,4 @@
-"""Brain mask and estimation-region helpers.
+"""Brain mask.
 
 An empty mask raises ``ValueError``.
 
@@ -17,12 +17,10 @@ from scipy.ndimage import binary_closing, binary_erosion, binary_fill_holes, lab
 
 MASK_FRAC = 0.15      # threshold as a fraction of the mean-b0 99th percentile
 CLOSE = 2             # seal pores BEFORE eroding -- see the module docstring
-ERODE = 3             # rho_region and patch sampling need a strict interior
+ERODE = 3
 
-# ⚠ ERODE belongs to the ESTIMATION region, not to the output region. `estimate_noise_model`
-# calls `brain_mask(..., erode=0)` and derives the interior separately with
-# `interior_region` -- eroding the stored mask would leave a 3-voxel rim of the brain
-# un-denoised, since the model's mask is also the set of voxels the engine writes.
+# ⚠ `estimate_noise_model` calls `brain_mask(..., erode=0)`: the model's mask is also the
+# set of voxels the engine writes, so eroding it would leave a 3-voxel rim un-denoised.
 
 
 def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
@@ -44,39 +42,3 @@ def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
             f"before). Thin volumes lose every slice this way -- lower `erode`, or pass a "
             f"mask explicitly.")
     return eroded
-
-
-def interior_region(mask, erode=ERODE):
-    """The strict interior of ``mask``: where a patch fits and rho_region is trustworthy.
-
-    Separate from the mask itself on purpose. The estimation region wants to sit away from
-    the boundary; the OUTPUT region wants the whole brain. Conflating them silently leaves
-    an un-denoised rim.
-
-    Returns ``(region, erode_used)``. Erosion is reduced rather than allowed to empty the
-    region -- thin volumes lose every slice at erode=3, and a silently empty estimation
-    region is how `rho` ends up all-NaN.
-    """
-    mask = np.asarray(mask, bool)
-    for k in range(int(erode), 0, -1):
-        region = binary_erosion(mask, iterations=k)
-        if region.any():
-            return region, k
-    return mask, 0
-
-
-def stable_region(cols, mask):
-    """`mask` minus voxels that are (near-)CONSTANT across the given columns.
-
-    rho_region standardises each voxel by its own std, `A / (std + 1e-12)`.  A voxel that
-    is constant across the columns but not zero -- which happens with only 4-6
-    b0-difference columns on the high-intensity Philips data -- is amplified by up to
-    1e12 and swamps every correlation sum, leaving rho ~ 1e-6 at every non-zero lag.
-    Such voxels carry no covariance information, so drop them from the estimation region
-    rather than let them dominate it.
-    """
-    s = cols.std(1)
-    keep = s > 1e-3 * np.median(s)
-    reg = np.zeros(mask.shape, bool)
-    reg[mask] = keep
-    return reg, int((~keep).sum())

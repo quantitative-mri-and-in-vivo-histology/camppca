@@ -15,8 +15,7 @@ __all__ = ["DenoiseResult"]
 class DenoiseResult:
     """Denoised data plus the noise level the Marchenko-Pastur fit found.
 
-    ``sigma_hat`` is an OUTPUT. It is what the fit measured, in the input's units, and is
-    a different quantity from the ``sigma_p2s`` that drove whitening.
+    ``sigma_hat`` is an OUTPUT. It is what the fit measured, in the input's units.
 
     Voxels outside the mask are passed through unchanged. Both denoisers write back the
     centre voxel of each patch only, with no averaging over the overlapping patches.

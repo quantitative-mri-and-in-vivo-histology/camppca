@@ -34,7 +34,6 @@ def _patch_correlation(ax, ay, lag):
             rho[i + lag, j + lag, 0] = ax ** abs(i) * ay ** abs(j)
     shape = (4, 4, 4)
     model = NoiseModel(rho=rho, d=np.ones(shape, np.float32),
-                       sigma_p2s=np.ones(shape, np.float32),
                        mask=np.ones(shape, bool), lag=lag)
     return model.patch_correlation(PATCH)
 

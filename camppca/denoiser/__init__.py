@@ -71,7 +71,7 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
                          f"{model.mask.shape}")
 
     fitted = (model.provenance.get("loop_algo"), model.provenance.get("loop_noise_field"))
-    if model.provenance.get("kernel") == "loop" and fitted != (algo, bool(noise_field)):
+    if "loop_algo" in model.provenance and fitted != (algo, bool(noise_field)):
         warnings.warn(f"the loop kernel was fitted with algo={fitted[0]!r}, "
                       f"noise_field={fitted[1]}, but this denoise uses algo={algo!r}, "
                       f"noise_field={bool(noise_field)}. Re-estimate with the same settings.",

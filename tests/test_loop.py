@@ -1,8 +1,8 @@
 """The loop kernel, on synthetic data with a KNOWN noise correlation and level field.
 
-P2S is already close to unbiased on data like this: the signal is low rank and the mask
-is large. These tests check that the loop keeps the kernel right, converges, does not
-depend on where it starts, and that the batched solve is the per-patch algebra.
+These tests check that the loop finds the kernel from a white start, converges, does not
+depend on where it starts, that the batched solve is the per-patch algebra, and that the
+level rounds recover the level field.
 """
 
 import warnings
@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.ndimage import distance_transform_cdt
 
 from camppca import estimate_noise_model
 from camppca.denoiser import _effective_d
@@ -63,7 +64,6 @@ def model(dataset):
 def test_loop_keeps_the_injected_correlation_under_a_varying_level(model):
     rho, want = model.rho, _true_rho()
 
-    assert model.provenance["kernel"] == "loop"
     assert model.provenance["loop_converged"]
     assert rho[LAG, LAG, 0] == pytest.approx(1.0)
     for k in (1, 2):
@@ -137,22 +137,6 @@ def test_the_batched_split_and_solve_are_the_per_patch_algebra(dataset, model):
     np.testing.assert_allclose(sigma, _reference_solve(S_ref, Q_ref), atol=1e-8)
 
 
-def test_kernel_p2s_skips_the_loop(dataset, model):
-    dwi, bvals, mask = dataset
-    p2s = estimate_noise_model(dwi, bvals, mask, patch=PATCH, kernel="p2s")
-
-    assert p2s.provenance["kernel"] == "p2s"
-    assert "loop_rounds" not in p2s.provenance
-    assert np.array_equal(p2s.d, model.d), "the loop changes rho only"
-    assert not np.array_equal(p2s.rho, model.rho)
-
-
-def test_an_unknown_kernel_is_refused(dataset):
-    dwi, bvals, mask = dataset
-    with pytest.raises(ValueError, match="kernel must be"):
-        estimate_noise_model(dwi, bvals, mask, patch=PATCH, kernel="kernel")
-
-
 def test_a_mask_too_thin_for_the_patch_is_refused():
     mask = np.zeros((20, 20, 6), bool)
     mask[3:17, 3:17, 2:4] = True               # two slices, the patch needs three
@@ -160,19 +144,17 @@ def test_a_mask_too_thin_for_the_patch_is_refused():
         loop._sample_centres(mask, PATCH, np.random.default_rng(0))
 
 
-def test_lags_the_patch_never_spans_keep_the_p2s_values(dataset):
+def test_lags_the_patch_never_spans_keep_the_white_start(dataset):
     """A 3 x 5 patch has in-plane lag 4 but spans only |dx| <= 2."""
     dwi, bvals, mask = dataset
-    patch = (3, 5, 3)
-    p2s = estimate_noise_model(dwi, bvals, mask, patch=patch, kernel="p2s")
-    looped = estimate_noise_model(dwi, bvals, mask, patch=patch)
+    looped = estimate_noise_model(dwi, bvals, mask, patch=(3, 5, 3))
     lag = looped.lag
 
     assert lag == 4
     for dx in (3, 4):
-        np.testing.assert_array_equal(looped.rho[lag + dx], p2s.rho[lag + dx])
-        np.testing.assert_array_equal(looped.rho[lag - dx], p2s.rho[lag - dx])
-    assert not np.array_equal(looped.rho[lag + 1], p2s.rho[lag + 1]), "spanned lags move"
+        assert not looped.rho[lag + dx].any()
+        assert not looped.rho[lag - dx].any()
+    assert looped.rho[lag + 1, lag, 0] > 0.1, "spanned lags move"
 
 
 def test_the_convergence_warning_reports_the_last_change(dataset, model, monkeypatch):
@@ -246,3 +228,33 @@ def test_the_float32_design_gives_the_float64_table(dataset, model):
     ref /= ref[LAG, LAG, 0]
 
     assert np.abs(table - ref).max() < 1e-4
+
+
+def _relative_error(d, mask):
+    """|d / true level - 1| after normalising both to their median in the mask."""
+    level = np.broadcast_to(np.linspace(1.0, 2.0, mask.shape[0])[:, None, None], mask.shape)
+    return np.abs((d / np.median(d[mask])) / (level / np.median(level[mask])) - 1)
+
+
+def test_level_rounds_recover_the_injected_level_and_flatten_s(dataset, model):
+    """Away from the mask edge. Edge patches reach outside the mask, where d is set to its
+    median, so the rounds push the rim off the true level."""
+    dwi, bvals, mask = dataset
+    rounds = estimate_noise_model(dwi, bvals, mask, patch=PATCH, level_rounds=3)
+    interior = mask & (distance_transform_cdt(mask, metric="chessboard") > PATCH.max() // 2)
+
+    assert rounds.provenance["level_converged"]
+    assert rounds.provenance["s_spread"] < 0.05, "s is flat at the fixed point"
+    assert np.median(_relative_error(rounds.d, mask)[interior]) < 0.015
+    assert (np.median(_relative_error(rounds.d, mask)[interior])
+            < np.median(_relative_error(model.d, mask)[interior]))
+
+
+def test_without_the_noise_field_d_is_one_and_no_level_round_runs(dataset):
+    dwi, bvals, mask = dataset
+    flat = estimate_noise_model(dwi, bvals, mask, patch=PATCH, noise_field=False,
+                                level_rounds=2)
+
+    assert np.all(flat.d[mask] == 1)
+    assert flat.provenance["level_rounds_run"] == 0
+    assert "s_spread" not in flat.provenance

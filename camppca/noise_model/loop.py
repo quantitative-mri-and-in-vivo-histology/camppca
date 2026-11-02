@@ -15,8 +15,8 @@ patch kept are NOT filled in with the current kernel's values; that is what keep
 loop from drifting.
 
 The rounds stop when U of the patch correlation changes by less than :data:`LOOP_TOL`.
-U closes about half its remaining gap each round, and a start from P2S can dip and turn,
-so a looser tolerance stops early on a single small step.
+U closes about half its remaining gap each round, and a start far from the answer can dip
+and turn, so a looser tolerance stops early on a single small step.
 
 Directions EVERY patch keeps, such as the smooth patch-mean pattern, are invisible to the
 bulk, and the Richardson solve leaves them at zero. That is harmless inside the loop but
@@ -25,7 +25,7 @@ classes at the fixed point, with those directions truncated at :data:`RCOND`. It
 used inside the loop: there the smooth power it fills in pulls smooth leftover signal into
 the bulk, and the kernel runs away.
 
-Patch rows are divided by the clipped level field before whitening, exactly as the
+Patch rows are divided by the guarded level field before whitening, exactly as the
 denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens. The
 MP rule (``algo``) and whether rows are divided by ``d`` (``noise_field``) are the
 denoiser's settings, passed in, so the kernel is fitted to the split it will serve.

@@ -21,7 +21,7 @@ Conventions for user-facing text: **MP-PCA** (hyphenated), American spelling.
 
 ## Scope
 
-**In:** noise covariance estimation from P2S residuals; the noise-level field; whitened
+**In:** noise covariance estimation from MP-PCA itself; the noise-level field; whitened
 MP-PCA (whiten → MP-PCA → unwhiten); the CLI around them.
 
 **Out:** the warp/alignment lane (reusing FSL eddy displacement fields to denoise in a
@@ -57,7 +57,6 @@ patch shape, so it is computed on demand, never stored.
 | diagonal level matrix | D = diag(d) | `D` | |
 | true noise level | σ | — | |
 | MP estimate | σ̂ | `sigma_hat` | hats are for estimates only |
-| P2S level (ratios only) | σ_P2S | `sigma_p2s` | `d` = `sigma_p2s` pooled over a 3³ box |
 | retained rank | P | `rank` | ⚠ see the P collision below |
 | aspect ratio | γ = N/M | — | |
 | box shape, e.g. (5,5,5) | — | `patch` | a **denoiser** knob, not a noise property |
@@ -71,7 +70,7 @@ stays in the data for the per-patch MP fit to find.
 **Banned words.** All three are silent-corruption hazards:
 - **`kernel`** — upstream it means the patch shape *and* the lag table. Use `patch` and
   `rho`. In the manuscript `kernel` means `rho`; the ban only holds if you know that.
-- **`sigma`** unqualified — `sigma_p2s`/`d` go in, `sigma_hat` comes out.
+- **`sigma`** unqualified — `d` goes in, `sigma_hat` comes out.
 - **`R`** — replaced by `C`; `Σ` carries the level, `C` does not.
 
 ### Dimensions
@@ -98,25 +97,39 @@ the 34 volumes.
 
     estimator (source-specific)          engine (source-agnostic)
     ---------------------------          ------------------------
-    P2S residuals -> rho, d      ---->    C -> whiten -> MP-PCA -> unwhiten
+    MP-PCA level + loop -> rho, d  ---->  C -> whiten -> MP-PCA -> unwhiten
 
 The two halves meet at **the noise model** (`rho` + `d`). A follow-up paper estimates
 `rho` from the alignment/interpolation operator and feeds the same engine, so the engine
-must never assume `rho` came from P2S.
+must never assume how `rho` was estimated.
 
-P2S is numpy/scipy. The engine is JAX, and so is the loop kernel, which reuses the
-engine's own split. The old rule that the estimator never imports JAX was dropped
-2026-10-03 with the loop.
+The engine is JAX, and so is the estimator, which reuses the engine's own split. The old
+rule that the estimator never imports JAX was dropped 2026-10-03 with the loop.
+
+Patch2Self was removed from the estimator 2026-11-02 (spec:
+`docs/local/2026-11-02_no_p2s_estimator_spec.md`). Starting the loop from white noise,
+with `d` = standard MP-PCA's σ̂ pooled 3³, gave the same kernel and median σ̂ within
+0.3% on four datasets. The P2S code moves to the paper repo, which still scores whiteness with it.
 
 ### The loop kernel
 
-`estimate_noise_model(kernel="loop")`, the default, starts from the P2S `rho` and refines
-it until it explains the MP-PCA bulk of 3000 sampled patches at once
-(`noise_model/loop.py`). It fits to the denoiser's own split: `algo` and `noise_field`
-are passed to `estimate_noise_model`, recorded in provenance, and a mismatch at denoising
-warns.
-Every volume enters, b0s included, because the denoiser whitens them all. The b0
-exclusion above is for the P2S fit only. `kernel="p2s"` skips the loop.
+`estimate_noise_model` starts `rho` from white noise (1 at lag 0) and refines it until it
+explains the MP-PCA bulk of 3000 sampled patches at once (`noise_model/loop.py`). It fits
+to the denoiser's own split: `algo` and `noise_field` are passed to
+`estimate_noise_model`, recorded in provenance, and a mismatch at denoising warns.
+Every volume enters, b0s included, because the denoiser whitens them all. `bvals` only
+picks the b0s the default mask is drawn from.
+
+`d` is standard MP-PCA's σ̂ pooled 3³ (`whitened_level` with `C=None`, eigenvalues only).
+⚠ The pooling is needed: unpooled, the rank grain under strong correlation made the final
+`C` near singular on ideas02 (smallest eigenvalue 1e-9).
+
+`level_rounds` (default 0) re-estimates `d` as `pool(d * s)`, with `s` the whitened σ̂
+of every mask voxel's patch, then refits the loop. The fixed point is a flat `s`. It
+changed U by at most 0.006 and σ̂ by at most 0.3% at three to four times the cost, hence
+the default. ⚠ On synthetic data the rounds sharpen `d` in the interior but push a rim
+of half a patch at the mask edge off the true level (median 4%, up to 32%): edge patches
+include outside-mask voxels, where `d` is the median.
 
 ⚠ **The loop runs in float64** (`jax.enable_x64`). Its Richardson solve leaves the
 patch-mean direction empty, so each round's `C` is near singular there. In float32 the
@@ -139,9 +152,8 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
     camppca/
       noise_model/
         __init__.py        NoiseModel, estimate_noise_model() -> NoiseModel
-        p2s.py             Patch2Self: residuals, rho, sigma_p2s        numpy
-        masks.py           brain mask, stable region                    numpy
-        loop.py            the loop kernel, refines rho from P2S        JAX, float64
+        masks.py           brain mask                                   numpy
+        loop.py            the loop kernel, refines rho from white      JAX, float64
       denoiser/
         __init__.py        denoise_camppca(), denoise_with_noise_model()
         camppca.py         covariance-aware MP-PCA — the method
@@ -167,13 +179,13 @@ or `camppca.noise_model.` prefix.
   This deviates from the port brief's frozen `estimate_noise` / `denoise_with_model`,
   deliberately.
 - `mp_threshold.py`, `gather.py` and `result.py` sit in `denoiser/`. `patch.py` sits
-  above it because P2S needs it too.
+  above it because the loop needs it too.
 - `loop.py` imports denoiser internals, and `denoiser/__init__.py` imports
-  `noise_model`. So `estimate_noise_model` imports `loop` inside the function, or the
-  import is circular.
-- `NoiseModel` lives in `noise_model/__init__.py`, not with the P2S math: a future
-  alignment-based estimator builds the same object and must not import P2S to get it.
-- Flat, with `noise_model_p2s.py`-style prefixes, is the same structure with the noun
+  `noise_model`. So `estimate_noise_model` imports `loop` and `whitened_level` inside the
+  function, or the import is circular.
+- `NoiseModel` lives in `noise_model/__init__.py`, not with the estimation math: a future
+  alignment-based estimator builds the same object and must not import the loop to get it.
+- Flat, with `noise_model_loop.py`-style prefixes, is the same structure with the noun
   repeated in every filename. Do not "simplify" back to it.
 
 ## Method invariants
@@ -196,12 +208,9 @@ Breaking any of these corrupts results without an error:
   is bit-identical; a generic factor flips near-tied MP cuts by float32 rounding).
   Outside the mask, which edge patches include, `d` is its median over the mask.
 - **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
-  once across every diffusion volume, and b0s stay out of that fit because their residual
-  level does not represent diffusion-weighted noise.
+  once across every volume.
 - **Centre-voxel only** — no overlap averaging. Intentional; matches the MP theory the
   noise estimate rests on. Users coming from `dwidenoise` may expect averaging.
-- **P2S radius 0 is mandatory**, not a simplification. A radius>0 predictor regresses on
-  spatial neighbors, which biases the very spatial correlation being estimated.
 - **Hard threshold by default, shrinkage opt-in** (`shrink="hard" | "gd" | "lr"`,
   `denoiser/shrink.py`). ⚠ The default is NOT hard because shrinkage would break
   exactness — it would not. The unwhitening identity `eᶜᵀ C^(1/2) · (Yw V diag(f) Vᵀ)` is
@@ -225,16 +234,7 @@ Breaking any of these corrupts results without an error:
 
 ## Gotchas
 
-- **P2S needs V >> N.** It fits N-1 predictors across the mask voxels, so in-sample
-  overfitting deflates BOTH `rho` and `sigma_p2s` when the mask is small. Measured at
-  N = 60 on synthetic data with a known kernel:
-
-      V = 576    p/V = 0.10    rho_x1 0.589 / 0.665    sigma 7.95 / 10
-      V = 2904   p/V = 0.020   rho_x1 0.649 / 0.665    sigma 9.53 / 10
-      V = 11560  p/V = 0.005   rho_x1 0.657 / 0.665    sigma 9.82 / 10
-
-  Real data sits near p/V = 1e-4, so it never bites in practice -- but a small synthetic
-  test reads as a broken estimator if you forget.
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a
-  true 5%). Keep ≳ 50 volumes in the pooled patch.
+  true 5%). Keep ≳ 50 volumes in the pooled patch. `estimate_noise_model` warns below 50
+  (`MIN_VOLUMES`).

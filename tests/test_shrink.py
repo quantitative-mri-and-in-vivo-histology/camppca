@@ -100,7 +100,7 @@ def _white_model(mask):
     rho = np.zeros((2 * lag + 1, 2 * lag + 1, PATCH[2]))
     rho[lag, lag, 0] = 1.0
     ones = np.ones(mask.shape, np.float32)
-    return NoiseModel(rho=rho, d=ones, sigma_p2s=ones, mask=mask, lag=lag)
+    return NoiseModel(rho=rho, d=ones, mask=mask, lag=lag)
 
 
 def test_shrinkage_changes_the_weights_only(dataset):
