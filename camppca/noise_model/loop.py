@@ -169,29 +169,39 @@ def _gather(dwi, d_eff, centres, patch):
     return patches / np.asarray(d_eff, np.float64)[ix, iy, iz][:, :, None]
 
 
-@partial(jax.jit, static_argnums=(3, 4, 5))
-def _split_tile(patches, whitener, root, n_small: int, n_large: int, algo: str):
+@partial(jax.jit, static_argnums=(2, 3, 4))
+def _split_spectrum(patches, whitener, n_small: int, n_large: int, algo: str):
+    """Whiten a tile and split each spectrum: what :func:`_whiten_split` returns."""
+    return _whiten_split(patches, whitener, n_small, n_large, algo)
+
+
+@partial(jax.jit, static_argnums=(7,))
+def _split_bulk(whitened, evals, evecs, rank, sigma_hat, whitener, root, r: int):
     """One tile's share of the pooled bulk, and the factors of each kept projector.
 
+    Only the first ``r`` eigenvectors enter, ``r`` at least the tile's largest rank.
+    Every column past a patch's rank is zeroed anyway, and ``r`` is about a tenth of
+    the volume count, so this skips most of the float64 work.
+
     Returns:
-        ``(bulk, A, Bm, rank)``: (n_vox, n_vox) sum over the tile of
-        ``Rw Rw^T / (N sigma_hat^2)``, still whitened; (B, n_vox, n_vols) ``C^(1/2) U``
-        and ``C^(-1/2) U``, whose product ``A Bm^T`` is the kept projector ``Q_b`` in data
-        units, zero beyond each patch's rank; (B,) ranks.
+        ``(bulk, A, Bm)``: (n_vox, n_vox) sum over the tile of ``Rw Rw^T / (N
+        sigma_hat^2)``, still whitened; (B, n_vox, r) ``C^(1/2) U`` and ``C^(-1/2) U``,
+        whose product ``A Bm^T`` is the kept projector ``Q_b`` in data units, zero beyond
+        each patch's rank.
     """
-    n_vols = patches.shape[2]
-    whitened, evals, evecs, rank, sigma_hat = _whiten_split(
-        patches, whitener, n_small, n_large, algo)
-    keep = (jnp.arange(n_vols)[None, :] < rank[:, None])[:, None, :]
+    n_vols = whitened.shape[2]
+    evecs = evecs[:, :, :r]
+    keep = (jnp.arange(r)[None, :] < rank[:, None])[:, None, :]
     coords = jnp.einsum("bpn,bnk->bpk", whitened, evecs)
     kept = jnp.where(keep, coords, 0.0)
     resid = whitened - jnp.einsum("bpk,bnk->bpn", kept, evecs)
     weight = 1.0 / (n_vols * sigma_hat ** 2)
     bulk = jnp.einsum("bpn,bqn,b->pq", resid, resid, weight)
-    U = jnp.where(keep, coords / jnp.sqrt(jnp.maximum(evals, 1e-12))[:, None, :], 0.0)
+    U = jnp.where(keep, coords / jnp.sqrt(jnp.maximum(evals[:, :r], 1e-12))[:, None, :],
+                  0.0)
     A = jnp.einsum("pq,bqk->bpk", root, U)
     Bm = jnp.einsum("pq,bqk->bpk", whitener, U)
-    return bulk, A, Bm, rank
+    return bulk, A, Bm
 
 
 def _split_chunk(patches, C, algo, tile=TILE):
@@ -209,10 +219,12 @@ def _split_chunk(patches, C, algo, tile=TILE):
     bulk = np.zeros((n_vox, n_vox))
     A, Bm, rank = [], [], []
     for start in range(0, n_b, tile):
-        t_bulk, t_A, t_Bm, t_rank = _split_tile(
-            jnp.asarray(patches[start:start + tile]), whitener, root, n_small, n_large,
-            algo)
+        whitened, evals, evecs, t_rank, sigma_hat = _split_spectrum(
+            jnp.asarray(patches[start:start + tile]), whitener, n_small, n_large, algo)
         r = int(t_rank.max())
+        cap = min(n_vols, max(8, -(-r // 8) * 8))     # few distinct shapes to compile
+        t_bulk, t_A, t_Bm = _split_bulk(whitened, evals, evecs, t_rank, sigma_hat,
+                                        whitener, root, cap)
         bulk += np.asarray(t_bulk)
         A.append(np.asarray(t_A[:, :, :r]))
         Bm.append(np.asarray(t_Bm[:, :, :r]))
