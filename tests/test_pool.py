@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 
+import _worker_probe
 import jax
 import numpy as np
 import pytest
@@ -17,7 +18,7 @@ from camppca import NoiseModel, denoise_mppca, denoise_with_noise_model
 from camppca.denoiser import _effective_d
 from camppca.denoiser.camppca import whitened_level
 from camppca.noise_model import _build_C, loop
-from camppca.pool import default_workers, resolve_workers, voxel_chunks
+from camppca.pool import _shutdown, default_workers, get_pool, resolve_workers, voxel_chunks
 
 SHAPE = (24, 20, 12)
 N_VOLS = 60
@@ -92,14 +93,27 @@ def test_pooled_camppca_is_the_serial_pass(dataset, model):
     np.testing.assert_array_equal(pooled.rank, serial.rank)
 
 
-def test_pooled_level_pass_is_the_serial_pass(dataset, model):
+@pytest.mark.parametrize("white", [True, False], ids=["standard", "whitened"])
+def test_pooled_level_pass_matches_the_jax_pass(dataset, model, white):
+    """The workers run the numpy version. numpy and XLA round the Gram differently: on
+    this data the level differs by 2e-5 at the median and 1e-4 at the 99th percentile,
+    and a near-tied MP cut can flip."""
     dwi, mask = dataset
-    C = model.patch_correlation(PATCH)
-    d_eff = _effective_d(model.d, mask)
+    C = None if white else model.patch_correlation(PATCH)
+    d_eff = None if white else _effective_d(model.d, mask)
     with on_cpu():
         serial = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=1)
     pooled = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=3)
-    np.testing.assert_array_equal(pooled, serial)
+    close = np.isclose(pooled[mask], serial[mask], rtol=1e-3, atol=0)
+    assert close.mean() > 0.99
+    assert np.all(pooled[~mask] == 0)
+
+
+def test_the_pooled_level_pass_does_not_load_jax_in_the_workers(dataset):
+    dwi, mask = dataset
+    _shutdown()
+    whitened_level(dwi, mask, None, PATCH, workers=2)
+    assert not get_pool(2).submit(_worker_probe.jax_loaded).result()
 
 
 def test_the_pooled_loop_lands_on_the_serial_kernel(dataset, model):

@@ -14,13 +14,18 @@ signal.
 The three variants differ only in the degrees of freedom they charge for the components
 already cut away, so they agree on long spectra and disagree at small N.
 
+The rule is written once for numpy and JAX arrays alike: pool workers run it in numpy
+and never load JAX.
+
 References: Veraart 2016, Cordero-Grande 2019, Ades-Aron 2020.
 """
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import jax
 
 __all__ = ["ALGORITHMS", "mp_threshold"]
 
@@ -28,7 +33,7 @@ ALGORITHMS = ("veraart", "cordero-grande", "jespersen")
 
 
 def mp_threshold(eigenvalues: jax.Array, n_small: int, n_large: int,
-                 algorithm: str = "cordero-grande") -> tuple[jax.Array, jax.Array]:
+                 algorithm: str = "cordero-grande", xp=None) -> tuple[jax.Array, jax.Array]:
     """Find the Marchenko-Pastur edge in a batch of spectra.
 
     Args:
@@ -37,6 +42,7 @@ def mp_threshold(eigenvalues: jax.Array, n_small: int, n_large: int,
         n_small: the smaller of the patch matrix dimensions.
         n_large: the larger of them.
         algorithm: one of :data:`ALGORITHMS`.
+        xp: the array module, ``numpy`` or ``jax.numpy``. Defaults to ``jax.numpy``.
 
     Returns:
         ``(rank, sigma_hat)``: (B,) int32 count of retained components, and (B,) float
@@ -46,31 +52,33 @@ def mp_threshold(eigenvalues: jax.Array, n_small: int, n_large: int,
     Raises:
         ValueError: if ``algorithm`` is not one of :data:`ALGORITHMS`.
     """
-    eps = jnp.finfo(eigenvalues.dtype).eps
+    if xp is None:
+        import jax.numpy as xp
+    eps = xp.finfo(eigenvalues.dtype).eps
     vals = eigenvalues[:, :n_small]                              # (B, n_small)
-    cut = jnp.arange(n_small)                                    # (n_small,)
+    cut = xp.arange(n_small)                                     # (n_small,)
     # tail[:, i] = sum of the eigenvalues at i and below, the noise the cut would discard
-    tail = jnp.cumsum(vals[:, ::-1], axis=1)[:, ::-1]
+    tail = xp.cumsum(vals[:, ::-1], axis=1)[:, ::-1]
     smallest = vals[:, n_small - 1:n_small]                      # (B, 1)
 
     if algorithm == "veraart":
         predicted = tail / ((n_small - cut) * float(n_large))
-        mp_width = 4.0 * jnp.sqrt((n_small - cut) * float(n_large))
+        mp_width = 4.0 * xp.sqrt((n_small - cut) * float(n_large))
     elif algorithm == "cordero-grande":
         predicted = tail / ((n_small - cut) * (n_large - cut))
-        mp_width = 4.0 * jnp.sqrt((n_small - cut) * (n_large - cut))
+        mp_width = 4.0 * xp.sqrt((n_small - cut) * (n_large - cut))
     elif algorithm == "jespersen":
         predicted = tail / ((n_small - cut) * (n_large - cut))
-        mp_width = 4.0 * jnp.sqrt(float(n_large) * float(n_small))
+        mp_width = 4.0 * xp.sqrt(float(n_large) * float(n_small))
     else:
         raise ValueError(f"algorithm must be one of {ALGORITHMS}, got {algorithm!r}")
 
     observed = (vals - smallest) / mp_width
     crossed = observed < predicted
     # first crossing, or everything below the top component if the spread never falls short
-    rank = jnp.where(jnp.any(crossed, axis=1), jnp.argmax(crossed, axis=1), n_small - 1)
+    rank = xp.where(xp.any(crossed, axis=1), xp.argmax(crossed, axis=1), n_small - 1)
 
-    sigma_sq = jnp.take_along_axis(predicted, rank[:, None], axis=1)[:, 0]
-    sigma_hat = jnp.sqrt(jnp.maximum(sigma_sq, 0.0))
-    sigma_hat = jnp.where((sigma_hat > 0) & jnp.isfinite(sigma_hat), sigma_hat, eps)
-    return rank.astype(jnp.int32), sigma_hat
+    sigma_sq = xp.take_along_axis(predicted, rank[:, None], axis=1)[:, 0]
+    sigma_hat = xp.sqrt(xp.maximum(sigma_sq, 0.0))
+    sigma_hat = xp.where((sigma_hat > 0) & xp.isfinite(sigma_hat), sigma_hat, eps)
+    return rank.astype(xp.int32), sigma_hat.astype(eigenvalues.dtype)

@@ -177,8 +177,12 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=25
     mask = np.asarray(mask, bool)
     patch = check_patch(patch)
     if resolve_workers(workers) > 1:
-        return run_slabs(partial(whitened_level, C=C, patch=patch, algo=algo, tile=tile,
-                                 workers=1),
+        # The workers run the numpy version and never load JAX; see denoiser/cpu.py.
+        from . import cpu
+        whitener = None if C is None else sqrtm_psd(
+            np.asarray(C, np.float64), -0.5).astype(np.float32)
+        return run_slabs(partial(cpu.whitened_level, whitener=whitener, patch=patch,
+                                 algo=algo),
                          dwi, mask, patch, (np.zeros(dwi.shape[:3], np.float32),),
                          resolve_workers(workers), tile, d_field=d_field)[0]
     n_vols = dwi.shape[3]

@@ -96,3 +96,21 @@ def test_the_noise_level_stays_positive_and_finite_for_a_degenerate_spectrum():
 def test_an_unknown_algorithm_is_rejected():
     with pytest.raises(ValueError, match="algorithm must be one of"):
         mp_threshold(np.ones((1, N_VOLS), np.float32), N_SMALL, N_LARGE, "gavish-donoho")
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_numpy_and_jax_arrays_give_the_same_cut(algorithm):
+    """Pool workers run the rule in numpy; the engine runs it in JAX."""
+    import jax.numpy as jnp
+
+    rng = np.random.default_rng(7)
+    signal = rng.standard_normal((N_VOX, 3)) @ rng.standard_normal((3, N_VOLS)) * 20
+    batch = np.concatenate([spectrum(signal + noise_matrix(rng, s)) for s in (1, 4, 9)])
+
+    rank_np, sigma_np = mp_threshold(batch, N_SMALL, N_LARGE, algorithm, xp=np)
+    rank_jx, sigma_jx = mp_threshold(jnp.asarray(batch), N_SMALL, N_LARGE, algorithm)
+
+    np.testing.assert_array_equal(rank_np, np.asarray(rank_jx))
+    np.testing.assert_allclose(sigma_np, np.asarray(sigma_jx), rtol=1e-6)
+    assert sigma_np.dtype == np.float32
+
