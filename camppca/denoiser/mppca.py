@@ -10,8 +10,10 @@ Per masked voxel:
 2. Find the Marchenko-Pastur edge in the eigenvalues of ``X``. No demeaning.
 3. Drop everything below the edge, rebuild, and keep only the centre voxel's signal.
 
-Centre-voxel only, with no averaging across the overlapping patches. The noise estimate is
-a per-patch quantity, and averaging reconstructions would break the theory it rests on.
+Centre-voxel only by default, with no averaging across the overlapping patches. The noise
+estimate is a per-patch quantity, and averaging reconstructions departs from the theory it
+rests on. ``aggregate="mean"`` averages them anyway, as an option; see
+:mod:`camppca.denoiser.aggregate`.
 
 The core eigendecomposes the ``n_vols x n_vols`` Gram matrix instead of taking the SVD of
 ``X``. For the centre row that is exact rather than an approximation: ``x_centre @ V``
@@ -23,22 +25,27 @@ References: Veraart 2016, Cordero-Grande 2019, Ades-Aron 2020.
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
+from functools import partial
+
 import numpy as np
 
 from ..patch import check_patch, patch_size
-from .gather import patch_tiles
+from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
+from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
+from .gather import TILE, patch_tiles
 from .mp_threshold import mp_threshold
 from .result import DenoiseResult
 from .shrink import RULES, check_shrink, shrink_weight
+from .spectrum import eigh_descending
 
 __all__ = ["denoise_mppca"]
 
 
-def _denoise_tile(patches: jax.Array, center: int, n_small: int, n_large: int,
-                  algorithm: str, shrink: str) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Denoise a batch of patches, returning the centre voxel of each.
+def _denoise_tile(patches: np.ndarray, center: int, n_small: int, n_large: int,
+                  algorithm: str, shrink: str, full: bool = False
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Denoise a batch of patches, returning the centre voxel of each, or with ``full``
+    each whole rebuilt patch, ``X V diag(w) V^T`` over the kept components.
 
     Args:
         patches: (B, n_vox, n_vols) patch matrices.
@@ -49,33 +56,80 @@ def _denoise_tile(patches: jax.Array, center: int, n_small: int, n_large: int,
         shrink: "hard" or "gd"; see :mod:`camppca.denoiser.shrink`.
 
     Returns:
-        ``(signal, sigma_hat, rank)``: (B, n_vols) denoised centre spectra, (B,) fitted
-        noise level, (B,) retained component count.
+        ``(signal, sigma_hat, rank)``: (B, n_vols) denoised centre spectra, or with
+        ``full`` (B, n_vox, n_vols) rebuilt patches, (B,) fitted noise level, (B,)
+        retained component count.
     """
     n_vox, n_vols = patches.shape[1], patches.shape[2]
 
-    gram = jnp.einsum("bvn,bvm->bnm", patches, patches)
-    evals, evecs = jnp.linalg.eigh(gram)                    # ascending
-    evals = jnp.maximum(evals[:, ::-1], 0.0)                # descending
-    evecs = evecs[:, :, ::-1]
+    gram = np.matmul(patches.transpose(0, 2, 1), patches)
+    evals, evecs = eigh_descending(gram)
 
     rank, sigma_hat = mp_threshold(evals, n_small, n_large, algorithm)
 
-    coords = jnp.einsum("bn,bnm->bm", patches[:, center, :], evecs)
-    keep = jnp.arange(n_vols)[None, :] < rank[:, None]
-    kept = jnp.where(keep, coords, 0.0)
+    if full:
+        r = int(rank.max())
+        w = (np.arange(r)[None, :] < rank[:, None]).astype(patches.dtype)
+        if shrink != "hard":
+            w = w * shrink_weight(evals, sigma_hat, n_vox, n_vols)[:, :r]
+        V = evecs[:, :, :r]
+        return np.matmul(np.matmul(patches, V) * w[:, None, :], V.transpose(0, 2, 1)), \
+            sigma_hat, rank
+
+    coords = np.einsum("bn,bnm->bm", patches[:, center, :], evecs)
+    keep = np.arange(n_vols)[None, :] < rank[:, None]
+    kept = np.where(keep, coords, 0.0)
     if shrink != "hard":
         kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols)
-    signal = jnp.einsum("bm,bnm->bn", kept, evecs)
+    signal = np.einsum("bm,bnm->bn", kept, evecs)
     return signal, sigma_hat, rank
 
 
-_denoise_tile_jit = jax.jit(_denoise_tile, static_argnums=(1, 2, 3, 4, 5))
+def _denoise_voxels(dwi, voxels, patch, algorithm, tile, shrink):
+    """The tile loop of :func:`denoise_mppca` for some voxels, on checked inputs.
+
+    Args:
+        dwi: (X, Y, Z, N) data.
+        voxels: flat voxel indices, C order.
+
+    Returns:
+        ``(signal, sigma_hat, rank)``: (V, N) denoised centre spectra, (V,) fitted noise
+        level, (V,) retained component count, in the order of ``voxels``.
+    """
+    n_vox, n_vols = patch_size(patch), dwi.shape[3]
+    center = n_vox // 2
+    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+
+    signal = np.empty((voxels.size, n_vols), np.float32)
+    sigma_hat = np.empty(voxels.size, np.float32)
+    rank = np.empty(voxels.size, np.int32)
+    for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
+        signal[sl], sigma_hat[sl], rank[sl] = _denoise_tile(
+            np.asarray(dwi[index], np.float32), center, n_small, n_large, algorithm, shrink)
+    return signal, sigma_hat, rank
+
+
+def _mean_voxels(dwi, mask, centres, patch, algorithm, tile, shrink):
+    """Sum the rebuilt patches around ``centres`` over their box, for the mean.
+
+    Returns:
+        :meth:`~camppca.denoiser.aggregate.BoxSum.result`.
+    """
+    n_vox, n_vols = patch_size(patch), dwi.shape[3]
+    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+    box = BoxSum(dwi.shape, centres, patch, mask)
+    for _, index in patch_tiles(dwi.shape[:3], centres, patch, tile=tile):
+        recon, sigma_hat, rank = _denoise_tile(np.asarray(dwi[index], np.float32),
+                                               n_vox // 2, n_small, n_large, algorithm,
+                                               shrink, full=True)
+        box.add(index, recon, sigma_hat, rank)
+    return box.result()
 
 
 def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 5),
-                  algorithm: str = "cordero-grande", tile: int = 256,
-                  on_device: bool | None = None, shrink: str = "hard") -> DenoiseResult:
+                  algorithm: str = "cordero-grande", tile: int = TILE,
+                  shrink: str = "hard", workers: int | None = None,
+                  aggregate: str = "centre", stride: int = 1) -> DenoiseResult:
     """Denoise a 4D volume with standard MP-PCA.
 
     Args:
@@ -85,11 +139,16 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
         patch: box shape, three odd integers.
         algorithm: which Marchenko-Pastur variant to cut with, see
             :data:`~camppca.denoiser.mp_threshold.ALGORITHMS`.
-        tile: maximum patches per device batch, to bound memory.
-        on_device: patch-gather strategy, see :func:`~camppca.denoiser.gather.patch_tiles`. The
-            default decides from free device memory.
+        tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         shrink: weight on the kept components, "hard" (default), "gd" or "lr"; see
             :mod:`camppca.denoiser.shrink`. With white noise "lr" is "gd".
+        workers: CPU processes to split the voxels over, see
+            :mod:`camppca.pool`. The default is one per physical core. 1 runs in this
+            process.
+        aggregate: "centre" (default) writes back each patch's centre voxel; "mean"
+            averages the overlapping patch reconstructions, see
+            :mod:`camppca.denoiser.aggregate`.
+        stride: with "mean", a patch centre every ``stride`` voxels per axis.
 
     Returns:
         A :class:`~camppca.denoiser.result.DenoiseResult` with ``model`` unset, since standard
@@ -101,6 +160,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
     """
     patch = check_patch(patch)
     shrink = check_shrink(shrink)
+    aggregate, stride = check_aggregate(aggregate, stride)
     tile_shrink = "gd" if shrink == "lr" else shrink   # C = I: the correction is exactly 1
     dwi = np.asarray(dwi, np.float32)
     if dwi.ndim != 4:
@@ -113,26 +173,34 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
             raise ValueError(
                 f"mask shape {mask.shape} does not match dwi spatial shape {dwi.shape[:3]}")
 
-    n_vox, n_vols = patch_size(patch), dwi.shape[3]
-    center = n_vox // 2
-    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+    workers = resolve_workers(workers)
+    if aggregate == "mean":
+        assembly = MeanAssembly(dwi, mask)
+        run_boxes(partial(_mean_voxels, patch=patch, algorithm=algorithm, tile=tile,
+                          shrink=tile_shrink),
+                  (dwi, mask), voxel_chunks(patch_centres(mask, patch, stride), MEAN_CHUNKS,
+                                            tile),
+                  assembly.add, workers)
+        denoised, sigma_hat, rank = assembly.finish()
+        rule = f"{RULES[tile_shrink]}, mean over overlapping patches, stride {stride}"
+    else:
+        voxels = np.flatnonzero(mask)
+        coords = np.unravel_index(voxels, mask.shape)
+        denoised = dwi.copy()
+        sigma_hat = np.zeros(dwi.shape[:3], np.float32)
+        rank = np.zeros(dwi.shape[:3], np.int32)
 
-    denoised = dwi.copy()
-    sigma_hat = np.zeros(dwi.shape[:3], np.float32)
-    rank = np.zeros(dwi.shape[:3], np.int32)
+        def write(sl, outputs):
+            where = tuple(c[sl] for c in coords)
+            denoised[where], sigma_hat[where], rank[where] = outputs
 
-    for coords, patches in patch_tiles(dwi, mask, patch, tile=tile, on_device=on_device):
-        # Full float32 matmuls: on recent NVIDIA GPUs the default is TF32, about three
-        # significant digits, and GPU results would drift from CPU ones.
-        with jax.default_matmul_precision("highest"):
-            signal, tile_sigma, tile_rank = _denoise_tile_jit(
-                patches, center, n_small, n_large, algorithm, tile_shrink)
-        denoised[coords] = np.asarray(signal)
-        sigma_hat[coords] = np.asarray(tile_sigma)
-        rank[coords] = np.asarray(tile_rank)
+        run_voxels(partial(_denoise_voxels, patch=patch, algorithm=algorithm, tile=tile,
+                           shrink=tile_shrink),
+                   (dwi,), voxels, write, workers, tile)
+        rule = f"{RULES[tile_shrink]}, centre-voxel only"
 
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,
         provenance=dict(method="mppca", patch=tuple(int(v) for v in patch),
-                        algorithm=algorithm, shrink=shrink,
-                        rule=f"{RULES[tile_shrink]}, centre-voxel only"))
+                        algorithm=algorithm, shrink=shrink, aggregate=aggregate,
+                        stride=stride, rule=rule))

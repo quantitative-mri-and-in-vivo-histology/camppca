@@ -1,7 +1,5 @@
 """Shrinkage of the kept components: "gd" and "lr" against the hard threshold."""
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -37,7 +35,7 @@ def test_gd_weight_is_gavish_donohos_shrinker(n_vox, n_vols):
     sigma = np.full(len(evals), 1.0)
     m, n = min(n_vox, n_vols), max(n_vox, n_vols)
 
-    weight = np.asarray(shrink_weight(jnp.asarray(evals), jnp.asarray(sigma), n_vox, n_vols))
+    weight = np.asarray(shrink_weight(evals, sigma, n_vox, n_vols))
     s = np.sqrt(evals)
     want = _gavish_donoho(s, sigma[:, None], m, n) / np.maximum(s, 1e-12)
 
@@ -48,15 +46,14 @@ def test_gd_weight_is_gavish_donohos_shrinker(n_vox, n_vols):
 
 def test_lr_with_white_noise_is_gd():
     X, evals, evecs = _spectra(np.random.default_rng(1), 75, 40)
-    sigma = jnp.ones(len(evals))
-    with jax.default_matmul_precision("highest"):     # as the engine calls it; GPU: not TF32
-        q = signal_alignment(jnp.asarray(X), jnp.asarray(evecs), jnp.asarray(evals),
-                             jnp.eye(75))
+    sigma = np.ones(len(evals))
+    q = signal_alignment(X, evecs, evals,
+                         np.eye(75))
 
     np.testing.assert_allclose(np.asarray(q[:, :3]), 1.0, atol=1e-6)
     np.testing.assert_allclose(
-        np.asarray(shrink_weight(jnp.asarray(evals), sigma, 75, 40, q)),
-        np.asarray(shrink_weight(jnp.asarray(evals), sigma, 75, 40)), atol=1e-6)
+        np.asarray(shrink_weight(evals, sigma, 75, 40, q)),
+        np.asarray(shrink_weight(evals, sigma, 75, 40)), atol=1e-6)
 
 
 def test_lr_keeps_more_where_the_signal_lies_in_loud_noise():
@@ -73,15 +70,53 @@ def test_lr_keeps_more_where_the_signal_lies_in_loud_noise():
                   + root @ rng.standard_normal((n_vox, n_vols)) for _ in range(16)])
     whitened = np.einsum("pq,bqn->bpn", sqrtm_psd(C, -0.5), X)
     evals, evecs = np.linalg.eigh(np.einsum("bpn,bpm->bnm", whitened, whitened))
-    evals, evecs = jnp.asarray(np.maximum(evals[:, ::-1], 0.0)), jnp.asarray(evecs[:, :, ::-1])
+    evals, evecs = np.maximum(evals[:, ::-1], 0.0), evecs[:, :, ::-1]
     _, sigma = mp_threshold(evals, min(n_vox, n_vols), max(n_vox, n_vols))
 
-    q = signal_alignment(jnp.asarray(whitened), evecs, evals, jnp.asarray(C))
+    q = signal_alignment(whitened, evecs, evals, C)
     gd = shrink_weight(evals, sigma, n_vox, n_vols)
     lr = shrink_weight(evals, sigma, n_vox, n_vols, q)
 
-    assert float(jnp.median(q[:, 0])) > 1.0
+    assert float(np.median(q[:, 0])) > 1.0
     assert (lr[:, 0] > gd[:, 0]).all()
+
+
+def _smooth_case(seed=4, n_patches=6):
+    """Smooth signal under smooth correlated noise, whitened, with its Gram split."""
+    rng = np.random.default_rng(seed)
+    g = np.arange(5) - 2
+    off = np.stack(np.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3)
+    C = np.exp(-np.linalg.norm(off[:, None] - off[None], axis=-1) ** 2 / 2.0)
+    n_vox, n_vols = len(off), 90
+    smooth = np.exp(-np.linalg.norm(off, axis=1) ** 2 / 8.0)
+    root = sqrtm_psd(C, 0.5)
+    X = np.stack([np.outer(smooth, 6 * rng.standard_normal(n_vols))
+                  + root @ rng.standard_normal((n_vox, n_vols)) for _ in range(n_patches)])
+    whitened = np.einsum("pq,bqn->bpn", sqrtm_psd(C, -0.5), X)
+    evals, evecs = np.linalg.eigh(np.einsum("bpn,bpm->bnm", whitened, whitened))
+    return C, root, whitened, np.maximum(evals[:, ::-1], 0.0), evecs[:, :, ::-1], rng
+
+
+def test_whole_patch_alignment_with_equal_levels_is_the_centre_one():
+    C, root, whitened, evals, evecs, _ = _smooth_case()
+    levels = np.full(whitened.shape[:2], 2.5)
+
+    np.testing.assert_allclose(
+        signal_alignment(whitened, evecs, evals, C, levels, root),
+        signal_alignment(whitened, evecs, evals, C), rtol=1e-8)
+
+
+def test_whole_patch_alignment_is_the_long_way():
+    """|D C^(1/2) u_k|^2 / mean(d^2), u_k the whitened patch's left singular vectors."""
+    C, root, whitened, evals, evecs, rng = _smooth_case()
+    levels = rng.uniform(0.6, 1.8, whitened.shape[:2])
+
+    q = signal_alignment(whitened, evecs, evals, C, levels, root)
+    for b in range(whitened.shape[0]):
+        U = np.linalg.svd(whitened[b], full_matrices=False)[0]
+        back = levels[b][:, None] * (root @ U[:, :3])
+        want = (back ** 2).sum(0) / np.mean(levels[b] ** 2)
+        np.testing.assert_allclose(q[b, :3], want, rtol=1e-6)
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +135,7 @@ def _white_model(mask):
     rho = np.zeros((2 * lag + 1, 2 * lag + 1, PATCH[2]))
     rho[lag, lag, 0] = 1.0
     ones = np.ones(mask.shape, np.float32)
-    return NoiseModel(rho=rho, d=ones, sigma_p2s=ones, mask=mask, lag=lag)
+    return NoiseModel(rho=rho, d=ones, mask=mask, lag=lag)
 
 
 def test_shrinkage_changes_the_weights_only(dataset):

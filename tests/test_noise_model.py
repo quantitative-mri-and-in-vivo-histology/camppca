@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from camppca import denoise_mppca
 from camppca.noise_model import NoiseModel, _pool_level, estimate_noise_model
 from camppca.patch import patch_offsets
 
@@ -20,7 +21,6 @@ def _synthetic(rng, shape=(20, 20, 10), n_dirs=27, sigma=8.0, rank=4):
 
 def _model_with_rho(rho_table, lag, shape=(8, 8, 4)):
     return NoiseModel(rho=rho_table, d=np.ones(shape, np.float32),
-                      sigma_p2s=np.ones(shape, np.float32),
                       mask=np.ones(shape, bool), lag=lag)
 
 
@@ -110,40 +110,46 @@ def test_estimate_refuses_a_patch_larger_than_the_volume():
         estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 5))
 
 
-def test_estimate_fits_one_pattern_over_every_diffusion_volume():
+def test_estimate_covers_the_lags_the_patch_needs():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(0))
     model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
 
     assert model.rho.shape == (9, 9, 3), "through-slice reach follows the patch depth"
     assert model.lag == 4
     assert model.provenance["n_vols"] == bvals.size
-    assert model.provenance["n_dwi"] == int((bvals > 100).sum()), "b0s stay out of the fit"
 
 
-def test_estimate_recovers_the_noise_level_and_d_is_the_pooled_level():
+def test_d_is_the_standard_mppca_level_pooled():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(1))
     model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
-    pooled = _pool_level(np.where(mask, model.sigma_p2s, 0.0).astype(np.float64), mask, 3)
+    standard = denoise_mppca(dwi, mask, patch=(5, 5, 3)).sigma_hat
+    pooled = _pool_level(np.where(mask, standard, 0.0).astype(np.float64), mask, 3)
 
-    assert np.median(model.sigma_p2s[mask]) == pytest.approx(sigma, rel=0.1)
-    np.testing.assert_allclose(model.d[mask], pooled[mask], rtol=1e-6)
+    assert np.median(model.d[mask]) == pytest.approx(sigma, rel=0.1)
+    # Not exact: the level pass asks LAPACK for eigenvalues only, the denoiser for vectors
+    # too, and a near-tied MP cut can flip between them.
+    np.testing.assert_allclose(model.d[mask], pooled[mask], rtol=5e-3)
     assert np.all(model.d[~mask] == 0)
+    assert model.provenance["level_rounds_run"] == 0, "no level rounds by default"
 
 
-def test_estimate_is_deterministic():
+@pytest.mark.parametrize("level_rounds", [0, 1])
+def test_estimate_is_deterministic(level_rounds):
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(2))
-    a = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
-    b = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+    a = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), level_rounds=level_rounds)
+    b = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), level_rounds=level_rounds)
     assert np.array_equal(a.rho, b.rho)
-    assert np.array_equal(a.sigma_p2s, b.sigma_p2s)
+    assert np.array_equal(a.d, b.d)
     assert a.provenance == b.provenance
 
 
-def test_estimate_without_bvals_uses_every_volume():
+def test_bvals_do_not_enter_the_estimate_when_the_mask_is_given():
+    """They only pick the b0s the default mask is drawn from."""
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(3))
-    model = estimate_noise_model(dwi, None, mask, patch=(5, 5, 3))
-    assert model.provenance["n_dwi"] == bvals.size, "no bvals means no b0 to exclude"
-    assert np.isfinite(model.rho).all()
+    with_bvals = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+    without = estimate_noise_model(dwi, None, mask, patch=(5, 5, 3))
+    assert np.array_equal(with_bvals.rho, without.rho)
+    assert np.array_equal(with_bvals.d, without.d)
 
 
 def test_estimate_rejects_mismatched_bvals():
@@ -152,28 +158,23 @@ def test_estimate_rejects_mismatched_bvals():
         estimate_noise_model(dwi, bvals[:-1], mask, patch=(5, 5, 3))
 
 
-def test_too_few_diffusion_volumes_is_refused_not_silently_nan():
-    """Too few volumes used to yield an all-NaN rho and a fully NaN image.
+def test_fewer_volumes_than_the_mp_fit_trusts_warns():
+    dwi, bvals, mask, _ = _synthetic(np.random.default_rng(0), n_dirs=17)   # 40 volumes
+    with pytest.warns(RuntimeWarning, match="fewer than 50"):
+        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
 
-    p2s_ols on one column has no predictors, so every residual is the centred signal;
-    stable_region then drops every voxel and rho_region divides 0/0. Only a RuntimeWarning
-    was emitted, and the CLI wrote a NaN NIfTI and exited 0.
-    """
-    rng = np.random.default_rng(0)
-    shape = (20, 20, 10)
-    bvals = np.concatenate([np.zeros(4), np.full(5, 1000.0)])
-    signal = rng.standard_normal(shape + (3,)) @ rng.standard_normal((3, bvals.size))
-    dwi = signal * 20 + 300 + rng.standard_normal(shape + (bvals.size,)) * 8
 
-    with pytest.raises(ValueError, match=r"need >= 10 volumes above b=100"):
-        estimate_noise_model(dwi, bvals, np.ones(shape, bool), patch=(5, 5, 3))
+def test_a_negative_level_round_count_is_refused():
+    dwi, bvals, mask, _ = _synthetic(np.random.default_rng(0))
+    with pytest.raises(ValueError, match="level_rounds must be"):
+        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), level_rounds=-1)
 
 
 def test_the_auto_mask_is_the_whole_brain_not_the_eroded_interior():
     """The stored mask is also the set of voxels the engine WRITES.
 
-    brain_mask erodes 3 voxels because rho_region needs a strict interior. Storing that
-    eroded mask left a thick rim un-denoised -- 57% of brain voxels on this phantom.
+    brain_mask erodes 3 voxels by default. Storing that eroded mask left a thick rim
+    un-denoised -- 57% of brain voxels on this phantom.
     """
     rng = np.random.default_rng(0)
     shape, n_vols = (40, 40, 20), 50
@@ -190,16 +191,13 @@ def test_the_auto_mask_is_the_whole_brain_not_the_eroded_interior():
     model = estimate_noise_model(dwi, bvals, None, patch=(5, 5, 3))
     covered = model.mask.sum() / brain.sum()
     assert covered > 0.95, f"the mask must cover the brain, got {covered:.0%}"
-    # ...while estimation still uses the strict interior.
-    assert model.provenance["erode"] == 3
-    assert model.provenance["n_interior"] < model.provenance["n_mask"] / 2
 
 
 def test_a_non_bool_mask_does_not_become_an_integer_index():
     """`... & mask` with a uint8 mask makes `d[good]` a fancy INDEX, not a selection."""
     model = _model_with_rho(_separable_rho(4), lag=4)
     model.mask = np.ones((8, 8, 4), np.uint8)          # what get_fdata().astype() gives
-    assert NoiseModel(rho=model.rho, d=model.d, sigma_p2s=model.sigma_p2s,
+    assert NoiseModel(rho=model.rho, d=model.d,
                       mask=np.ones((8, 8, 4), np.uint8), lag=4).mask.dtype == bool
 
 
@@ -233,15 +231,16 @@ def test_pooling_of_size_one_is_a_no_op():
     assert np.array_equal(_pool_level(level, mask, 1), level)
 
 
-def test_estimate_pools_d_but_leaves_sigma_p2s_alone():
+def test_estimate_pools_d():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(5))
     raw = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), pool=1)
     pooled = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
 
     assert pooled.provenance["pool"] == 3, "pooling is on by default"
-    assert np.array_equal(raw.sigma_p2s, pooled.sigma_p2s), "sigma_p2s is never pooled"
     assert np.median(pooled.d[mask]) == pytest.approx(np.median(raw.d[mask]), rel=0.02)
-    assert pooled.d[mask].std() < 0.6 * raw.d[mask].std(), "pooling cuts sampling scatter"
+    # Neighbouring MP levels share most of their patch, so their scatter is correlated
+    # and a 3^3 box cuts it by far less than the sqrt(27) of independent voxels.
+    assert pooled.d[mask].std() < 0.75 * raw.d[mask].std(), "pooling cuts sampling scatter"
 
 
 def test_estimate_rejects_a_pool_smaller_than_one_voxel():

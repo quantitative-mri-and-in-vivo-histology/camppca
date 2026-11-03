@@ -27,19 +27,17 @@ with ``s_k^2 = 1 - c_k^2``, ``mu_tau_k = c_k^2 / (q_k - s_k^2)`` and
 whitened patch. Where ``q_k <= s_k^2`` there is no valid ``tau_k`` and "lr" falls back to
 "gd". The weight on the component is ``t_k / sw_k``, and 0 below the edge.
 
-``q_k`` measures noise loudness with ``C`` alone, which fits camppca's centre-voxel output.
-The loss that matters is the error at the centre voxel, whose level ``d_c`` scales every
+With the centre voxel as output, ``q_k`` measures noise loudness with ``C`` alone. The
+loss that matters is the error at the centre voxel, whose level ``d_c`` scales every
 component equally and so drops out of the weights; the other voxels' levels never enter.
-Leeb & Romanov's own loss is the error over the whole patch in data units. There the way
-back is ``D C^(1/2)``, and ``q_k = |D C^(1/2) u_k|^2 / mean(d^2)`` would be the right
-measure. That version belongs with patch averaging, where every voxel of a patch reaches
-the output.
+With patch averaging every voxel of a patch reaches the output, and the loss is Leeb &
+Romanov's own, the error over the whole patch in data units. The way back is then
+``D C^(1/2)``, and :func:`signal_alignment` given the patch's levels measures
+``q_k = |D C^(1/2) u_k|^2 / mean(d^2)``. With equal levels the two agree.
 """
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 
 __all__ = ["RULES", "SHRINKERS", "check_shrink", "shrink_weight", "signal_alignment"]
@@ -63,8 +61,8 @@ def check_shrink(shrink: str) -> str:
     return shrink
 
 
-def shrink_weight(evals: jax.Array, sigma_hat: jax.Array, n_vox: int, n_vols: int,
-                  alignment: jax.Array | None = None) -> jax.Array:
+def shrink_weight(evals: np.ndarray, sigma_hat: np.ndarray, n_vox: int, n_vols: int,
+                  alignment: np.ndarray | None = None) -> np.ndarray:
     """Per component, the shrunk singular value over the observed one.
 
     Args:
@@ -78,37 +76,53 @@ def shrink_weight(evals: jax.Array, sigma_hat: jax.Array, n_vox: int, n_vols: in
     Returns:
         (B, n_vols) weights, 0 below the edge. The caller zeroes ``k >= rank``.
     """
+    with np.errstate(divide="ignore", invalid="ignore"):   # both branches of each where
+        return _shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)
+
+
+def _shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment):
     gamma = n_vox / n_vols
-    sw = jnp.sqrt(evals) / (sigma_hat[:, None] * np.sqrt(n_vols))
+    sw = np.sqrt(evals) / (sigma_hat[:, None] * np.sqrt(n_vols))
     above = sw > 1 + np.sqrt(gamma)
     x = sw ** 2 - 1 - gamma
-    ell = jnp.where(above, (x + jnp.sqrt(jnp.maximum(x ** 2 - 4 * gamma, 0.0))) / 2, 1.0)
-    c2 = jnp.clip((1 - gamma / ell ** 2) / (1 + gamma / ell), 0.0, 1.0)
-    ct2 = jnp.clip((1 - gamma / ell ** 2) / (1 + 1 / ell), 0.0, 1.0)
-    t = jnp.sqrt(ell * c2 * ct2)
+    ell = np.where(above, (x + np.sqrt(np.maximum(x ** 2 - 4 * gamma, 0.0))) / 2, 1.0)
+    c2 = np.clip((1 - gamma / ell ** 2) / (1 + gamma / ell), 0.0, 1.0)
+    ct2 = np.clip((1 - gamma / ell ** 2) / (1 + 1 / ell), 0.0, 1.0)
+    t = np.sqrt(ell * c2 * ct2)
     if alignment is not None:
         s2 = 1 - c2
         valid = alignment > s2
-        mu_tau = c2 / jnp.where(valid, alignment - s2, 1.0)
-        t = jnp.where(valid, t / (c2 + s2 * mu_tau), t)
-    return jnp.where(above, t / jnp.maximum(sw, 1e-12), 0.0)
+        mu_tau = c2 / np.where(valid, alignment - s2, 1.0)
+        t = np.where(valid, t / (c2 + s2 * mu_tau), t)
+    return np.where(above, t / np.maximum(sw, 1e-12), 0.0)
 
 
-def signal_alignment(whitened: jax.Array, evecs: jax.Array, evals: jax.Array,
-                     C: jax.Array) -> jax.Array:
-    """``q_k = u_k^T C u_k / (tr C / n_vox)``: how loud the noise is along each component.
+def signal_alignment(whitened: np.ndarray, evecs: np.ndarray, evals: np.ndarray,
+                     C: np.ndarray, levels: np.ndarray | None = None,
+                     root: np.ndarray | None = None) -> np.ndarray:
+    """How loud the noise is along each component, for "lr".
+
+    Without ``levels``, for the centre-voxel output: ``q_k = u_k^T C u_k / (tr C / n_vox)``.
+    With them, for the whole patch: ``q_k = |D C^(1/2) u_k|^2 / mean(d^2 diag C)``, with
+    ``D`` the patch's own levels.
 
     Args:
         whitened: (B, n_vox, n_vols) whitened patches.
         evecs: (B, n_vols, n_vols) eigenvectors of their Gram, columns descending.
         evals: (B, n_vols) the matching eigenvalues.
         C: (n_vox, n_vox) the patch correlation the patches were whitened with.
+        levels: (B, n_vox) each patch voxel's level ``d``, or None.
+        root: (n_vox, n_vox) ``C^(1/2)``; needed with ``levels``.
 
     Returns:
         (B, n_vols). Above 1 where the component lies where the noise is loud.
     """
     n_vox = whitened.shape[1]
-    U = jnp.einsum("bpn,bnk->bpk", whitened, evecs)
-    U = U / jnp.sqrt(jnp.maximum(evals, 1e-12))[:, None, :]
-    q = jnp.einsum("bpk,bpk->bk", U, jnp.einsum("pq,bqk->bpk", C, U))
-    return q / (jnp.trace(C) / n_vox)
+    U = np.einsum("bpn,bnk->bpk", whitened, evecs)
+    U = U / np.sqrt(np.maximum(evals, 1e-12))[:, None, :]
+    if levels is None:
+        q = np.einsum("bpk,bpk->bk", U, np.einsum("pq,bqk->bpk", C, U))
+        return q / (np.trace(C) / n_vox)
+    back = levels[:, :, None] * np.einsum("pq,bqk->bpk", root, U)        # D C^(1/2) u_k
+    q = np.einsum("bpk,bpk->bk", back, back)
+    return q / np.mean(levels ** 2 * np.diag(C)[None, :], axis=1)[:, None]

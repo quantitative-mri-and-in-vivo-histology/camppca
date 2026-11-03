@@ -18,9 +18,11 @@ import numpy as np
 
 from ..noise_model import estimate_noise_model
 from ..patch import check_patch
+from .aggregate import check_aggregate
 from .camppca import denoise_whitened
-from .result import DenoiseResult
+from .gather import TILE
 from .mppca import denoise_mppca
+from .result import DenoiseResult
 from .shrink import RULES, check_shrink
 
 __all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",
@@ -47,7 +49,8 @@ def _effective_d(d, mask):
 
 
 def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
-                             algo="cordero-grande", tile=256, shrink="hard"):
+                             algo="cordero-grande", tile=TILE, shrink="hard", workers=None,
+                             aggregate="centre", stride=1):
     """Denoise in the whitened domain, given a noise model.
 
     ``model``        a :class:`~camppca.noise_model.NoiseModel`.  Raises if ``patch`` is
@@ -57,11 +60,19 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
                      the same way off-diagonal colour does.
     ``shrink``       weight on the kept components: "hard" (default), "gd" or "lr"; see
                      :mod:`camppca.denoiser.shrink`.
+    ``workers``      CPU processes to split the voxels over, see
+                     :mod:`camppca.pool`. The default is one per physical core. 1 runs in
+                     this process.
+    ``aggregate``    "centre" (default) writes back each patch's centre voxel; "mean"
+                     averages the overlapping patch reconstructions, see
+                     :mod:`camppca.denoiser.aggregate`.
+    ``stride``       with "mean", a patch centre every ``stride`` voxels per axis.
 
     The rule -- Exp2 / Cordero-Grande, centre-voxel-only, hard threshold unless ``shrink``
-    says otherwise -- is the method.
+    or ``aggregate`` say otherwise -- is the method.
     """
     shrink = check_shrink(shrink)
+    aggregate, stride = check_aggregate(aggregate, stride)
     patch = check_patch(patch)
     dwi = np.asarray(dwi)
     if dwi.ndim != 4:
@@ -71,7 +82,7 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
                          f"{model.mask.shape}")
 
     fitted = (model.provenance.get("loop_algo"), model.provenance.get("loop_noise_field"))
-    if model.provenance.get("kernel") == "loop" and fitted != (algo, bool(noise_field)):
+    if "loop_algo" in model.provenance and fitted != (algo, bool(noise_field)):
         warnings.warn(f"the loop kernel was fitted with algo={fitted[0]!r}, "
                       f"noise_field={fitted[1]}, but this denoise uses algo={algo!r}, "
                       f"noise_field={bool(noise_field)}. Re-estimate with the same settings.",
@@ -81,23 +92,26 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
 
     denoised, sigma_hat, rank = denoise_whitened(
         dwi, model.mask, C, patch=tuple(int(v) for v in patch), algo=algo, tile=tile,
-        d_field=d_eff, shrink=shrink)
+        d_field=d_eff, shrink=shrink, workers=workers, aggregate=aggregate, stride=stride)
 
     if d_eff is not None:
         # The engine rescales the IMAGE by d at the centre voxel but not sigma_hat.
         # Do it here, or the scale of d leaks into the headline number.
         sigma_hat = sigma_hat * d_eff
 
+    where = "centre-voxel only" if aggregate == "centre" else \
+        f"mean over overlapping patches, stride {stride}"
     prov = dict(method="camppca", patch=tuple(int(v) for v in patch), algo=algo,
-                noise_field=bool(noise_field), shrink=shrink,
-                rule=f"Cordero-Grande/Exp2, {RULES[shrink]}, centre-voxel only",
+                noise_field=bool(noise_field), shrink=shrink, aggregate=aggregate,
+                stride=stride, rule=f"Cordero-Grande/Exp2, {RULES[shrink]}, {where}",
                 model=dict(model.provenance))
     return DenoiseResult(denoised=denoised, sigma_hat=sigma_hat, rank=rank, model=model,
                          provenance=prov)
 
 
 def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=True,
-                    algo="cordero-grande", tile=256, shrink="hard", **estimate_kwargs):
+                    algo="cordero-grande", tile=TILE, shrink="hard", workers=None,
+                    aggregate="centre", stride=1, **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
     Equivalent to ``estimate_noise_model`` followed by ``denoise_with_noise_model``; the
@@ -105,7 +119,10 @@ def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=Tru
     intermediates.
     """
     check_shrink(shrink)                   # before the estimate, which can take a while
+    check_aggregate(aggregate, stride)
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch, algo=algo,
-                                 noise_field=noise_field, **estimate_kwargs)
+                                 noise_field=noise_field, workers=workers,
+                                 **estimate_kwargs)
     return denoise_with_noise_model(dwi, model, patch=patch, noise_field=noise_field,
-                                    algo=algo, tile=tile, shrink=shrink)
+                                    algo=algo, tile=tile, shrink=shrink, workers=workers,
+                                    aggregate=aggregate, stride=stride)

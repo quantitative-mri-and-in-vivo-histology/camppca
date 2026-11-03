@@ -5,12 +5,11 @@ centre row of ``C^(1/2)`` and projects that. These tests write the long way out 
 numpy float64 and demand the same answer.
 """
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from camppca import denoise_mppca
-from camppca.denoiser.camppca import denoise_whitened, sqrtm_psd
+from camppca.denoiser.camppca import denoise_whitened, sqrtm_psd, whitened_level
 from camppca.denoiser.mp_threshold import mp_threshold
 from camppca.patch import patch_offsets, patch_size
 
@@ -39,7 +38,7 @@ def literal_centre_voxel(Y, C, algo="cordero-grande"):
     whitened = sqrtm_psd(C, -0.5) @ Y
     evals, evecs = np.linalg.eigh(whitened.T @ whitened)
     evecs = evecs[:, ::-1]
-    rank, _ = mp_threshold(jnp.asarray(np.maximum(evals[::-1], 0.0)[None]),
+    rank, _ = mp_threshold(np.maximum(evals[::-1], 0.0)[None],
                            min(n_vox, n_vols), max(n_vox, n_vols), algo)
     kept = evecs[:, :int(np.asarray(rank)[0])]
     return (sqrtm_psd(C, 0.5) @ (whitened @ kept @ kept.T))[n_vox // 2]
@@ -97,6 +96,23 @@ def test_every_masked_voxel_matches_the_long_way(dataset):
         expected = literal_centre_voxel(patch_at(dwi, voxel), C)
         worst = max(worst, np.abs(denoised[voxel] - expected).max() / np.abs(expected).max())
     assert worst < 1e-4, f"worst relative error {worst:.2e}"
+
+
+def test_the_level_pass_matches_the_full_denoise(dataset):
+    """whitened_level stops after the fit, so its sigma_hat is the denoiser's, with and
+    without a level field. With C None it is standard MP-PCA's."""
+    dwi, mask = dataset
+    C = separable_correlation(PATCH)
+    level = np.random.default_rng(1).uniform(0.5, 2.0, SHAPE).astype(np.float32)
+
+    for corr, d_field in ((np.eye(patch_size(PATCH)), None), (C, None), (C, level)):
+        _, sigma_hat, _ = denoise_whitened(dwi, mask, corr, patch=PATCH, d_field=d_field)
+        fast = whitened_level(dwi, mask, corr, patch=PATCH, d_field=d_field)
+        np.testing.assert_allclose(fast[mask], sigma_hat[mask], rtol=1e-4)
+        assert np.all(fast[~mask] == 0)
+    plain = denoise_mppca(dwi, mask, patch=PATCH).sigma_hat
+    np.testing.assert_allclose(whitened_level(dwi, mask, None, patch=PATCH)[mask],
+                               plain[mask], rtol=1e-4)
 
 
 def test_a_constant_level_field_changes_nothing(dataset):

@@ -21,7 +21,7 @@ Conventions for user-facing text: **MP-PCA** (hyphenated), American spelling.
 
 ## Scope
 
-**In:** noise covariance estimation from P2S residuals; the noise-level field; whitened
+**In:** noise covariance estimation from MP-PCA itself; the noise-level field; whitened
 MP-PCA (whiten → MP-PCA → unwhiten); the CLI around them.
 
 **Out:** the warp/alignment lane (reusing FSL eddy displacement fields to denoise in a
@@ -57,7 +57,6 @@ patch shape, so it is computed on demand, never stored.
 | diagonal level matrix | D = diag(d) | `D` | |
 | true noise level | σ | — | |
 | MP estimate | σ̂ | `sigma_hat` | hats are for estimates only |
-| P2S level (ratios only) | σ_P2S | `sigma_p2s` | `d` = `sigma_p2s` pooled over a 3³ box |
 | retained rank | P | `rank` | ⚠ see the P collision below |
 | aspect ratio | γ = N/M | — | |
 | box shape, e.g. (5,5,5) | — | `patch` | a **denoiser** knob, not a noise property |
@@ -71,7 +70,7 @@ stays in the data for the per-patch MP fit to find.
 **Banned words.** All three are silent-corruption hazards:
 - **`kernel`** — upstream it means the patch shape *and* the lag table. Use `patch` and
   `rho`. In the manuscript `kernel` means `rho`; the ban only holds if you know that.
-- **`sigma`** unqualified — `sigma_p2s`/`d` go in, `sigma_hat` comes out.
+- **`sigma`** unqualified — `d` goes in, `sigma_hat` comes out.
 - **`R`** — replaced by `C`; `Σ` carries the level, `C` does not.
 
 ### Dimensions
@@ -98,33 +97,61 @@ the 34 volumes.
 
     estimator (source-specific)          engine (source-agnostic)
     ---------------------------          ------------------------
-    P2S residuals -> rho, d      ---->    C -> whiten -> MP-PCA -> unwhiten
+    MP-PCA level + loop -> rho, d  ---->  C -> whiten -> MP-PCA -> unwhiten
 
 The two halves meet at **the noise model** (`rho` + `d`). A follow-up paper estimates
 `rho` from the alignment/interpolation operator and feeds the same engine, so the engine
-must never assume `rho` came from P2S.
+must never assume how `rho` was estimated.
 
-P2S is numpy/scipy. The engine is JAX, and so is the loop kernel, which reuses the
-engine's own split. The old rule that the estimator never imports JAX was dropped
-2026-10-03 with the loop.
+Both halves are numpy and scipy, CPU only. JAX was removed 2026-11-03: per-patch
+eigendecompositions over a pool of CPU processes beat the GPU on a 16-core host. The
+estimator reuses the engine's own split.
+
+Patch2Self was removed from the estimator 2026-11-02 (spec:
+`docs/local/2026-11-02_no_p2s_estimator_spec.md`). Starting the loop from white noise,
+with `d` = standard MP-PCA's σ̂ pooled 3³, gave the same kernel and median σ̂ within
+0.3% on four datasets. The P2S code moves to the paper repo, which still scores whiteness with it.
 
 ### The loop kernel
 
-`estimate_noise_model(kernel="loop")`, the default, starts from the P2S `rho` and refines
-it until it explains the MP-PCA bulk of 3000 sampled patches at once
-(`noise_model/loop.py`). It fits to the denoiser's own split: `algo` and `noise_field`
-are passed to `estimate_noise_model`, recorded in provenance, and a mismatch at denoising
-warns.
-Every volume enters, b0s included, because the denoiser whitens them all. The b0
-exclusion above is for the P2S fit only. `kernel="p2s"` skips the loop.
+`estimate_noise_model` starts `rho` from white noise (1 at lag 0) and refines it until it
+explains the MP-PCA bulk of 3000 sampled patches at once (`noise_model/loop.py`). It fits
+to the denoiser's own split: `algo` and `noise_field` are passed to
+`estimate_noise_model`, recorded in provenance, and a mismatch at denoising warns.
+Every volume enters, b0s included, because the denoiser whitens them all. `bvals` only
+picks the b0s the default mask is drawn from.
 
-⚠ **The loop runs in float64** (`jax.enable_x64`). Its Richardson solve leaves the
-patch-mean direction empty, so each round's `C` is near singular there. In float32 the
-amplified direction's rounding error floods the bulk and the ranks hit the maximum
-within one round. Measured: float64 and float32-with-an-eigenvalue-floor agree to 0.001
-in U, so this is purely numerical. The one exception is the final least squares: its
-design is built in float32 from the float64 factors (same table within 1e-4 at 7³, the
-build ~20x faster on a GPU).
+`d` is standard MP-PCA's σ̂ pooled 3³ (`whitened_level` with `C=None`, eigenvalues only).
+⚠ The pooling is needed: unpooled, the rank grain under strong correlation made the final
+`C` near singular on ideas02 (smallest eigenvalue 1e-9).
+
+`level_rounds` (default 0) re-estimates `d` as `pool(d * s)`, with `s` the whitened σ̂
+of every mask voxel's patch, then refits the loop. The fixed point is a flat `s`. It
+changed U by at most 0.006 and σ̂ by at most 0.3% at three to four times the cost, hence
+the default. ⚠ On synthetic data the rounds sharpen `d` in the interior but push a rim
+of half a patch at the mask edge off the true level (median 4%, up to 32%): edge patches
+include outside-mask voxels, where `d` is the median.
+
+Each round fits one value per lag class (595 at 7³) to the pooled bulk, in whitened
+units, by conjugate gradients. ⚠ **The hole.** Every patch keeps its patch-mean pattern
+as signal, so the bulk cannot see one direction: the same value added to every lag. It
+is fixed by holding the mean over the far lag classes, those on the edge of the patch's
+lag box, at zero. Do not go back to a free solve of `Sigma` with lag averaging: there the
+hole is a near-null eigenvalue (1.1e-4 on the crop), a converged solve divides by it, and
+the kernel ran away (U 0.16 to 9). The old 30 Richardson steps only hid that by stopping
+early.
+
+⚠ **The split is biased, and the loop inherits it.** Signal components near the MP edge
+are kept with patterns tilted toward the noise, and weaker ones stay in the bulk. Both
+are smooth and read as extra correlation. Paper phantom (Hann f 0.5, 80 volumes, 5³):
+the true z correlation is 0, the loop reports 0.05 at lag 1, and Patch2Self overshot
+too. With a signal MP-PCA separates perfectly the loop is within 0.005. This is the
+split's limit, not the fit's. Estimating from the volume side (project every voxel off
+a global signal subspace) was tried and fails on real data: the signal subspace is local.
+
+The split runs in float32, its bulk summed in float64. It needed float64 only while the
+free solve left `C` near singular. Against float64 the table moved by at most 2.4e-5.
+The fit runs in float32 too, within 1e-4 of a float64 least squares.
 
 ### Two whiteners, one result
 
@@ -139,20 +166,22 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
     camppca/
       noise_model/
         __init__.py        NoiseModel, estimate_noise_model() -> NoiseModel
-        p2s.py             Patch2Self: residuals, rho, sigma_p2s        numpy
-        masks.py           brain mask, stable region                    numpy
-        loop.py            the loop kernel, refines rho from P2S        JAX, float64
+        masks.py           brain mask
+        loop.py            the loop kernel, refines rho from white
       denoiser/
         __init__.py        denoise_camppca(), denoise_with_noise_model()
         camppca.py         covariance-aware MP-PCA — the method
         mppca.py           standard white-noise MP-PCA
         mp_threshold.py    mp_threshold() — the Marchenko-Pastur cutoff rule
-        gather.py          patch extraction and the device-memory decision
+        gather.py          patch extraction, a tile at a time
+        aggregate.py       patch averaging, the opt-in aggregate="mean"
+        spectrum.py        batched eigh through scipy's LAPACK, descending
         result.py          DenoiseResult, what both denoisers return
       patch.py             patch geometry — both halves of the seam need it
+      pool.py              CPU worker processes through joblib — both halves use it
       io.py                nibabel edge
       cli.py               camppca denoise | estimate
-      __init__.py          public names; XLA env var set before jax loads
+      __init__.py          public names
 
 One subpackage per half of the seam. The package name carries the noun, so files inside
 do not repeat it, and each `__init__.py` is that half's public face.
@@ -167,13 +196,13 @@ or `camppca.noise_model.` prefix.
   This deviates from the port brief's frozen `estimate_noise` / `denoise_with_model`,
   deliberately.
 - `mp_threshold.py`, `gather.py` and `result.py` sit in `denoiser/`. `patch.py` sits
-  above it because P2S needs it too.
+  above it because the loop needs it too.
 - `loop.py` imports denoiser internals, and `denoiser/__init__.py` imports
-  `noise_model`. So `estimate_noise_model` imports `loop` inside the function, or the
-  import is circular.
-- `NoiseModel` lives in `noise_model/__init__.py`, not with the P2S math: a future
-  alignment-based estimator builds the same object and must not import P2S to get it.
-- Flat, with `noise_model_p2s.py`-style prefixes, is the same structure with the noun
+  `noise_model`. So `estimate_noise_model` imports `loop` and `whitened_level` inside the
+  function, or the import is circular.
+- `NoiseModel` lives in `noise_model/__init__.py`, not with the estimation math: a future
+  alignment-based estimator builds the same object and must not import the loop to get it.
+- Flat, with `noise_model_loop.py`-style prefixes, is the same structure with the noun
   repeated in every filename. Do not "simplify" back to it.
 
 ## Method invariants
@@ -196,12 +225,14 @@ Breaking any of these corrupts results without an error:
   is bit-identical; a generic factor flips near-tied MP cuts by float32 rounding).
   Outside the mask, which edge patches include, `d` is its median over the mask.
 - **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
-  once across every diffusion volume, and b0s stay out of that fit because their residual
-  level does not represent diffusion-weighted noise.
-- **Centre-voxel only** — no overlap averaging. Intentional; matches the MP theory the
-  noise estimate rests on. Users coming from `dwidenoise` may expect averaging.
-- **P2S radius 0 is mandatory**, not a simplification. A radius>0 predictor regresses on
-  spatial neighbors, which biases the very spatial correlation being estimated.
+  once across every volume.
+- **Centre-voxel by default** — no overlap averaging. Intentional; matches the MP theory
+  the noise estimate rests on. `aggregate="mean"` (with `stride`) averages the overlapping
+  patch reconstructions as an option (`denoiser/aggregate.py`): plain mean, no weights,
+  only patches centred in the mask, nothing written outside it, `sigma_hat` the root of
+  the mean `sigma_hat^2`, `rank` the mean rank (float32). The whole rebuilt patch is
+  `X V diag(w) V^T` for both denoisers: camppca's `C^(1/2) C^(-1/2) = I`, so the
+  whole-patch unwhitening needs no `C^(1/2)` product.
 - **Hard threshold by default, shrinkage opt-in** (`shrink="hard" | "gd" | "lr"`,
   `denoiser/shrink.py`). ⚠ The default is NOT hard because shrinkage would break
   exactness — it would not. The unwhitening identity `eᶜᵀ C^(1/2) · (Yw V diag(f) Vᵀ)` is
@@ -212,7 +243,10 @@ Breaking any of these corrupts results without an error:
   at small N (see Exp2 below). `"gd"` also optimizes in the WHITENED metric while the
   output lands in data units. `"lr"` (Leeb–Romanov) corrects for that, but its guarantee
   is for the whole patch at large sizes, and camppca keeps only the centre voxel of a
-  small patch. Both shrinkers keep the MP rank and change only the weights.
+  small patch. There its noise loudness `q_k` uses `C` alone, since the centre level
+  drops out. With `aggregate="mean"` the whole patch reaches the output, so `q_k` uses
+  the patch's own levels, `|D C^(1/2) u_k|^2 / mean(d^2)`. Both shrinkers keep the MP
+  rank and change only the weights. Standard MP-PCA maps `"lr"` to `"gd"` (white noise).
 
 ## API rules
 
@@ -225,16 +259,38 @@ Breaking any of these corrupts results without an error:
 
 ## Gotchas
 
-- **P2S needs V >> N.** It fits N-1 predictors across the mask voxels, so in-sample
-  overfitting deflates BOTH `rho` and `sigma_p2s` when the mask is small. Measured at
-  N = 60 on synthetic data with a known kernel:
+- **Every full-volume pass and the loop's split run in worker processes by default**
+  (`pool.py`, joblib's loky workers, `workers=None` = one per physical core, `workers=1`
+  = in-process).
+  Measured 2026-11-03 on the EDDEN crop at 297 volumes and 7³, 16 cores: estimate 17 s
+  (6 loop rounds), camppca denoise 8 s, MP-PCA denoise 5 s. main with P2S and JAX took
+  74 s for the estimate.
+  - Processes, not threads: scipy's `eigh` holds the GIL, and OpenBLAS queues callers
+    from several threads (5.9x at 8 threads, 2.7x at 16, called through ctypes). MKL
+    scales across threads but would be a large x86-only dependency, and only ties.
+  - Workers run OpenBLAS with one thread and are not pinned; pinning gained nothing.
+  - The volume and the level field reach the workers as joblib memory maps in the temp
+    directory, once per pass (the loop keeps one pool for all its rounds). joblib's own
+    default, `/dev/shm`, pinned the whole volume in RAM for no speed gain.
+  - Each task returns only its voxels. The gather wraps at the volume's edges by index
+    arithmetic, so no padded copy exists. In mean mode a task returns its sums over its
+    box (the x-slices its patches reach) and the main process adds them in chunk order,
+    over a fixed 32 chunks, so the result does not depend on the number of workers.
+  - A pooled pass is the serial pass bit for bit. The loop is not: its split rounds
+    differently on one thread, and a near-tied rank moves `rho` by about 1e-4.
+  - EDDEN 0.9 mm (228 x 228 x 132, 199 volumes, 2.0M brain voxels, 7³), whole camppca
+    pipeline: 298 s (estimate 103 s, of which the level pass 90 s; denoise 195 s).
+    Peak system RAM above idle, image included: loading 5.5 GB, estimate 8.4 GB, denoise
+    12.8 GB. The main process holds the input and the output, 5.5 GB each.
+  - What the 17 s is: the level pass 3 s, six splits at 1.0 s, six fits at 1.2 s. A fit
+    is 3 to 4 preconditioned steps of two bulk maps each, plus 0.25 s to build the
+    preconditioner. The splits are slower in the pool than alone, about 1.5 times, from
+    shared memory bandwidth and clock.
+  - ⚠ OpenBLAS in the main process starts one thread per hardware thread, 32 on 16
+    cores. Held to 16 threads, a bulk map took 24 ms against 49 ms and the estimate
+    18 s against 21 s, before the split moved to float32. Not set in the code yet.
 
-      V = 576    p/V = 0.10    rho_x1 0.589 / 0.665    sigma 7.95 / 10
-      V = 2904   p/V = 0.020   rho_x1 0.649 / 0.665    sigma 9.53 / 10
-      V = 11560  p/V = 0.005   rho_x1 0.657 / 0.665    sigma 9.82 / 10
-
-  Real data sits near p/V = 1e-4, so it never bites in practice -- but a small synthetic
-  test reads as a broken estimator if you forget.
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a
-  true 5%). Keep ≳ 50 volumes in the pooled patch.
+  true 5%). Keep ≳ 50 volumes in the pooled patch. `estimate_noise_model` warns below 50
+  (`MIN_VOLUMES`).

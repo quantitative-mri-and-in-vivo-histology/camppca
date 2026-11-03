@@ -9,7 +9,7 @@ Outputs split by AUDIENCE, not by kind:
     --noise PATH     the sigma_hat map -- a downstream product (SNR maps, weighting),
                      first-class, as `dwidenoise -noise` is
     --qc DIR         things to look at: rho as NIfTI + a plot, the level field d,
-                     sigma_p2s, rank, provenance.json
+                     rank, provenance.json
 
 ⚠ `--qc` is deliberately a SUPERSET. Today it dumps the free byproducts. When the real QC
 feature lands (whiteness before/after, noise-only spectrum against the MP edge, an
@@ -35,8 +35,9 @@ __all__ = ["main"]
 
 def _add_common(p):
     p.add_argument("-fslgrad", nargs=2, metavar=("BVEC", "BVAL"),
-                   help="FSL gradient table. Without it no volume can be recognised as "
-                        "a b0, so every volume enters the fit.")
+                   help="FSL gradient table. Only used to find the b0s the default "
+                        "mask is drawn from. Without it the mask comes from the mean of "
+                        "every volume.")
     p.add_argument("--mask", metavar="PATH", help="brain mask; estimated from the mean b0 "
                                                   "when omitted")
     p.add_argument("--patch", type=int, nargs=3, default=(5, 5, 5), metavar=("X", "Y", "Z"),
@@ -44,6 +45,12 @@ def _add_common(p):
     p.add_argument("--qc", metavar="DIR", help="write QC byproducts here")
     p.add_argument("--lowb", type=float, default=100.0,
                    help="b-value at or below which a volume counts as a b0 (default: 100)")
+    p.add_argument("--level-rounds", type=int, default=0, metavar="N",
+                   help="re-estimate the level field d from the whitened patches up to N "
+                        "times (default: 0, keep standard MP-PCA's level)")
+    p.add_argument("--workers", type=int, default=None, metavar="N",
+                   help="CPU processes to split the work over (default: one per "
+                        "physical core; 1 runs in one process)")
     p.add_argument("-q", "--quiet", action="store_true")
 
 
@@ -58,9 +65,15 @@ def _parser():
     d.add_argument("--noise", metavar="PATH", help="write the sigma_hat map here")
     d.add_argument("--no-noise-field", action="store_true",
                    help="ignore the per-voxel level field d (whiten with the pattern only)")
+    d.add_argument("--aggregate", choices=("centre", "mean"), default="centre",
+                   help="write back each patch's centre voxel (default), or the mean of "
+                        "the overlapping patch reconstructions")
+    d.add_argument("--stride", type=int, default=1, metavar="N",
+                   help="with --aggregate mean, a patch centre every N voxels per axis "
+                        "(default: 1)")
     _add_common(d)
 
-    e = sub.add_parser("estimate", help="estimate the noise model only (fast, no MP-PCA)")
+    e = sub.add_parser("estimate", help="estimate the noise model only, no denoised image")
     e.add_argument("input", help="4D input image")
     _add_common(e)
     return p
@@ -81,7 +94,6 @@ def _write_qc(directory, model, affine, result=None):
     out.mkdir(parents=True, exist_ok=True)
     io.save_like(out / "rho.nii.gz", model.rho, np.eye(4))
     io.save_like(out / "noise_field_d.nii.gz", model.d, affine)
-    io.save_like(out / "sigma_p2s.nii.gz", model.sigma_p2s, affine)
     io.save_like(out / "mask.nii.gz", model.mask.astype(np.uint8), affine, dtype=np.uint8)
 
     prov = dict(model=model.provenance)
@@ -128,17 +140,18 @@ def main(argv=None):
     say(f"  {Path(args.input).name}  {dwi.shape}")
     noise_field = not getattr(args, "no_noise_field", False)   # estimate has no such flag
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
-                                 lowb=args.lowb, noise_field=noise_field)
+                                 lowb=args.lowb, noise_field=noise_field,
+                                 level_rounds=args.level_rounds, workers=args.workers)
     # A patch one voxel wide in-plane gives lag 0: no x=1 entry to show.
     lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
-    say(f"  noise model: lag {model.lag}{lag1}, sigma_p2s median "
-        f"{np.median(model.sigma_p2s[model.mask]):.1f}")
+    say(f"  noise model: lag {model.lag}{lag1}, U {model.provenance['u_kernel']:.3f}")
 
     result = None
     if args.command == "denoise":
         from .denoiser import denoise_with_noise_model
         result = denoise_with_noise_model(dwi, model, patch=patch,
-                                          noise_field=noise_field)
+                                          noise_field=noise_field, workers=args.workers,
+                                          aggregate=args.aggregate, stride=args.stride)
         io.save_like(args.output, result.denoised, affine, header)
         say(f"  wrote {args.output}")
         if args.noise:

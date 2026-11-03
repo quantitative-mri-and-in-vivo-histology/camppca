@@ -15,8 +15,7 @@ whitened domain, where the Marchenko–Pastur assumption holds.
 pip install -e .
 ```
 
-Python ≥ 3.10. The engine is JAX and runs on CPU out of the box; for GPU, install
-`jax[cuda12]`.
+Python ≥ 3.10. numpy and scipy only, on the CPU.
 
 ## Command line
 
@@ -25,16 +24,19 @@ camppca denoise  in.nii.gz out.nii.gz --noise sigma.nii.gz --qc qc/ -fslgrad in.
 camppca estimate in.nii.gz --qc qc/                                 -fslgrad in.bvec in.bval
 ```
 
-`estimate` stops after the noise model — seconds, no MP-PCA — for inspection or QC.
+`estimate` stops after the noise model, without denoising, for inspection or QC.
 
 | flag | writes |
 |---|---|
 | *(positional out)* | the denoised 4D image |
 | `--noise PATH` | the σ̂ map, in the input's units — a first-class product, as `dwidenoise -noise` is |
-| `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the level field, σ, rank, `provenance.json` |
+| `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the level field, σ̂, rank, `provenance.json` |
 
-Without `-fslgrad` no volume can be recognised as a b0, so every volume enters the fit.
+`-fslgrad` only picks the b0s the default mask is drawn from. Without it the mask comes
+from the mean of every volume. Every volume enters the estimate either way.
 `--patch X Y Z` sets the patch (default `5 5 5`, odd in every dimension).
+`--level-rounds N` re-estimates the level field from the whitened patches up to N times
+(default 0).
 
 ## Python
 
@@ -60,7 +62,6 @@ from camppca import estimate_noise_model, denoise_with_noise_model
 model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 5))
 model.rho           # the correlation lag table — the pattern, no level
 model.d             # relative noise level per voxel
-model.sigma_p2s     # absolute noise level per voxel (drives whitening; NOT sigma_hat)
 model.patch_correlation((5, 5, 5))          # the P×P patch correlation, derived on demand
 
 result = denoise_with_noise_model(dwi, model, patch=(5, 5, 5))
@@ -73,19 +74,26 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
 
 ## Notes
 
-- **Output is centre-voxel only**, with no overlap averaging. Intentional — it matches the
-  MP theory the noise estimate rests on — but it differs from what `dwidenoise` users expect.
+- **The work runs in a pool of CPU processes**, one per physical core, through joblib.
+  On a 16-core machine that was faster than an RTX 4060 Ti. `workers=1` (`--workers 1`)
+  runs everything in one process. The image reaches the workers as a memory-mapped file in
+  the temp directory; set `TMPDIR` or `JOBLIB_TEMP_FOLDER` to move it, to local scratch on
+  a cluster for example.
+- **Output is centre-voxel by default**, with no overlap averaging. Intentional — it
+  matches the MP theory the noise estimate rests on. `aggregate="mean"`
+  (`--aggregate mean`) averages the overlapping patch reconstructions instead, and
+  `stride` (`--stride N`) keeps a patch every N voxels per axis.
+- **Voxels outside the mask pass through unchanged**, and `sigma_hat` is zero there. The
+  noise model is only valid inside the mask. Apply the mask yourself if you want zeros.
 - **Keep ≳ 50 volumes in the pooled patch.** The noise-level estimator degenerates as the
   retained rank approaches `min(P, N)`.
-- **P2S needs many more mask voxels than volumes.** It fits N−1 predictors across the mask,
-  so a small mask deflates both the correlation estimate and σ.
 
 `CLAUDE.md` carries the notation, the method invariants, and the reasoning behind them.
 
 ## Development
 
-Open in the devcontainer (**Dev Containers: Reopen in Container**), picking the GPU config
-where a GPU is available. See `.devcontainer/README.md`.
+Open in the devcontainer (**Dev Containers: Reopen in Container**). See
+`.devcontainer/README.md`.
 
 ```bash
 pip install -e ".[dev]"

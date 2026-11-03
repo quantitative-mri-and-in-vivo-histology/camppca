@@ -31,14 +31,12 @@ classifiers = [
 
 dependencies = [
     "numpy>=1.24.0",
-    # ndimage only, for brain_mask / stable_region helpers.
+    # LAPACK eigendecompositions, sparse products, ndimage for brain_mask and pooling.
     "scipy>=1.10.0",
-    # The denoising engine is JAX. Plain jax/jaxlib here on purpose: the user
-    # picks CPU or CUDA wheels (the GPU devcontainer installs jax[cuda12]).
-    "jax>=0.4.0",
-    "jaxlib>=0.4.0",
     # I/O boundary only — every core function takes and returns arrays.
     "nibabel>=5.0.0",
+    # The worker processes and their memory-mapped inputs. 1.4 for unordered results.
+    "joblib>=1.4.0",
 ]
 
 [project.optional-dependencies]
@@ -50,9 +48,6 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
     "hypothesis>=6.0.0",
-    # TEST-ONLY: the P2S equivalence check. Never a runtime dependency.
-    "dipy>=1.8.0",
-    "scikit-learn>=1.3.0",
 ]
 
 [project.scripts]

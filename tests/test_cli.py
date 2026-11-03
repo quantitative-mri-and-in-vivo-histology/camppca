@@ -45,12 +45,12 @@ def test_denoise_writes_image_noise_map_and_qc(dataset, capsys):
     assert sigma_hat.shape == (34, 34, 16), "the noise map is 3D, not 4D with a stale dim4"
     assert np.median(sigma_hat[sigma_hat > 0]) == pytest.approx(10.0, rel=0.2)
 
-    for name in ("rho.nii.gz", "noise_field_d.nii.gz", "sigma_p2s.nii.gz", "mask.nii.gz",
+    for name in ("rho.nii.gz", "noise_field_d.nii.gz", "mask.nii.gz",
                  "sigma_hat.nii.gz", "rank.nii.gz", "provenance.json"):
         assert (qc / name).exists(), name
 
     prov = json.loads((qc / "provenance.json").read_text())
-    assert prov["model"]["n_dwi"] < prov["model"]["n_vols"], "b0s stay out of the fit"
+    assert prov["model"]["level_rounds"] == 0, "no level rounds by default"
 
 
 def test_estimate_writes_qc_but_no_image(dataset):
@@ -59,7 +59,7 @@ def test_estimate_writes_qc_but_no_image(dataset):
                "--patch", "5", "5", "3", *_grad(dataset)])
     assert rc == 0
     assert (qc / "provenance.json").exists()
-    assert not (qc / "sigma_hat.nii.gz").exists(), "no MP-PCA was run"
+    assert not (qc / "sigma_hat.nii.gz").exists(), "nothing was denoised"
     assert not (qc / "rank.nii.gz").exists()
 
 
@@ -70,13 +70,23 @@ def test_estimate_without_qc_writes_nothing_and_says_so(dataset, capsys):
     assert "nothing written" in capsys.readouterr().err
 
 
-def test_denoise_without_a_gradient_table_uses_every_volume(dataset):
+def test_denoise_runs_without_a_gradient_table(dataset):
     qc = dataset / "qc_nograd"
     rc = main(["denoise", str(dataset / "in.nii.gz"), str(dataset / "out2.nii.gz"),
                "--qc", str(qc), "--patch", "5", "5", "3", "-q"])
     assert rc == 0
     prov = json.loads((qc / "provenance.json").read_text())
-    assert prov["model"]["n_dwi"] == prov["model"]["n_vols"], "no bvals, so no b0 to drop"
+    assert prov["model"]["n_vols"] == 50
+
+
+def test_level_rounds_reach_the_estimator(dataset):
+    qc = dataset / "qc_level"
+    rc = main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc),
+               "--patch", "5", "5", "3", "--level-rounds", "1", *_grad(dataset), "-q"])
+    assert rc == 0
+    prov = json.loads((qc / "provenance.json").read_text())
+    assert prov["model"]["level_rounds"] == 1
+    assert prov["model"]["level_rounds_run"] == 1
 
 
 def test_even_patch_is_rejected(dataset):
@@ -100,19 +110,19 @@ def test_a_qc_rerun_overwrites_rather_than_accumulates(dataset):
     assert second["lag"] == 4
 
 
-def test_a_patch_one_voxel_wide_in_plane_runs(dataset, monkeypatch):
-    """Lag 0 has no x=1 entry; the summary line used to index past the table.
-
-    P2S kernel: on a 5-voxel patch the loop's kernel is refused as near singular, which is
-    the estimator's business, not the summary line's.
-    """
-    import functools
-
-    import camppca.cli
-
-    monkeypatch.setattr(camppca.cli, "estimate_noise_model",
-                        functools.partial(camppca.cli.estimate_noise_model, kernel="p2s"))
+def test_a_patch_one_voxel_wide_in_plane_runs(dataset):
+    """Lag 0 has no x=1 entry; the summary line used to index past the table."""
     qc = dataset / "qc_115"
     rc = main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc),
                "--patch", "1", "1", "5", *_grad(dataset), "-q"])
     assert rc == 0
+
+
+def test_denoise_passes_the_aggregate_options(dataset):
+    out, qc = dataset / "out_mean.nii.gz", dataset / "qc_mean"
+    rc = main(["denoise", str(dataset / "in.nii.gz"), str(out), "--qc", str(qc),
+               "--patch", "5", "5", "3", "--aggregate", "mean", "--stride", "2",
+               *_grad(dataset)])
+    assert rc == 0
+    prov = json.loads((qc / "provenance.json").read_text())
+    assert (prov["denoise"]["aggregate"], prov["denoise"]["stride"]) == ("mean", 2)

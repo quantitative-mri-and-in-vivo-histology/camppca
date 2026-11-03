@@ -134,19 +134,6 @@ def test_every_voxel_can_be_denoised_including_the_corners():
     assert (result.rank > 0).all()
 
 
-def test_the_two_gather_paths_give_identical_output():
-    rng = np.random.default_rng(6)
-    dwi = (rng.standard_normal(SHAPE + (N_VOLS,)) * 10.0).astype(np.float32)
-    mask = interior_mask()
-
-    on_device = denoise_mppca(dwi, mask, patch=PATCH, on_device=True)
-    on_host = denoise_mppca(dwi, mask, patch=PATCH, on_device=False)
-
-    np.testing.assert_array_equal(on_device.denoised, on_host.denoised)
-    np.testing.assert_array_equal(on_device.sigma_hat, on_host.sigma_hat)
-    np.testing.assert_array_equal(on_device.rank, on_host.rank)
-
-
 def test_tiling_does_not_change_the_answer():
     rng = np.random.default_rng(7)
     dwi = (rng.standard_normal(SHAPE + (N_VOLS,)) * 10.0).astype(np.float32)
