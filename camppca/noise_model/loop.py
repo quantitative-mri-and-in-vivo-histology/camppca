@@ -48,16 +48,22 @@ denoiser's settings, passed in, so the kernel is fitted to the split it will ser
 Lags the patch never spans, such as ``|dx| > 2`` for a 3 x 7 patch whose table reaches
 lag 6, carry no information from the bulk. They keep the starting table's values.
 
-The split runs in float64. With the free solve, the patch-mean direction of the next
-``C`` was near singular and float32 rounding spilled into the bulk. The pinned fit keeps
-the smallest eigenvalue of ``C`` near 0.2 to 0.4; float32 splits were not retried. The fit
-runs in float32 from the float64 factors, within 1e-4 of a float64 least squares.
+The split runs in float32, with each tile's bulk product in float64. It used to need
+float64: with the free solve the patch-mean direction of the next ``C`` was near
+singular, and float32 rounding spilled into the bulk and ran the ranks to the maximum.
+The pinned fit keeps the smallest eigenvalue of ``C`` near 0.2 to 0.4. Against a float64
+split the table moved by at most 2.4e-5 on the crop and 1.3e-5 on the paper's phantom,
+with U the same to four digits; 1% of patch ranks flipped on near-tied MP cuts. The fit
+runs in float32 too, within 1e-4 of a float64 least squares.
 """
 
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from functools import partial
 
 import numpy as np
+from scipy.linalg import cho_factor, cho_solve, null_space
 from scipy.ndimage import binary_erosion
 
 from ..denoiser import _effective_d
@@ -74,6 +80,10 @@ LOOP_TOL = 1e-3         # stop when U of C changes by less than this between rou
 MAX_ROUNDS = 20
 FIT_TOL = 1e-5          # the fit stops at this gradient, relative to its start
 MAX_FIT_STEPS = 300
+PRODUCT_THREADS = 8     # threads for the bulk map's per-patch products
+PRODUCT_CHUNK = 64      # patches per thread task
+
+_product_pool = None
 
 
 def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande",
@@ -168,15 +178,15 @@ def _sample_centres(mask, patch, rng):
 
 
 def _gather(dwi, d_eff, centres, patch):
-    """(B, n_vox, N) float64 patches around ``centres``, rows divided by ``d_eff``.
+    """(B, n_vox, N) float32 patches around ``centres``, rows divided by ``d_eff``.
 
     Rows in :func:`~camppca.patch.patch_offsets` order. Every patch lies inside the
     volume, so no padding is needed.
     """
     offsets = patch_offsets(patch) - patch // 2
     ix, iy, iz = (c[:, None] + offsets[None, :, k] for k, c in enumerate(centres))
-    patches = np.asarray(dwi[ix, iy, iz, :], np.float64)
-    return patches / np.asarray(d_eff, np.float64)[ix, iy, iz][:, :, None]
+    patches = np.asarray(dwi[ix, iy, iz, :], np.float32)
+    return patches / np.asarray(d_eff, np.float32)[ix, iy, iz][:, :, None]
 
 
 class _Factors:
@@ -206,7 +216,9 @@ class _Factors:
 
 
 def _split_chunk(patches, C, algo, tile=TILE):
-    """Whiten and split a batch of patches ``tile`` at a time, in float64.
+    """Whiten and split a batch of patches ``tile`` at a time, in float32.
+
+    Each tile's bulk product is taken in float64 and summed in float64.
 
     Returns:
         ``(bulk, parts, rank)``: (n_vox, n_vox) whitened bulk summed over the batch, each
@@ -215,12 +227,12 @@ def _split_chunk(patches, C, algo, tile=TILE):
     """
     n_b, n_vox, n_vols = patches.shape
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
-    whitener = sqrtm_psd(C, -0.5)
+    whitener = sqrtm_psd(C, -0.5).astype(np.float32)
     bulk = np.zeros((n_vox, n_vox))
     parts, ranks = [], []
     for start in range(0, n_b, tile):
         whitened, evals, evecs, rank, sigma_hat = _whiten_split(
-            np.asarray(patches[start:start + tile], np.float64), whitener, n_small, n_large,
+            np.asarray(patches[start:start + tile], np.float32), whitener, n_small, n_large,
             algo)
         r = int(rank.max())
         V = evecs[:, :, :r]
@@ -228,7 +240,7 @@ def _split_chunk(patches, C, algo, tile=TILE):
         coords = np.where(keep, np.matmul(whitened, V), 0.0)              # (b, n_vox, r)
         resid = whitened - np.matmul(coords, V.transpose(0, 2, 1))
         scaled = resid / (np.sqrt(n_vols) * sigma_hat)[:, None, None]
-        flat = scaled.transpose(1, 0, 2).reshape(n_vox, -1)
+        flat = scaled.transpose(1, 0, 2).reshape(n_vox, -1).astype(np.float64)
         bulk += flat @ flat.T
         U = coords / np.sqrt(np.maximum(evals[:, :r], 1e-12))[:, None, :]
         parts.extend(U[b, :, :rank[b]] for b in range(U.shape[0]))
@@ -274,8 +286,13 @@ class _WhitenedBulk:
 
     Symmetric and positive semi-definite in the Frobenius inner product. Two large GEMMs
     over the real columns, and per rank group two batched products on strided views of
-    their results, never copies. One step at 7^3 on the crop: 36 ms in float32, against
-    201 ms for the padded float64 form with its reordering copies.
+    their results, never copies.
+
+    The per-patch products are many small GEMMs, which OpenBLAS runs on one thread each.
+    They run in chunks of :data:`PRODUCT_CHUNK` patches on :data:`PRODUCT_THREADS` Python
+    threads, each chunk writing its own columns. Unlike LAPACK's eigh (see
+    :mod:`camppca.pool`), these calls do not queue on each other. On the crop at 7^3 the
+    products took 14.5 ms on one thread, 5.6 ms on 4 and 5.3 ms on 8.
     """
 
     def __init__(self, factors, dtype=np.float32):
@@ -286,15 +303,24 @@ class _WhitenedBulk:
         self.U_cat = np.ascontiguousarray(factors.U_cat, dtype)
         self.Um = self.U_cat @ self.U_cat.T / self.n_b                     # mean U_b U_b^T
         self.Z = np.empty_like(self.U_cat)
+        self.chunks = [(off + s * k, k, Ug[s:s + PRODUCT_CHUNK], Ugt[s:s + PRODUCT_CHUNK])
+                       for off, k, Ug, Ugt in self.groups
+                       for s in range(0, Ug.shape[0], PRODUCT_CHUNK)]
+
+    def _products(self, Y, chunk):
+        off, k, Ug, Ugt = chunk
+        n = Y.shape[0]
+        cols = slice(off, off + Ug.shape[0] * k)
+        y = Y[:, cols].reshape(n, -1, k).transpose(1, 0, 2)
+        z = self.Z[:, cols].reshape(n, -1, k).transpose(1, 0, 2)
+        np.matmul(Ug, np.matmul(Ugt, y), out=z)
 
     def __call__(self, X):
-        n = X.shape[0]
+        global _product_pool
+        if _product_pool is None:
+            _product_pool = ThreadPoolExecutor(PRODUCT_THREADS)
         Y = X @ self.U_cat
-        for off, k, Ug, Ugt in self.groups:
-            cols = slice(off, off + Ug.shape[0] * k)
-            y = Y[:, cols].reshape(n, -1, k).transpose(1, 0, 2)
-            z = self.Z[:, cols].reshape(n, -1, k).transpose(1, 0, 2)
-            np.matmul(Ug, np.matmul(Ugt, y), out=z)
+        list(_product_pool.map(partial(self._products, Y), self.chunks))
         return X - self.Um @ X - X @ self.Um + (self.Z @ self.U_cat.T) / self.n_b
 
 
@@ -307,59 +333,68 @@ def _fit_table(S, factors, C, patch, lag, dzmax, start):
 
     The one direction the bulk cannot see, the same value added to every lag, is fixed
     by making the mean over the far classes zero, those on the edge of the patch's lag
-    box. Conjugate gradients on the normal equations, in float32 from the float64
-    factors, two bulk maps a step, started from ``start``'s values. Each class is scaled
-    by one over the root of its pair count.
+    box. The values are solved for on that pinned space, in an orthonormal basis.
+
+    Conjugate gradients on the normal equations, two bulk maps a step in float32,
+    started from ``start``'s values. Preconditioned by the same normal
+    matrix with every patch's removal replaced by the average one,
+    ``X -> Pm X Pm`` with ``Pm = I - mean_b U_b U_b^T``. That matrix is
+    ``A^T (G (x) G) A`` with ``G = W Pm^2 W`` and ``A`` the class indicators, one product
+    ``G E_c G`` per class and no bulk map. On the crop's factors at 7^3 it cut the
+    condition number of the normal matrix from 5614 to 1.6 and the steps from 154 to 4,
+    built in 0.25 s. Dropping the removal altogether left 125 and 19 steps.
 
     Returns:
         ``rho[dx+lag, dy+lag, |dz|]`` with unit zero lag. Lags the patch never spans are 0.
     """
-    whitener = sqrtm_psd(C, -0.5).astype(np.float32)
+    whitener64 = sqrtm_psd(C, -0.5)
+    whitener = whitener64.astype(np.float32)
     op = _WhitenedBulk(factors)
     cls, lags = _lag_classes(patch)
-    n_cls = len(lags)
+    n_cls, flat = len(lags), cls.ravel()
     reach = np.abs(lags).max(0)
-    far = np.any((np.abs(lags) == reach) & (reach > 0), axis=1).astype(np.float32)
-    ones = np.ones(n_cls, np.float32)
-    scale = 1.0 / np.sqrt(np.bincount(cls.ravel(), minlength=n_cls)).astype(np.float32)
+    far = np.any((np.abs(lags) == reach) & (reach > 0), axis=1)
+    basis = null_space(far[None, :].astype(np.float64))        # every v with far mean 0
 
-    def pin(v):                                  # drops the unseen offset, far mean 0
-        return v - ones * (far @ v) / far.sum()
-
-    def pin_t(u):
-        return u - far * (ones @ u) / far.sum()
-
-    def forward(z):                              # z = v / scale evens out the classes
-        return op(whitener @ pin(scale * z)[cls] @ whitener)
+    def forward(y):
+        return op(whitener @ (basis @ y).astype(np.float32)[cls] @ whitener)
 
     def adjoint(R):
         X = whitener @ op(R) @ whitener
-        return scale * pin_t(np.bincount(cls.ravel(), weights=X.ravel(), minlength=n_cls)
-                             .astype(np.float32))
+        return basis.T @ np.bincount(flat, weights=X.ravel(), minlength=n_cls)
 
-    rhs = (whitener @ S.astype(np.float32) @ whitener)
-    z = start[lags[:, 0] + lag, lags[:, 1] + lag, lags[:, 2]].astype(np.float32) / scale
-    R = rhs - forward(z)
+    removed = np.eye(len(C)) - op.Um.astype(np.float64)
+    G = whitener64 @ removed @ removed @ whitener64
+    M = np.empty((n_cls, n_cls))
+    for c in range(n_cls):
+        M[c] = np.bincount(flat, weights=(G @ (cls == c).astype(np.float64) @ G).ravel(),
+                           minlength=n_cls)
+    pre = cho_factor(basis.T @ (0.5 * (M + M.T)) @ basis)
+
+    rhs = whitener @ S.astype(np.float32) @ whitener
+    y = basis.T @ start[lags[:, 0] + lag, lags[:, 1] + lag, lags[:, 2]]
+    R = rhs - forward(y)
     g = adjoint(R)
-    p, gg = g.copy(), float(g @ g)
-    g0 = adjoint(rhs)
-    target = FIT_TOL * np.sqrt(float(g0 @ g0))
+    h = cho_solve(pre, g)
+    p, gh = h.copy(), float(g @ h)
+    norm0 = float(np.linalg.norm(adjoint(rhs)))
     for _ in range(MAX_FIT_STEPS):
-        if np.sqrt(gg) < target:
+        if np.linalg.norm(g) < FIT_TOL * norm0:
             break
         q = forward(p)
-        alpha = gg / float(np.sum(q * q))
-        z += alpha * p
+        alpha = gh / float(np.sum(q * q, dtype=np.float64))
+        y += alpha * p
         R -= alpha * q
         g = adjoint(R)
-        gg_new = float(g @ g)
-        p = g + (gg_new / gg) * p
-        gg = gg_new
+        h = cho_solve(pre, g)
+        gh_new = float(g @ h)
+        p = h + (gh_new / gh) * p
+        gh = gh_new
     else:
         warnings.warn(f"loop fit stopped at {MAX_FIT_STEPS} steps, gradient "
-                      f"{np.sqrt(gg) / target * FIT_TOL:.1e} against {FIT_TOL}",
+                      f"{np.linalg.norm(g) / norm0:.1e} against {FIT_TOL}",
                       RuntimeWarning, stacklevel=3)
-    values = pin(scale * z).astype(np.float64)
+    values = basis @ y
     table = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     for val, (dx, dy, dz) in zip(values, lags, strict=True):
         table[dx + lag, dy + lag, dz] = table[-dx + lag, -dy + lag, dz] = val

@@ -132,9 +132,9 @@ def test_the_batched_split_is_the_per_patch_algebra(dataset, model):
     S_ref, Q_ref = _reference_split(patches, C, factors.rank)
 
     assert factors.rank.min() > 0, "every patch keeps its signal"
-    np.testing.assert_allclose(S, S_ref, rtol=1e-8, atol=1e-10)
+    np.testing.assert_allclose(S, S_ref, rtol=1e-4, atol=1e-5)
     for (a, bm), (a_ref, bm_ref) in zip(_patch_projectors(factors, C), Q_ref, strict=True):
-        np.testing.assert_allclose(a @ bm.T, a_ref @ bm_ref.T, atol=1e-8)
+        np.testing.assert_allclose(a @ bm.T, a_ref @ bm_ref.T, atol=1e-4)
 
 
 def test_a_mask_too_thin_for_the_patch_is_refused():

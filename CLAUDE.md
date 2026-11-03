@@ -149,8 +149,9 @@ too. With a signal MP-PCA separates perfectly the loop is within 0.005. This is 
 split's limit, not the fit's. Estimating from the volume side (project every voxel off
 a global signal subspace) was tried and fails on real data: the signal subspace is local.
 
-The split runs in float64. The fit runs in float32 from the float64 factors, within
-1e-4 of a float64 least squares.
+The split runs in float32, its bulk summed in float64. It needed float64 only while the
+free solve left `C` near singular. Against float64 the table moved by at most 2.4e-5.
+The fit runs in float32 too, within 1e-4 of a float64 least squares.
 
 ### Two whiteners, one result
 
@@ -251,7 +252,7 @@ Breaking any of these corrupts results without an error:
 
 - **Every full-volume pass and the loop's split run in a pinned process pool by default**
   (`pool.py`, `workers=None` = one per physical core, `workers=1` = in-process).
-  Measured 2026-11-03 on the EDDEN crop at 297 volumes and 7³, 16 cores: estimate 49 s
+  Measured 2026-11-03 on the EDDEN crop at 297 volumes and 7³, 16 cores: estimate 17 s
   (6 loop rounds), camppca denoise 8 s, MP-PCA denoise 5 s. main with P2S and JAX took
   74 s for the estimate.
   - Processes, not threads: OpenBLAS serializes concurrent LAPACK calls from one process.
@@ -261,8 +262,13 @@ Breaking any of these corrupts results without an error:
   - A pooled pass is the serial pass bit for bit. The loop is not: its split rounds
     differently on one thread, and a near-tied float64 rank moves `rho` by about 1e-4.
   - Memory on the crop: 11 GB at the peak for all processes, the largest 1.3 GB.
-  - What the 49 s is: the level pass, six splits at about 4 s, and six fits at 54 steps
-    of two bulk maps each. At 36 ms a map that is about 4 s a fit, estimated.
+  - What the 17 s is: the level pass 3 s, six splits at 1.0 s, six fits at 1.2 s. A fit
+    is 3 to 4 preconditioned steps of two bulk maps each, plus 0.25 s to build the
+    preconditioner. The splits are slower in the pool than alone, about 1.5 times, from
+    shared memory bandwidth and clock.
+  - ⚠ OpenBLAS in the main process starts one thread per hardware thread, 32 on 16
+    cores. Held to 16 threads, a bulk map took 24 ms against 49 ms and the estimate
+    18 s against 21 s, before the split moved to float32. Not set in the code yet.
 
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a
