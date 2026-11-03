@@ -1,11 +1,7 @@
-// Default config: CPU, no added capabilities.
+// CPU only, no added capabilities: camppca runs on numpy and scipy.
 //
-// Sibling config (VS Code shows it in the "Reopen in Container" picker):
-//   gpu/devcontainer.json  CUDA image + all host GPUs
-//
-// KEEP IN SYNC with gpu/devcontainer.json: only "name" and "dockerComposeFile"
-// are meant to differ. Editor settings deliberately live in
-// ../.vscode/settings.json instead of here so there is one copy, not two.
+// Editor settings deliberately live in ../.vscode/settings.json instead of here,
+// so they also apply outside a container.
 {
   "name": "Dev Container",
   "dockerComposeFile": [

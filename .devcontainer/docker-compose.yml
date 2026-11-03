@@ -5,9 +5,8 @@
 #
 #   docker-compose.yml              <- this file: build, volumes, env
 # + docker-compose.override.yml     <- YOUR host paths      (gitignored)
-# + gpu/docker-compose.gpu.yml      <- CUDA image + GPUs    (GPU config)
 #
-# docker-compose.override.yml is REQUIRED (every config lists it) but gitignored.
+# docker-compose.override.yml is REQUIRED (devcontainer.json lists it) but gitignored.
 # If it is missing:  cp docker-compose.override.yml.example docker-compose.override.yml
 #
 # No `version:` key — obsolete in Compose v2 and it only emits a warning.

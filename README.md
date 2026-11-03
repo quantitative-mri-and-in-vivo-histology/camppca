@@ -92,8 +92,8 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
 
 ## Development
 
-Open in the devcontainer (**Dev Containers: Reopen in Container**), picking the GPU config
-where a GPU is available. See `.devcontainer/README.md`.
+Open in the devcontainer (**Dev Containers: Reopen in Container**). See
+`.devcontainer/README.md`.
 
 ```bash
 pip install -e ".[dev]"

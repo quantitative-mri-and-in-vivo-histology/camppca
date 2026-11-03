@@ -200,5 +200,5 @@ reference/
 # leaves this machine.
 **/docs/local/
 
-# uv lockfile: local to each environment (e.g. the CUDA build of JAX lives only in .venv).
+# uv lockfile: local to each environment.
 uv.lock

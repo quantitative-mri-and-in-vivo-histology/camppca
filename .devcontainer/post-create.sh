@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Runs once, after the container is created (devcontainer.json postCreateCommand).
-# Shared by both configs (default / gpu) so the lifecycle logic lives
-# in exactly one place. Must stay idempotent: re-creating a container re-runs it.
+# Must stay idempotent: re-creating a container re-runs it.
 set -uo pipefail
 
 # --- SSH ------------------------------------------------------------------
