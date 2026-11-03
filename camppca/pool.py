@@ -31,7 +31,7 @@ import numpy as np
 from joblib import Parallel, delayed, parallel_config
 
 __all__ = ["default_workers", "resolve_workers", "worker_pool", "voxel_chunks",
-           "run_voxels"]
+           "run_voxels", "run_boxes"]
 
 
 def _physical_cores():
@@ -65,16 +65,17 @@ def resolve_workers(workers) -> int:
 
 
 @contextmanager
-def worker_pool(workers: int, ordered: bool = True):
+def worker_pool(workers: int, return_as: str = "list"):
     """A joblib ``Parallel`` over ``workers`` processes, kept open for several calls.
 
     Within one ``with`` block an array passed to several calls is memory-mapped once.
-    ``ordered`` False yields results as they finish.
+    ``return_as`` is joblib's: "list", "generator" (in order) or "generator_unordered".
+    A generator dispatches at most twice ``workers`` tasks ahead of the one consumed.
     """
     temp = os.environ.get("JOBLIB_TEMP_FOLDER") or tempfile.gettempdir()
     with parallel_config(backend="loky", inner_max_num_threads=1), \
             Parallel(n_jobs=workers, temp_folder=temp, max_nbytes="1M", mmap_mode="r",
-                     return_as="list" if ordered else "generator_unordered") as parallel:
+                     return_as=return_as) as parallel:
         yield parallel
 
 
@@ -114,7 +115,23 @@ def run_voxels(fn, arrays, voxels, write, workers: int, tile: int):
         for i, chunk in enumerate(chunks):
             write(slice(starts[i], starts[i + 1]), fn(*arrays, chunk))
         return
-    with worker_pool(workers, ordered=False) as parallel:
+    with worker_pool(workers, return_as="generator_unordered") as parallel:
         for i, outputs in parallel(delayed(_chunk_task)(fn, i, chunk, arrays)
                                    for i, chunk in enumerate(chunks)):
             write(slice(starts[i], starts[i + 1]), outputs)
+
+
+def run_boxes(fn, arrays, chunks, add, workers: int):
+    """Run a per-chunk pass whose results are summed, in chunk order.
+
+    Like :func:`run_voxels`, but ``add(outputs)`` receives the chunks' outputs strictly
+    in the order of ``chunks``, so sums come out the same for any number of workers.
+    """
+    if workers == 1:
+        for chunk in chunks:
+            add(fn(*arrays, chunk))
+        return
+    with worker_pool(workers, return_as="generator") as parallel:
+        for _, outputs in parallel(delayed(_chunk_task)(fn, i, chunk, arrays)
+                                   for i, chunk in enumerate(chunks)):
+            add(outputs)

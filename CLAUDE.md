@@ -174,6 +174,7 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
         mppca.py           standard white-noise MP-PCA
         mp_threshold.py    mp_threshold() — the Marchenko-Pastur cutoff rule
         gather.py          patch extraction, a tile at a time
+        aggregate.py       patch averaging, the opt-in aggregate="mean"
         spectrum.py        batched eigh through scipy's LAPACK, descending
         result.py          DenoiseResult, what both denoisers return
       patch.py             patch geometry — both halves of the seam need it
@@ -225,8 +226,13 @@ Breaking any of these corrupts results without an error:
   Outside the mask, which edge patches include, `d` is its median over the mask.
 - **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
   once across every volume.
-- **Centre-voxel only** — no overlap averaging. Intentional; matches the MP theory the
-  noise estimate rests on. Users coming from `dwidenoise` may expect averaging.
+- **Centre-voxel by default** — no overlap averaging. Intentional; matches the MP theory
+  the noise estimate rests on. `aggregate="mean"` (with `stride`) averages the overlapping
+  patch reconstructions as an option (`denoiser/aggregate.py`): plain mean, no weights,
+  only patches centred in the mask, nothing written outside it, `sigma_hat` the root of
+  the mean `sigma_hat^2`, `rank` the mean rank (float32). The whole rebuilt patch is
+  `X V diag(w) V^T` for both denoisers: camppca's `C^(1/2) C^(-1/2) = I`, so the
+  whole-patch unwhitening needs no `C^(1/2)` product.
 - **Hard threshold by default, shrinkage opt-in** (`shrink="hard" | "gd" | "lr"`,
   `denoiser/shrink.py`). ⚠ The default is NOT hard because shrinkage would break
   exactness — it would not. The unwhitening identity `eᶜᵀ C^(1/2) · (Yw V diag(f) Vᵀ)` is
@@ -264,8 +270,9 @@ Breaking any of these corrupts results without an error:
     directory, once per pass (the loop keeps one pool for all its rounds). joblib's own
     default, `/dev/shm`, pinned the whole volume in RAM for no speed gain.
   - Each task returns only its voxels. The gather wraps at the volume's edges by index
-    arithmetic, so no padded copy exists. Patch averaging, when added, will need tasks
-    that return summed reconstructions over their box plus a weight map.
+    arithmetic, so no padded copy exists. In mean mode a task returns its sums over its
+    box (the x-slices its patches reach) and the main process adds them in chunk order,
+    over a fixed 32 chunks, so the result does not depend on the number of workers.
   - A pooled pass is the serial pass bit for bit. The loop is not: its split rounds
     differently on one thread, and a near-tied rank moves `rho` by about 1e-4.
   - EDDEN 0.9 mm (228 x 228 x 132, 199 volumes, 2.0M brain voxels, 7³), whole camppca

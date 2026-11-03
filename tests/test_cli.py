@@ -116,3 +116,13 @@ def test_a_patch_one_voxel_wide_in_plane_runs(dataset):
     rc = main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc),
                "--patch", "1", "1", "5", *_grad(dataset), "-q"])
     assert rc == 0
+
+
+def test_denoise_passes_the_aggregate_options(dataset):
+    out, qc = dataset / "out_mean.nii.gz", dataset / "qc_mean"
+    rc = main(["denoise", str(dataset / "in.nii.gz"), str(out), "--qc", str(qc),
+               "--patch", "5", "5", "3", "--aggregate", "mean", "--stride", "2",
+               *_grad(dataset)])
+    assert rc == 0
+    prov = json.loads((qc / "provenance.json").read_text())
+    assert (prov["denoise"]["aggregate"], prov["denoise"]["stride"]) == ("mean", 2)

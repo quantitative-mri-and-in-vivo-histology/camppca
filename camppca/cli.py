@@ -65,6 +65,12 @@ def _parser():
     d.add_argument("--noise", metavar="PATH", help="write the sigma_hat map here")
     d.add_argument("--no-noise-field", action="store_true",
                    help="ignore the per-voxel level field d (whiten with the pattern only)")
+    d.add_argument("--aggregate", choices=("centre", "mean"), default="centre",
+                   help="write back each patch's centre voxel (default), or the mean of "
+                        "the overlapping patch reconstructions")
+    d.add_argument("--stride", type=int, default=1, metavar="N",
+                   help="with --aggregate mean, a patch centre every N voxels per axis "
+                        "(default: 1)")
     _add_common(d)
 
     e = sub.add_parser("estimate", help="estimate the noise model only, no denoised image")
@@ -144,7 +150,8 @@ def main(argv=None):
     if args.command == "denoise":
         from .denoiser import denoise_with_noise_model
         result = denoise_with_noise_model(dwi, model, patch=patch,
-                                          noise_field=noise_field, workers=args.workers)
+                                          noise_field=noise_field, workers=args.workers,
+                                          aggregate=args.aggregate, stride=args.stride)
         io.save_like(args.output, result.denoised, affine, header)
         say(f"  wrote {args.output}")
         if args.noise:

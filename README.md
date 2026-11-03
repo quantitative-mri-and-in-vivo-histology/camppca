@@ -79,8 +79,12 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
   runs everything in one process. The image reaches the workers as a memory-mapped file in
   the temp directory; set `TMPDIR` or `JOBLIB_TEMP_FOLDER` to move it, to local scratch on
   a cluster for example.
-- **Output is centre-voxel only**, with no overlap averaging. Intentional — it matches the
-  MP theory the noise estimate rests on — but it differs from what `dwidenoise` users expect.
+- **Output is centre-voxel by default**, with no overlap averaging. Intentional — it
+  matches the MP theory the noise estimate rests on. `aggregate="mean"`
+  (`--aggregate mean`) averages the overlapping patch reconstructions instead, and
+  `stride` (`--stride N`) keeps a patch every N voxels per axis.
+- **Voxels outside the mask pass through unchanged**, and `sigma_hat` is zero there. The
+  noise model is only valid inside the mask. Apply the mask yourself if you want zeros.
 - **Keep ≳ 50 volumes in the pooled patch.** The noise-level estimator degenerates as the
   retained rank approaches `min(P, N)`.
 
