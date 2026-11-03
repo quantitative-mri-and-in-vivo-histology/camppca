@@ -17,7 +17,11 @@ does by default. They only run camppca's own functions, so a script without the
 A worker that dies, killed for memory say, raises ``BrokenProcessPool`` rather than
 hanging, and the next call starts a fresh pool.
 
-The volume reaches the workers as a memory-mapped ``.npy`` file, not through pickling.
+The volume reaches the workers as a memory-mapped ``.npy`` file in the temp directory,
+not through pickling. Each worker reads its slab straight from the mapping, without a
+copy of its own. On the full EDDEN image the file in ``/dev/shm`` instead was no faster
+and pinned its 2.2 GB in RAM: the system used 14.6 GB at the peak against 12.1 GB with
+the file on disk, whose cached pages the kernel can drop.
 """
 
 from __future__ import annotations
@@ -202,7 +206,7 @@ def voxel_chunks(mask, n_chunks: int, multiple: int) -> list[np.ndarray]:
 def _slab_task(args):
     fn, path, lo, hi, pad, n_vols, has_d, inner = args
     vol = np.load(path, mmap_mode="r")
-    block = np.array(vol[lo:hi + 2 * pad[0]])
+    block = vol[lo:hi + 2 * pad[0]]                # a view of the mapping, not a copy
     if has_d:
         outputs = fn(block[..., :n_vols], inner, d_field=block[..., n_vols])
     else:
@@ -250,6 +254,7 @@ def run_slabs(fn, dwi, mask, patch, outputs, workers: int, tile: int, d_field=No
             task = (fn, path, lo, hi, pad, dwi.shape[3], d_field is not None, inner)
             futures[pool.submit(_slab_task, task)] = (ix, iy, iz)
         for future in as_completed(futures):
+            where = futures.pop(future)            # drop the chunk's result once written
             for out, part in zip(outputs, future.result(), strict=True):
-                out[futures[future]] = part
+                out[where] = part
     return outputs

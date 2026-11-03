@@ -260,8 +260,11 @@ Breaking any of these corrupts results without an error:
   - Workers do not re-import `__main__`, so functions defined there cannot be sent to
     them. Only camppca's own functions run in the pool.
   - A pooled pass is the serial pass bit for bit. The loop is not: its split rounds
-    differently on one thread, and a near-tied float64 rank moves `rho` by about 1e-4.
-  - Memory on the crop: 11 GB at the peak for all processes, the largest 1.3 GB.
+    differently on one thread, and a near-tied rank moves `rho` by about 1e-4.
+  - Memory, MP-PCA on the full EDDEN image (140 x 140 x 92, 297 volumes, every voxel):
+    8 GB above idle at the peak. The main process holds the input and the output, 4.3 GB,
+    and briefly 2.2 GB more while it writes the shared file. A worker holds 0.28 GB:
+    its slab mapped from that file and its slab output.
   - What the 17 s is: the level pass 3 s, six splits at 1.0 s, six fits at 1.2 s. A fit
     is 3 to 4 preconditioned steps of two bulk maps each, plus 0.25 s to build the
     preconditioner. The splits are slower in the pool than alone, about 1.5 times, from
