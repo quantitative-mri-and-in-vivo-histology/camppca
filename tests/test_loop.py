@@ -1,14 +1,12 @@
 """The loop kernel, on synthetic data with a KNOWN noise correlation and level field.
 
 These tests check that the loop finds the kernel from a white start, converges, does not
-depend on where it starts, that the batched solve is the per-patch algebra, and that the
-level rounds recover the level field.
+depend on where it starts, that the batched split is the per-patch algebra, that the fit
+is the pinned least squares, and that the level rounds recover the level field.
 """
 
 import warnings
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy.ndimage import distance_transform_cdt
@@ -73,8 +71,7 @@ def test_loop_keeps_the_injected_correlation_under_a_varying_level(model):
 
 
 def test_the_loop_kernel_is_a_valid_correlation_for_its_patch(model):
-    """The final least squares fills the patch-mean direction the Richardson solve
-    leaves empty, so the table must pass the near-singular check."""
+    """The table must pass the near-singular check at its own patch."""
     C = model.patch_correlation(PATCH)
     assert model.provenance["u_kernel"] == pytest.approx(loop._sphericity_excess(C))
 
@@ -108,33 +105,36 @@ def _reference_split(patches, C, ranks):
     return S / len(patches), Q
 
 
-def _reference_solve(S, Q):
+def _bulk_map(sigma, Q):
+    """mean_b (I - Q_b) sigma (I - Q_b)^T, one patch at a time."""
     Qm = sum(a @ b.T for a, b in Q) / len(Q)
-    sigma = S.copy()
-    for _ in range(loop.N_INNER):
-        cross = sum(a @ (b.T @ sigma @ b) @ a.T for a, b in Q) / len(Q)
-        sigma = S + Qm @ sigma + sigma @ Qm.T - cross
-        sigma = 0.5 * (sigma + sigma.T)
-    return sigma
+    cross = sum(a @ (b.T @ sigma @ b) @ a.T for a, b in Q) / len(Q)
+    return sigma - Qm @ sigma - sigma @ Qm.T + cross
 
 
-def test_the_batched_split_and_solve_are_the_per_patch_algebra(dataset, model):
+def _patch_projectors(factors, C):
+    """Each patch's kept projector (A_b, Bm_b), in the original patch order."""
+    root, W = sqrtm_psd(C, 0.5), sqrtm_psd(C, -0.5)
+    Q = [None] * factors.n_b
+    for _, k, Ug in factors.groups:
+        for i, b in enumerate(np.flatnonzero(factors.rank == k)):
+            Q[b] = (root @ Ug[i], W @ Ug[i])
+    return Q
+
+
+def test_the_batched_split_is_the_per_patch_algebra(dataset, model):
     dwi, _, mask = dataset
     centres = loop._sample_centres(mask, PATCH, np.random.default_rng(1))
     patches = loop._gather(dwi, _effective_d(model.d, mask), centres, PATCH)[:40]
     C = model.patch_correlation(PATCH)
 
-    with jax.enable_x64(True):
-        S, A, Bm, rank = loop._split(patches, C, "cordero-grande")
-        sigma = np.asarray(loop._solve(S, A, Bm))
-        A, Bm = np.asarray(A), np.asarray(Bm)
-    S_ref, Q_ref = _reference_split(patches, C, rank)
+    S, factors = loop._split(patches, C, "cordero-grande")
+    S_ref, Q_ref = _reference_split(patches, C, factors.rank)
 
-    assert rank.min() > 0, "every patch keeps its signal"
+    assert factors.rank.min() > 0, "every patch keeps its signal"
     np.testing.assert_allclose(S, S_ref, rtol=1e-8, atol=1e-10)
-    for b, (a, bm) in enumerate(Q_ref):
-        np.testing.assert_allclose(A[b] @ Bm[b].T, a @ bm.T, atol=1e-8)
-    np.testing.assert_allclose(sigma, _reference_solve(S_ref, Q_ref), atol=1e-8)
+    for (a, bm), (a_ref, bm_ref) in zip(_patch_projectors(factors, C), Q_ref, strict=True):
+        np.testing.assert_allclose(a @ bm.T, a_ref @ bm_ref.T, atol=1e-8)
 
 
 def test_a_mask_too_thin_for_the_patch_is_refused():
@@ -161,8 +161,10 @@ def test_the_convergence_warning_reports_the_last_change(dataset, model, monkeyp
     dwi, _, mask = dataset
     monkeypatch.setattr(loop, "MAX_ROUNDS", 1)
     monkeypatch.setattr(loop, "LOOP_TOL", 0.0)
+    white = np.zeros_like(model.rho)
+    white[LAG, LAG, 0] = 1.0
     with pytest.warns(RuntimeWarning, match="did not converge") as caught:
-        loop.loop_kernel(dwi, mask, model.d, model.rho, PATCH, LAG, seed=0)
+        loop.loop_kernel(dwi, mask, model.d, white, PATCH, LAG, seed=0)
     assert "by 0.0000" not in str(caught[0].message)
 
 
@@ -170,13 +172,13 @@ def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
     """Lag-1 correlation 0.7 alone is indefinite on 5 voxels."""
     dwi, bvals, mask = dataset
 
-    def indefinite(S, A, Bm, patch, lag, dzmax):
+    def indefinite(S, factors, C, patch, lag, dzmax, start):
         rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
         rho[lag, lag, 0] = 1.0
         rho[lag - 1, lag, 0] = rho[lag + 1, lag, 0] = 0.7
         return rho
 
-    monkeypatch.setattr(loop, "_stationary_table", indefinite)
+    monkeypatch.setattr(loop, "_fit_table", indefinite)
     with pytest.raises(ValueError, match="loop kernel is not usable"):
         estimate_noise_model(dwi, bvals, mask, patch=PATCH)
 
@@ -210,23 +212,31 @@ def test_an_unknown_algo_is_refused_before_the_estimate(dataset):
         estimate_noise_model(dwi, bvals, mask, patch=PATCH, algo="exp3")
 
 
-def test_the_float32_design_gives_the_float64_table(dataset, model):
-    """The final least squares builds its design in float32; check it against float64."""
+def test_the_fit_is_the_pinned_least_squares(dataset, model):
+    """The float32 conjugate-gradient fit against a dense float64 least squares built one
+    patch at a time, in whitened units, with the far-class mean held at zero."""
     dwi, _, mask = dataset
     centres = loop._sample_centres(mask, PATCH, np.random.default_rng(2))
-    patches = loop._gather(dwi, _effective_d(model.d, mask), centres, PATCH)
-    with jax.enable_x64(True):
-        S, A, Bm, _ = loop._split(patches, model.patch_correlation(PATCH), "cordero-grande")
-        table = loop._stationary_table(S, A, Bm, PATCH, LAG, PATCH[2] - 1)
-        cls, lags = loop._lag_classes(PATCH)
-        design = np.asarray(loop._design(jnp.asarray(cls), A, Bm, len(lags)))
-    values = np.linalg.lstsq(design.reshape(len(lags), -1).T, S.ravel(),
-                             rcond=loop.RCOND)[0]
+    patches = loop._gather(dwi, _effective_d(model.d, mask), centres, PATCH)[:300]
+    C = model.patch_correlation(PATCH)
+    S, factors = loop._split(patches, C, "cordero-grande")
+    table = loop._fit_table(S, factors, C, PATCH, LAG, PATCH[2] - 1, model.rho)
+
+    W = sqrtm_psd(C, -0.5)
+    cls, lags = loop._lag_classes(PATCH)
+    Q = _patch_projectors(factors, C)
+    design = np.stack([(W @ _bulk_map((cls == c).astype(float), Q) @ W).ravel()
+                       for c in range(len(lags))], axis=1)
+    reach = np.abs(lags).max(0)
+    far = np.any((np.abs(lags) == reach) & (reach > 0), axis=1).astype(float)
+    pin = np.eye(len(lags)) - np.outer(np.ones(len(lags)), far) / far.sum()
+    values = pin @ np.linalg.lstsq(design @ pin, (W @ S @ W).ravel(), rcond=None)[0]
     ref = np.zeros_like(table)
     for v, (dx, dy, dz) in zip(values, lags, strict=True):
         ref[dx + LAG, dy + LAG, dz] = ref[-dx + LAG, -dy + LAG, dz] = v
     ref /= ref[LAG, LAG, 0]
 
+    assert abs(far @ values) < 1e-10
     assert np.abs(table - ref).max() < 1e-4
 
 

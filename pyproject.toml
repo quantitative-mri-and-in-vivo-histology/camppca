@@ -31,12 +31,8 @@ classifiers = [
 
 dependencies = [
     "numpy>=1.24.0",
-    # ndimage only, for brain_mask and level pooling.
+    # LAPACK eigendecompositions, sparse products, ndimage for brain_mask and pooling.
     "scipy>=1.10.0",
-    # The denoising engine is JAX. Plain jax/jaxlib here on purpose: the user
-    # picks CPU or CUDA wheels (the GPU devcontainer installs jax[cuda12]).
-    "jax>=0.4.0",
-    "jaxlib>=0.4.0",
     # I/O boundary only — every core function takes and returns arrays.
     "nibabel>=5.0.0",
 ]

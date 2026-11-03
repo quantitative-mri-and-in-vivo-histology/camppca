@@ -5,7 +5,6 @@ centre row of ``C^(1/2)`` and projects that. These tests write the long way out 
 numpy float64 and demand the same answer.
 """
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -39,7 +38,7 @@ def literal_centre_voxel(Y, C, algo="cordero-grande"):
     whitened = sqrtm_psd(C, -0.5) @ Y
     evals, evecs = np.linalg.eigh(whitened.T @ whitened)
     evecs = evecs[:, ::-1]
-    rank, _ = mp_threshold(jnp.asarray(np.maximum(evals[::-1], 0.0)[None]),
+    rank, _ = mp_threshold(np.maximum(evals[::-1], 0.0)[None],
                            min(n_vox, n_vols), max(n_vox, n_vols), algo)
     kept = evecs[:, :int(np.asarray(rank)[0])]
     return (sqrtm_psd(C, 0.5) @ (whitened @ kept @ kept.T))[n_vox // 2]

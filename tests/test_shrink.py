@@ -1,7 +1,5 @@
 """Shrinkage of the kept components: "gd" and "lr" against the hard threshold."""
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -37,7 +35,7 @@ def test_gd_weight_is_gavish_donohos_shrinker(n_vox, n_vols):
     sigma = np.full(len(evals), 1.0)
     m, n = min(n_vox, n_vols), max(n_vox, n_vols)
 
-    weight = np.asarray(shrink_weight(jnp.asarray(evals), jnp.asarray(sigma), n_vox, n_vols))
+    weight = np.asarray(shrink_weight(evals, sigma, n_vox, n_vols))
     s = np.sqrt(evals)
     want = _gavish_donoho(s, sigma[:, None], m, n) / np.maximum(s, 1e-12)
 
@@ -48,15 +46,14 @@ def test_gd_weight_is_gavish_donohos_shrinker(n_vox, n_vols):
 
 def test_lr_with_white_noise_is_gd():
     X, evals, evecs = _spectra(np.random.default_rng(1), 75, 40)
-    sigma = jnp.ones(len(evals))
-    with jax.default_matmul_precision("highest"):     # as the engine calls it; GPU: not TF32
-        q = signal_alignment(jnp.asarray(X), jnp.asarray(evecs), jnp.asarray(evals),
-                             jnp.eye(75))
+    sigma = np.ones(len(evals))
+    q = signal_alignment(X, evecs, evals,
+                         np.eye(75))
 
     np.testing.assert_allclose(np.asarray(q[:, :3]), 1.0, atol=1e-6)
     np.testing.assert_allclose(
-        np.asarray(shrink_weight(jnp.asarray(evals), sigma, 75, 40, q)),
-        np.asarray(shrink_weight(jnp.asarray(evals), sigma, 75, 40)), atol=1e-6)
+        np.asarray(shrink_weight(evals, sigma, 75, 40, q)),
+        np.asarray(shrink_weight(evals, sigma, 75, 40)), atol=1e-6)
 
 
 def test_lr_keeps_more_where_the_signal_lies_in_loud_noise():
@@ -73,14 +70,14 @@ def test_lr_keeps_more_where_the_signal_lies_in_loud_noise():
                   + root @ rng.standard_normal((n_vox, n_vols)) for _ in range(16)])
     whitened = np.einsum("pq,bqn->bpn", sqrtm_psd(C, -0.5), X)
     evals, evecs = np.linalg.eigh(np.einsum("bpn,bpm->bnm", whitened, whitened))
-    evals, evecs = jnp.asarray(np.maximum(evals[:, ::-1], 0.0)), jnp.asarray(evecs[:, :, ::-1])
+    evals, evecs = np.maximum(evals[:, ::-1], 0.0), evecs[:, :, ::-1]
     _, sigma = mp_threshold(evals, min(n_vox, n_vols), max(n_vox, n_vols))
 
-    q = signal_alignment(jnp.asarray(whitened), evecs, evals, jnp.asarray(C))
+    q = signal_alignment(whitened, evecs, evals, C)
     gd = shrink_weight(evals, sigma, n_vox, n_vols)
     lr = shrink_weight(evals, sigma, n_vox, n_vols, q)
 
-    assert float(jnp.median(q[:, 0])) > 1.0
+    assert float(np.median(q[:, 0])) > 1.0
     assert (lr[:, 0] > gd[:, 0]).all()
 
 

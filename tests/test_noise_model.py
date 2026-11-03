@@ -126,8 +126,8 @@ def test_d_is_the_standard_mppca_level_pooled():
     pooled = _pool_level(np.where(mask, standard, 0.0).astype(np.float64), mask, 3)
 
     assert np.median(model.d[mask]) == pytest.approx(sigma, rel=0.1)
-    # Not exact: the level pass takes LAPACK's values-only eigenvalues, the denoiser JAX's
-    # eigh, and a near-tied MP cut can flip between them.
+    # Not exact: the level pass asks LAPACK for eigenvalues only, the denoiser for vectors
+    # too, and a near-tied MP cut can flip between them.
     np.testing.assert_allclose(model.d[mask], pooled[mask], rtol=5e-3)
     assert np.all(model.d[~mask] == 0)
     assert model.provenance["level_rounds_run"] == 0, "no level rounds by default"

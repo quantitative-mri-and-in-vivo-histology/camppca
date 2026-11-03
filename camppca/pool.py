@@ -1,14 +1,14 @@
 """A pool of pinned CPU processes for the passes that touch every voxel.
 
 Each patch is split on its own, so the work divides over voxels. Threads do not help:
-OpenBLAS serializes concurrent eigh calls, from JAX and numpy alike. Separate processes
-each load their own OpenBLAS, limited to one thread, and scale about linearly. On a
-16-core host a full MP-PCA pass over 297 volumes ran 2.7x faster than on an RTX 4060 Ti.
+calls into OpenBLAS from several threads of one process queue on a shared lock. 16
+threads calling its eigendecomposition kept 14.6 cores busy for a quarter of the useful
+work, the rest in the kernel. Separate processes each load their own OpenBLAS, limited
+to one thread, and scale about 12x on 16 cores. On a 16-core host a full MP-PCA pass
+over 297 volumes ran faster this way than on an RTX 4060 Ti.
 
-⚠ Every worker is pinned to one core. XLA sizes its CPU thread pool from the affinity
-mask and its idle threads spin, so an unpinned worker takes cores from every other one.
-XLA_FLAGS did not stop it. The pin happens in the initializer, before the worker's
-first JAX call creates that pool.
+Every worker is pinned to one core, so no two share a core while another idles. This was
+essential while the workers ran JAX, whose CPU thread pool spins when idle.
 
 Workers are spawned, and they do NOT re-import the caller's main module, which spawn
 does by default. They only run camppca's own functions, so a script without the
@@ -37,15 +37,8 @@ import numpy as np
 __all__ = ["default_workers", "resolve_workers", "get_pool", "shared_volume",
            "voxel_chunks", "run_slabs"]
 
-# Set while the workers start, so they load numpy, OpenBLAS and JAX with it.
-_WORKER_ENV = dict(JAX_PLATFORMS="cpu", OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-                   MKL_NUM_THREADS="1")
-
-#: Patches per tile inside a worker. A full 256-patch tile is ~100 MB at 297 volumes, and
-#: 16 workers streaming such tiles fight over memory bandwidth: a whitened voxel cost
-#: 6.8 ms at 16 workers against 3.2 ms at 2. With 8-patch tiles it cost 3.2 ms at 16.
-#: Flat from 2 to 8.
-POOL_TILE = 8
+# Set while the workers start, so they load numpy and OpenBLAS with it.
+_WORKER_ENV = dict(OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
 
 _POOL = None
 _POOL_WORKERS = 0
@@ -194,8 +187,7 @@ def voxel_chunks(mask, n_chunks: int, multiple: int) -> list[np.ndarray]:
     """The mask voxels in C order, cut into about ``n_chunks`` runs.
 
     Each run but the last holds a whole number of ``multiple`` voxels. With
-    ``multiple`` the engine's tile size, every tile a worker computes is full, so
-    each worker compiles its tile function once instead of once per leftover size.
+    ``multiple`` the engine's tile size, every tile a worker computes is full.
 
     Returns:
         Flat voxel indices, one array per chunk, covering every mask voxel once.
@@ -237,23 +229,19 @@ def run_slabs(fn, dwi, mask, patch, outputs, workers: int, tile: int, d_field=No
         outputs: the full-size arrays to write into, holding what voxels outside the
             mask must keep. Only mask voxels are written.
         workers: pool size.
-        tile: the caller's tile size. Workers use at most :data:`POOL_TILE`.
+        tile: patches per tile in the workers; chunks hold whole tiles.
         d_field: (X, Y, Z) level field passed on to ``fn``, or None.
 
     Returns:
         ``outputs``, filled.
     """
-    from .denoiser.gather import effective_tile  # here: the denoiser imports this module
-
     pad = tuple(int(p) // 2 for p in patch)
     shape = mask.shape
-    tile = min(int(tile), POOL_TILE)
-    fn = partial(fn, tile=tile)
-    multiple = effective_tile(tile, dwi.shape[3] + (d_field is not None))
+    fn = partial(fn, tile=int(tile))
     pool = get_pool(workers)
     futures = {}
     with shared_volume(dwi, d_field, pad) as path:
-        for chunk in voxel_chunks(mask, 8 * workers, multiple):
+        for chunk in voxel_chunks(mask, 8 * workers, int(tile)):
             ix, iy, iz = np.unravel_index(chunk, shape)
             lo, hi = int(ix[0]), int(ix[-1]) + 1
             inner = np.zeros((hi - lo + 2 * pad[0], shape[1] + 2 * pad[1],

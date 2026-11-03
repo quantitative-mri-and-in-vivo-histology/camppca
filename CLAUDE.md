@@ -103,8 +103,9 @@ The two halves meet at **the noise model** (`rho` + `d`). A follow-up paper esti
 `rho` from the alignment/interpolation operator and feeds the same engine, so the engine
 must never assume how `rho` was estimated.
 
-The engine is JAX, and so is the estimator, which reuses the engine's own split. The old
-rule that the estimator never imports JAX was dropped 2026-10-03 with the loop.
+Both halves are numpy and scipy, CPU only. JAX was removed 2026-11-03: per-patch
+eigendecompositions over a pool of pinned processes beat the GPU on a 16-core host. The
+estimator reuses the engine's own split.
 
 Patch2Self was removed from the estimator 2026-11-02 (spec:
 `docs/local/2026-11-02_no_p2s_estimator_spec.md`). Starting the loop from white noise,
@@ -131,13 +132,25 @@ the default. ⚠ On synthetic data the rounds sharpen `d` in the interior but pu
 of half a patch at the mask edge off the true level (median 4%, up to 32%): edge patches
 include outside-mask voxels, where `d` is the median.
 
-⚠ **The loop runs in float64** (`jax.enable_x64`). Its Richardson solve leaves the
-patch-mean direction empty, so each round's `C` is near singular there. In float32 the
-amplified direction's rounding error floods the bulk and the ranks hit the maximum
-within one round. Measured: float64 and float32-with-an-eigenvalue-floor agree to 0.001
-in U, so this is purely numerical. The one exception is the final least squares: its
-design is built in float32 from the float64 factors (same table within 1e-4 at 7³, the
-build ~20x faster on a GPU).
+Each round fits one value per lag class (595 at 7³) to the pooled bulk, in whitened
+units, by conjugate gradients. ⚠ **The hole.** Every patch keeps its patch-mean pattern
+as signal, so the bulk cannot see one direction: the same value added to every lag. It
+is fixed by holding the mean over the far lag classes, those on the edge of the patch's
+lag box, at zero. Do not go back to a free solve of `Sigma` with lag averaging: there the
+hole is a near-null eigenvalue (1.1e-4 on the crop), a converged solve divides by it, and
+the kernel ran away (U 0.16 to 9). The old 30 Richardson steps only hid that by stopping
+early.
+
+⚠ **The split is biased, and the loop inherits it.** Signal components near the MP edge
+are kept with patterns tilted toward the noise, and weaker ones stay in the bulk. Both
+are smooth and read as extra correlation. Paper phantom (Hann f 0.5, 80 volumes, 5³):
+the true z correlation is 0, the loop reports 0.05 at lag 1, and Patch2Self overshot
+too. With a signal MP-PCA separates perfectly the loop is within 0.005. This is the
+split's limit, not the fit's. Estimating from the volume side (project every voxel off
+a global signal subspace) was tried and fails on real data: the signal subspace is local.
+
+The split runs in float64. The fit runs in float32 from the float64 factors, within
+1e-4 of a float64 least squares.
 
 ### Two whiteners, one result
 
@@ -152,20 +165,21 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
     camppca/
       noise_model/
         __init__.py        NoiseModel, estimate_noise_model() -> NoiseModel
-        masks.py           brain mask                                   numpy
-        loop.py            the loop kernel, refines rho from white      JAX, float64
+        masks.py           brain mask
+        loop.py            the loop kernel, refines rho from white
       denoiser/
         __init__.py        denoise_camppca(), denoise_with_noise_model()
         camppca.py         covariance-aware MP-PCA — the method
         mppca.py           standard white-noise MP-PCA
         mp_threshold.py    mp_threshold() — the Marchenko-Pastur cutoff rule
-        gather.py          patch extraction and the device-memory decision
+        gather.py          patch extraction, a tile at a time
+        spectrum.py        batched eigh through scipy's LAPACK, descending
         result.py          DenoiseResult, what both denoisers return
       patch.py             patch geometry — both halves of the seam need it
       pool.py              pinned CPU process pool — both halves use it
       io.py                nibabel edge
       cli.py               camppca denoise | estimate
-      __init__.py          public names; XLA env var set before jax loads
+      __init__.py          public names
 
 One subpackage per half of the seam. The package name carries the noun, so files inside
 do not repeat it, and each `__init__.py` is that half's public face.
@@ -236,21 +250,19 @@ Breaking any of these corrupts results without an error:
 ## Gotchas
 
 - **Every full-volume pass and the loop's split run in a pinned process pool by default**
-  (`pool.py`, `workers=None` = one per physical core, `workers=1` = in-process on the
-  default device). Measured 2026-11-02 on the EDDEN crop at 297 volumes and 7³: estimate
-  64 s pooled against 102 s in one process on an RTX 4060 Ti; main with P2S took 74 s.
-  - Processes, not threads: OpenBLAS serializes concurrent eigh calls.
-  - ⚠ Each worker is pinned to one core before its first JAX call. XLA sizes its CPU
-    thread pool from the affinity mask and the idle threads spin. XLA_FLAGS did not stop it.
+  (`pool.py`, `workers=None` = one per physical core, `workers=1` = in-process).
+  Measured 2026-11-03 on the EDDEN crop at 297 volumes and 7³, 16 cores: estimate 49 s
+  (6 loop rounds), camppca denoise 8 s, MP-PCA denoise 5 s. main with P2S and JAX took
+  74 s for the estimate.
+  - Processes, not threads: OpenBLAS serializes concurrent LAPACK calls from one process.
+  - Each worker is pinned to one core and loads OpenBLAS with one thread.
   - Workers do not re-import `__main__`, so functions defined there cannot be sent to
     them. Only camppca's own functions run in the pool.
-  - A pooled pass is the serial CPU pass bit for bit. The loop is not: its split rounds
+  - A pooled pass is the serial pass bit for bit. The loop is not: its split rounds
     differently on one thread, and a near-tied float64 rank moves `rho` by about 1e-4.
-  - Memory: about 350 MB per idle worker, a peak near 1.4 GB per worker during the loop.
-    19 GB for 16 workers on the crop.
-  - What is left of the 64 s: five Richardson solves at about 5 s each, in float64 on the
-    GPU and no faster on the CPU. Six splits at about 4 s each, which scale only about 5x
-    on 16 cores. The final fit at 6 s.
+  - Memory on the crop: 11 GB at the peak for all processes, the largest 1.3 GB.
+  - What the 49 s is: the level pass, six splits at about 4 s, and six fits at 54 steps
+    of two bulk maps each. At 36 ms a map that is about 4 s a fit, estimated.
 
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a

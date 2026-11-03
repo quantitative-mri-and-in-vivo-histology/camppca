@@ -28,16 +28,14 @@ Kronecker product, so it is Toeplitz in the true relative lags with no wraparoun
 
 from functools import partial
 
-import jax
-import jax.numpy as jnp
 import numpy as np
-import scipy.linalg
 
 from ..patch import check_patch, patch_size
 from ..pool import resolve_workers, run_slabs
-from .gather import patch_tiles
+from .gather import TILE, patch_tiles
 from .mp_threshold import mp_threshold
 from .shrink import shrink_weight, signal_alignment
+from .spectrum import eigh_descending, eigvalsh_descending
 
 
 def sqrtm_psd(A, p=0.5, floor=1e-10):
@@ -51,7 +49,8 @@ def sqrtm_psd(A, p=0.5, floor=1e-10):
 def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str):
     """Whiten a batch of patches and split each spectrum at the Marchenko-Pastur edge.
 
-    Shared with the loop kernel estimator, so both split a patch with the same code.
+    Shared with the loop kernel estimator, so both split a patch with the same code. It
+    runs in the dtype of ``patches``: float32 here, float64 in the loop.
 
     Args:
         patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
@@ -66,12 +65,9 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str):
         eigenvectors as columns in the same order, (B,) retained component count, (B,)
         fitted noise level.
     """
-    whitened = jnp.einsum("pq,bqn->bpn", whitener, patches)
-    gram = jnp.einsum("bpn,bpm->bnm", whitened, whitened)
-    evals, evecs = jnp.linalg.eigh(gram)                    # ascending
-    evals = jnp.maximum(evals[:, ::-1], 0.0)                # descending
-    evecs = evecs[:, :, ::-1]
-
+    whitened = np.matmul(whitener, patches)
+    gram = np.matmul(whitened.transpose(0, 2, 1), whitened)
+    evals, evecs = eigh_descending(gram)
     rank, sigma_hat = mp_threshold(evals, n_small, n_large, algo)
     return whitened, evals, evecs, rank, sigma_hat
 
@@ -99,49 +95,15 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
     whitened, evals, evecs, rank, sigma_hat = _whiten_split(
         patches, whitener, n_small, n_large, algo)
 
-    centre = jnp.einsum("p,bpm->bm", centre_row, whitened)  # e_c^T C^(1/2) Yw
-    coords = jnp.einsum("bm,bmk->bk", centre, evecs)
-    keep = jnp.arange(n_vols)[None, :] < rank[:, None]
-    kept = jnp.where(keep, coords, 0.0)
+    centre = np.einsum("p,bpm->bm", centre_row, whitened)    # e_c^T C^(1/2) Yw
+    coords = np.einsum("bm,bmk->bk", centre, evecs)
+    keep = np.arange(n_vols)[None, :] < rank[:, None]
+    kept = np.where(keep, coords, 0.0)
     if shrink != "hard":
         alignment = signal_alignment(whitened, evecs, evals, C) if shrink == "lr" else None
         kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)
-    signal = jnp.einsum("bk,bnk->bn", kept, evecs)
+    signal = np.einsum("bk,bnk->bn", kept, evecs)
     return signal, sigma_hat, rank
-
-
-_denoise_tile_jit = partial(jax.jit, static_argnums=(4, 5, 6, 7))(_denoise_tile)
-
-
-@jax.jit
-def _whitened_gram(patches, whitener):
-    """(B, n_vols, n_vols) Gram of each whitened patch. ``whitener`` None skips whitening."""
-    whitened = patches if whitener is None else jnp.einsum("pq,bqn->bpn", whitener, patches)
-    return jnp.einsum("bpn,bpm->bnm", whitened, whitened)
-
-
-@partial(jax.jit, static_argnums=(1, 2, 3))
-def _mp_level(evals, n_small: int, n_large: int, algo: str):
-    return mp_threshold(jnp.maximum(evals, 0.0), n_small, n_large, algo)[1]
-
-
-_eigvalsh_lapack = partial(scipy.linalg.eigh, eigvals_only=True, driver="evd",
-                           check_finite=False)
-
-
-def _level_tile(patches, whitener, n_small: int, n_large: int, algo: str):
-    """The fitted noise level of each whitened patch, from the eigenvalues alone.
-
-    On the CPU the eigenvalues come from LAPACK directly, one matrix at a time. JAX's
-    ``eigvalsh`` computes the eigenvectors and drops them: 2.2 ms per matrix at
-    n = 297 on one core, against 1.2 ms for values only.
-    """
-    gram = _whitened_gram(patches, whitener)
-    if next(iter(gram.devices())).platform == "cpu":
-        evals = np.stack([_eigvalsh_lapack(g) for g in np.asarray(gram)])
-    else:
-        evals = jnp.linalg.eigvalsh(gram)
-    return _mp_level(jnp.asarray(evals)[:, ::-1], n_small, n_large, algo)   # descending
 
 
 def _with_level_column(dwi, d_field):
@@ -151,7 +113,7 @@ def _with_level_column(dwi, d_field):
     return np.concatenate([dwi, np.asarray(d_field, np.float32)[..., None]], axis=3)
 
 
-def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=256,
+def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TILE,
                    d_field=None, workers=None):
     """The MP noise level of every mask voxel's whitened patch, without denoising.
 
@@ -166,7 +128,7 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=25
             which skips the whitening multiply.
         patch: box shape, three odd integers.
         algo: which Marchenko-Pastur variant to cut with.
-        tile: maximum patches per device batch.
+        tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) level field, already guarded, or None.
         workers: pinned CPU processes to split the volume over, see :mod:`camppca.pool`.
 
@@ -176,31 +138,29 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=25
     dwi = np.asarray(dwi, np.float32)
     mask = np.asarray(mask, bool)
     patch = check_patch(patch)
-    if resolve_workers(workers) > 1:
-        # The workers run the numpy version and never load JAX; see denoiser/cpu.py.
-        from . import cpu
-        whitener = None if C is None else sqrtm_psd(
-            np.asarray(C, np.float64), -0.5).astype(np.float32)
-        return run_slabs(partial(cpu.whitened_level, whitener=whitener, patch=patch,
-                                 algo=algo),
+    workers = resolve_workers(workers)
+    if workers > 1:
+        return run_slabs(partial(whitened_level, C=C, patch=patch, algo=algo, workers=1),
                          dwi, mask, patch, (np.zeros(dwi.shape[:3], np.float32),),
-                         resolve_workers(workers), tile, d_field=d_field)[0]
+                         workers, tile, d_field=d_field)[0]
     n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
-    whitener = None if C is None else jnp.asarray(
-        sqrtm_psd(np.asarray(C, np.float64), -0.5), jnp.float32)
+    whitener = None if C is None else sqrtm_psd(
+        np.asarray(C, np.float64), -0.5).astype(np.float32)
 
     level = np.zeros(dwi.shape[:3], np.float32)
     for coords, block in patch_tiles(_with_level_column(dwi, d_field), mask, patch,
                                      tile=tile):
         patches = block if d_field is None else block[:, :, :n_vols] / block[:, :, n_vols:]
-        with jax.default_matmul_precision("highest"):
-            level[coords] = np.asarray(_level_tile(patches, whitener, n_small, n_large, algo))
+        if whitener is not None:
+            patches = np.matmul(whitener, patches)
+        evals = eigvalsh_descending(np.matmul(patches.transpose(0, 2, 1), patches))
+        level[coords] = mp_threshold(evals, n_small, n_large, algo)[1]
     return level
 
 
-def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=256,
+def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TILE,
                      d_field=None, shrink="hard", workers=None):
     """MP-PCA on the patch whitened by ``C^(-1/2)``.
 
@@ -210,7 +170,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
         C: (n_vox, n_vox) patch correlation with unit diagonal.
         patch: box shape, three odd integers.
         algo: which Marchenko-Pastur variant to cut with.
-        tile: maximum patches per device batch.
+        tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) level field, ALREADY guarded by the caller
             (:func:`~camppca.denoiser._effective_d`). Each voxel row is divided by its own level before whitening, which
             is exact for ``Sigma = sigma^2 D C D``, and the centre row is multiplied back
@@ -241,13 +201,13 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
     if workers > 1:
         outputs = (dwi.copy(), np.zeros(dwi.shape[:3], np.float32),
                    np.zeros(dwi.shape[:3], np.int32))
-        return run_slabs(partial(denoise_whitened, C=C, patch=patch, algo=algo, tile=tile,
+        return run_slabs(partial(denoise_whitened, C=C, patch=patch, algo=algo,
                                  shrink=shrink, workers=1),
                          dwi, mask, patch, outputs, workers, tile, d_field=d_field)
 
-    whitener = jnp.asarray(sqrtm_psd(C, -0.5), jnp.float32)
-    centre_row = jnp.asarray(sqrtm_psd(C, 0.5)[center], jnp.float32)
-    C_device = jnp.asarray(C, jnp.float32)
+    whitener = sqrtm_psd(C, -0.5).astype(np.float32)
+    centre_row = sqrtm_psd(C, 0.5)[center].astype(np.float32)
+    C32 = C.astype(np.float32)
 
     # The level field rides along as one extra column, so it is wrap-padded and gathered
     # by exactly the same indices as the data.
@@ -263,14 +223,9 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
         else:
             patches, levels = block[:, :, :n_vols], block[:, :, n_vols]
             patches = patches / levels[:, :, None]          # D^(-1): homoscedastic rows
-        # Full float32 matmuls: on recent NVIDIA GPUs the default is TF32, about three
-        # significant digits, and GPU results would drift from CPU ones.
-        with jax.default_matmul_precision("highest"):
-            signal, tile_sigma, tile_rank = _denoise_tile_jit(
-                patches, whitener, centre_row, C_device, n_small, n_large, algo, shrink)
+        signal, tile_sigma, tile_rank = _denoise_tile(
+            patches, whitener, centre_row, C32, n_small, n_large, algo, shrink)
         if levels is not None:
             signal = signal * levels[:, center, None]       # back to data units at the centre
-        denoised[coords] = np.asarray(signal)
-        sigma_hat[coords] = np.asarray(tile_sigma)
-        rank[coords] = np.asarray(tile_rank)
+        denoised[coords], sigma_hat[coords], rank[coords] = signal, tile_sigma, tile_rank
     return denoised, sigma_hat, rank

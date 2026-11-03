@@ -38,8 +38,6 @@ the output.
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 
 __all__ = ["RULES", "SHRINKERS", "check_shrink", "shrink_weight", "signal_alignment"]
@@ -63,8 +61,8 @@ def check_shrink(shrink: str) -> str:
     return shrink
 
 
-def shrink_weight(evals: jax.Array, sigma_hat: jax.Array, n_vox: int, n_vols: int,
-                  alignment: jax.Array | None = None) -> jax.Array:
+def shrink_weight(evals: np.ndarray, sigma_hat: np.ndarray, n_vox: int, n_vols: int,
+                  alignment: np.ndarray | None = None) -> np.ndarray:
     """Per component, the shrunk singular value over the observed one.
 
     Args:
@@ -78,24 +76,29 @@ def shrink_weight(evals: jax.Array, sigma_hat: jax.Array, n_vox: int, n_vols: in
     Returns:
         (B, n_vols) weights, 0 below the edge. The caller zeroes ``k >= rank``.
     """
+    with np.errstate(divide="ignore", invalid="ignore"):   # both branches of each where
+        return _shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)
+
+
+def _shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment):
     gamma = n_vox / n_vols
-    sw = jnp.sqrt(evals) / (sigma_hat[:, None] * np.sqrt(n_vols))
+    sw = np.sqrt(evals) / (sigma_hat[:, None] * np.sqrt(n_vols))
     above = sw > 1 + np.sqrt(gamma)
     x = sw ** 2 - 1 - gamma
-    ell = jnp.where(above, (x + jnp.sqrt(jnp.maximum(x ** 2 - 4 * gamma, 0.0))) / 2, 1.0)
-    c2 = jnp.clip((1 - gamma / ell ** 2) / (1 + gamma / ell), 0.0, 1.0)
-    ct2 = jnp.clip((1 - gamma / ell ** 2) / (1 + 1 / ell), 0.0, 1.0)
-    t = jnp.sqrt(ell * c2 * ct2)
+    ell = np.where(above, (x + np.sqrt(np.maximum(x ** 2 - 4 * gamma, 0.0))) / 2, 1.0)
+    c2 = np.clip((1 - gamma / ell ** 2) / (1 + gamma / ell), 0.0, 1.0)
+    ct2 = np.clip((1 - gamma / ell ** 2) / (1 + 1 / ell), 0.0, 1.0)
+    t = np.sqrt(ell * c2 * ct2)
     if alignment is not None:
         s2 = 1 - c2
         valid = alignment > s2
-        mu_tau = c2 / jnp.where(valid, alignment - s2, 1.0)
-        t = jnp.where(valid, t / (c2 + s2 * mu_tau), t)
-    return jnp.where(above, t / jnp.maximum(sw, 1e-12), 0.0)
+        mu_tau = c2 / np.where(valid, alignment - s2, 1.0)
+        t = np.where(valid, t / (c2 + s2 * mu_tau), t)
+    return np.where(above, t / np.maximum(sw, 1e-12), 0.0)
 
 
-def signal_alignment(whitened: jax.Array, evecs: jax.Array, evals: jax.Array,
-                     C: jax.Array) -> jax.Array:
+def signal_alignment(whitened: np.ndarray, evecs: np.ndarray, evals: np.ndarray,
+                     C: np.ndarray) -> np.ndarray:
     """``q_k = u_k^T C u_k / (tr C / n_vox)``: how loud the noise is along each component.
 
     Args:
@@ -108,7 +111,7 @@ def signal_alignment(whitened: jax.Array, evecs: jax.Array, evals: jax.Array,
         (B, n_vols). Above 1 where the component lies where the noise is loud.
     """
     n_vox = whitened.shape[1]
-    U = jnp.einsum("bpn,bnk->bpk", whitened, evecs)
-    U = U / jnp.sqrt(jnp.maximum(evals, 1e-12))[:, None, :]
-    q = jnp.einsum("bpk,bpk->bk", U, jnp.einsum("pq,bqk->bpk", C, U))
-    return q / (jnp.trace(C) / n_vox)
+    U = np.einsum("bpn,bnk->bpk", whitened, evecs)
+    U = U / np.sqrt(np.maximum(evals, 1e-12))[:, None, :]
+    q = np.einsum("bpk,bpk->bk", U, np.einsum("pq,bqk->bpk", C, U))
+    return q / (np.trace(C) / n_vox)

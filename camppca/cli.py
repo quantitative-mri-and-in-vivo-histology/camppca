@@ -50,7 +50,7 @@ def _add_common(p):
                         "times (default: 0, keep standard MP-PCA's level)")
     p.add_argument("--workers", type=int, default=None, metavar="N",
                    help="pinned CPU processes to split the work over (default: one per "
-                        "physical core; 1 runs in one process, on the GPU if there is one)")
+                        "physical core; 1 runs in one process)")
     p.add_argument("-q", "--quiet", action="store_true")
 
 

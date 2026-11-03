@@ -1,16 +1,13 @@
 """The pinned process pool: chunks cover the mask once, and pooling changes nothing.
 
-On the CPU a pooled pass is the serial pass, bit for bit: each chunk's slab carries a
-half-patch border, so every voxel sees the same patch. The serial runs here are pinned to the
-CPU device, because a GPU rounds differently and flips near-tied MP cuts.
+A pooled pass is the serial pass, bit for bit: each chunk's slab carries a half-patch
+border, so every voxel sees the same patch.
 """
 
 import subprocess
 import sys
 import textwrap
 
-import _worker_probe
-import jax
 import numpy as np
 import pytest
 
@@ -18,7 +15,7 @@ from camppca import NoiseModel, denoise_mppca, denoise_with_noise_model
 from camppca.denoiser import _effective_d
 from camppca.denoiser.camppca import whitened_level
 from camppca.noise_model import _build_C, loop
-from camppca.pool import _shutdown, default_workers, get_pool, resolve_workers, voxel_chunks
+from camppca.pool import default_workers, resolve_workers, voxel_chunks
 
 SHAPE = (24, 20, 12)
 N_VOLS = 60
@@ -48,10 +45,6 @@ def model(dataset):
     return NoiseModel(rho=rho, d=d, mask=mask, lag=LAG)
 
 
-def on_cpu():
-    return jax.default_device(jax.devices("cpu")[0])
-
-
 def test_chunks_cover_every_mask_voxel_once_in_whole_tiles():
     mask = np.zeros((30, 6, 6), bool)
     mask[2:12] = True
@@ -74,8 +67,7 @@ def test_worker_count_is_checked():
 
 def test_pooled_mppca_is_the_serial_pass(dataset):
     dwi, mask = dataset
-    with on_cpu():
-        serial = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
+    serial = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
     for workers in (2, 3):
         pooled = denoise_mppca(dwi, mask, patch=PATCH, workers=workers)
         np.testing.assert_array_equal(pooled.denoised, serial.denoised)
@@ -85,8 +77,7 @@ def test_pooled_mppca_is_the_serial_pass(dataset):
 
 def test_pooled_camppca_is_the_serial_pass(dataset, model):
     dwi, _ = dataset
-    with on_cpu():
-        serial = denoise_with_noise_model(dwi, model, patch=PATCH, workers=1)
+    serial = denoise_with_noise_model(dwi, model, patch=PATCH, workers=1)
     pooled = denoise_with_noise_model(dwi, model, patch=PATCH, workers=3)
     np.testing.assert_array_equal(pooled.denoised, serial.denoised)
     np.testing.assert_array_equal(pooled.sigma_hat, serial.sigma_hat)
@@ -94,26 +85,13 @@ def test_pooled_camppca_is_the_serial_pass(dataset, model):
 
 
 @pytest.mark.parametrize("white", [True, False], ids=["standard", "whitened"])
-def test_pooled_level_pass_matches_the_jax_pass(dataset, model, white):
-    """The workers run the numpy version. numpy and XLA round the Gram differently: on
-    this data the level differs by 2e-5 at the median and 1e-4 at the 99th percentile,
-    and a near-tied MP cut can flip."""
+def test_pooled_level_pass_is_the_serial_pass(dataset, model, white):
     dwi, mask = dataset
     C = None if white else model.patch_correlation(PATCH)
     d_eff = None if white else _effective_d(model.d, mask)
-    with on_cpu():
-        serial = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=1)
+    serial = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=1)
     pooled = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=3)
-    close = np.isclose(pooled[mask], serial[mask], rtol=1e-3, atol=0)
-    assert close.mean() > 0.99
-    assert np.all(pooled[~mask] == 0)
-
-
-def test_the_pooled_level_pass_does_not_load_jax_in_the_workers(dataset):
-    dwi, mask = dataset
-    _shutdown()
-    whitened_level(dwi, mask, None, PATCH, workers=2)
-    assert not get_pool(2).submit(_worker_probe.jax_loaded).result()
+    np.testing.assert_array_equal(pooled, serial)
 
 
 def test_the_pooled_loop_lands_on_the_serial_kernel(dataset, model):
@@ -122,9 +100,8 @@ def test_the_pooled_loop_lands_on_the_serial_kernel(dataset, model):
     dwi, mask = dataset
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
-    with on_cpu():
-        serial, _ = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
-                                     workers=1)
+    serial, _ = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
+                                 workers=1)
     pooled, info = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
                                     workers=3)
     assert info["converged"]

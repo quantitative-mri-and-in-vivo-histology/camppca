@@ -9,7 +9,7 @@ and three erosions eat it from the inside out.  Every downstream number was then
 on a sliver of brain, with no 9x9x9 patch fitting inside the mask at all.  Closing the
 pores BEFORE eroding fixes it and barely moves the configs that were already fine.
 
-Pure numpy + scipy.ndimage. Nothing here imports JAX.
+Pure numpy + scipy.ndimage.
 """
 
 import numpy as np

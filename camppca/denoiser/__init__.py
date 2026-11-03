@@ -10,9 +10,6 @@ them. The loop kernel estimator in ``noise_model/loop.py`` reuses the split,
 ``sqrtm_psd`` and ``_effective_d`` from here.
 
 Every public name here is re-exported from ``camppca`` itself.
-
-Importing this package does not load JAX; the engine modules do, when first used. Pool
-workers import from here and must stay JAX-free (see :mod:`camppca.denoiser.cpu`).
 """
 
 import warnings
@@ -21,18 +18,13 @@ import numpy as np
 
 from ..noise_model import estimate_noise_model
 from ..patch import check_patch
+from .camppca import denoise_whitened
+from .mppca import denoise_mppca
 from .result import DenoiseResult
+from .shrink import RULES, check_shrink
 
 __all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",
            "denoise_with_noise_model"]
-
-
-def __getattr__(name):
-    if name == "denoise_mppca":
-        from .mppca import denoise_mppca
-        return denoise_mppca
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 def _effective_d(d, mask):
     """The level field as the engine uses it. The one place ``d`` is guarded.
@@ -67,14 +59,11 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
                      :mod:`camppca.denoiser.shrink`.
     ``workers``      pinned CPU processes to split the volume over, see
                      :mod:`camppca.pool`. The default is one per physical core. 1 runs in
-                     this process, on the default JAX device.
+                     this process.
 
     The rule -- Exp2 / Cordero-Grande, centre-voxel-only, hard threshold unless ``shrink``
     says otherwise -- is the method.
     """
-    from .camppca import denoise_whitened
-    from .shrink import RULES, check_shrink
-
     shrink = check_shrink(shrink)
     patch = check_patch(patch)
     dwi = np.asarray(dwi)
@@ -119,8 +108,6 @@ def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=Tru
     model is kept on the result (``result.model``), so the one-liner still exposes the
     intermediates.
     """
-    from .shrink import check_shrink
-
     check_shrink(shrink)                   # before the estimate, which can take a while
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch, algo=algo,
                                  noise_field=noise_field, workers=workers,

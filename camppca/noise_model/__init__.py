@@ -15,7 +15,7 @@ standard MP-PCA's noise level, pooled, and rho is the loop kernel (``loop.py``) 
 from white. A future alignment-based estimator builds the same :class:`NoiseModel` a
 different way and feeds the same engine, so nothing downstream may assume this one.
 
-The loop runs MP-PCA's own split, so it uses JAX and the denoiser's internals.
+The loop runs MP-PCA's own split, so it uses the denoiser's internals.
 """
 
 import warnings
@@ -178,7 +178,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, 
                0, the default, keeps standard MP-PCA's level.
     ``workers``  pinned CPU processes for the passes over every voxel and the loop's
                split, see :mod:`camppca.pool`. The default is one per physical core.
-               1 runs everything in this process, on the default JAX device.
+               1 runs everything in this process.
 
     The level field ``d`` is standard MP-PCA's ``sigma_hat`` at every mask voxel, pooled
     ``pool``^3.  Unpooled, its rank grain made ``C`` near singular on strongly correlated

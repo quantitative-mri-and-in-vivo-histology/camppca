@@ -25,22 +25,21 @@ from __future__ import annotations
 
 from functools import partial
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 
 from ..patch import check_patch, patch_size
 from ..pool import resolve_workers, run_slabs
-from .gather import patch_tiles
+from .gather import TILE, patch_tiles
 from .mp_threshold import mp_threshold
 from .result import DenoiseResult
 from .shrink import RULES, check_shrink, shrink_weight
+from .spectrum import eigh_descending
 
 __all__ = ["denoise_mppca"]
 
 
-def _denoise_tile(patches: jax.Array, center: int, n_small: int, n_large: int,
-                  algorithm: str, shrink: str) -> tuple[jax.Array, jax.Array, jax.Array]:
+def _denoise_tile(patches: np.ndarray, center: int, n_small: int, n_large: int,
+                  algorithm: str, shrink: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Denoise a batch of patches, returning the centre voxel of each.
 
     Args:
@@ -57,26 +56,21 @@ def _denoise_tile(patches: jax.Array, center: int, n_small: int, n_large: int,
     """
     n_vox, n_vols = patches.shape[1], patches.shape[2]
 
-    gram = jnp.einsum("bvn,bvm->bnm", patches, patches)
-    evals, evecs = jnp.linalg.eigh(gram)                    # ascending
-    evals = jnp.maximum(evals[:, ::-1], 0.0)                # descending
-    evecs = evecs[:, :, ::-1]
+    gram = np.matmul(patches.transpose(0, 2, 1), patches)
+    evals, evecs = eigh_descending(gram)
 
     rank, sigma_hat = mp_threshold(evals, n_small, n_large, algorithm)
 
-    coords = jnp.einsum("bn,bnm->bm", patches[:, center, :], evecs)
-    keep = jnp.arange(n_vols)[None, :] < rank[:, None]
-    kept = jnp.where(keep, coords, 0.0)
+    coords = np.einsum("bn,bnm->bm", patches[:, center, :], evecs)
+    keep = np.arange(n_vols)[None, :] < rank[:, None]
+    kept = np.where(keep, coords, 0.0)
     if shrink != "hard":
         kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols)
-    signal = jnp.einsum("bm,bnm->bn", kept, evecs)
+    signal = np.einsum("bm,bnm->bn", kept, evecs)
     return signal, sigma_hat, rank
 
 
-_denoise_tile_jit = jax.jit(_denoise_tile, static_argnums=(1, 2, 3, 4, 5))
-
-
-def _denoise_arrays(dwi, mask, patch, algorithm, tile, on_device, shrink):
+def _denoise_arrays(dwi, mask, patch, algorithm, tile, shrink):
     """The tile loop of :func:`denoise_mppca`, in this process, on checked inputs.
 
     Returns:
@@ -91,22 +85,15 @@ def _denoise_arrays(dwi, mask, patch, algorithm, tile, on_device, shrink):
     sigma_hat = np.zeros(dwi.shape[:3], np.float32)
     rank = np.zeros(dwi.shape[:3], np.int32)
 
-    for coords, patches in patch_tiles(dwi, mask, patch, tile=tile, on_device=on_device):
-        # Full float32 matmuls: on recent NVIDIA GPUs the default is TF32, about three
-        # significant digits, and GPU results would drift from CPU ones.
-        with jax.default_matmul_precision("highest"):
-            signal, tile_sigma, tile_rank = _denoise_tile_jit(
-                patches, center, n_small, n_large, algorithm, shrink)
-        denoised[coords] = np.asarray(signal)
-        sigma_hat[coords] = np.asarray(tile_sigma)
-        rank[coords] = np.asarray(tile_rank)
+    for coords, patches in patch_tiles(dwi, mask, patch, tile=tile):
+        denoised[coords], sigma_hat[coords], rank[coords] = _denoise_tile(
+            patches, center, n_small, n_large, algorithm, shrink)
     return denoised, sigma_hat, rank
 
 
 def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 5),
-                  algorithm: str = "cordero-grande", tile: int = 256,
-                  on_device: bool | None = None, shrink: str = "hard",
-                  workers: int | None = None) -> DenoiseResult:
+                  algorithm: str = "cordero-grande", tile: int = TILE,
+                  shrink: str = "hard", workers: int | None = None) -> DenoiseResult:
     """Denoise a 4D volume with standard MP-PCA.
 
     Args:
@@ -116,14 +103,12 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
         patch: box shape, three odd integers.
         algorithm: which Marchenko-Pastur variant to cut with, see
             :data:`~camppca.denoiser.mp_threshold.ALGORITHMS`.
-        tile: maximum patches per device batch, to bound memory.
-        on_device: patch-gather strategy, see :func:`~camppca.denoiser.gather.patch_tiles`. The
-            default decides from free device memory.
+        tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         shrink: weight on the kept components, "hard" (default), "gd" or "lr"; see
             :mod:`camppca.denoiser.shrink`. With white noise "lr" is "gd".
         workers: pinned CPU processes to split the volume over, see
             :mod:`camppca.pool`. The default is one per physical core. 1 runs in this
-            process, on the default JAX device.
+            process.
 
     Returns:
         A :class:`~camppca.denoiser.result.DenoiseResult` with ``model`` unset, since standard
@@ -153,12 +138,12 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
         outputs = (dwi.copy(), np.zeros(dwi.shape[:3], np.float32),
                    np.zeros(dwi.shape[:3], np.int32))
         run_slabs(partial(_denoise_arrays, patch=patch, algorithm=algorithm, tile=tile,
-                          on_device=on_device, shrink=tile_shrink),
+                          shrink=tile_shrink),
                   dwi, mask, patch, outputs, workers, tile)
         denoised, sigma_hat, rank = outputs
     else:
         denoised, sigma_hat, rank = _denoise_arrays(dwi, mask, patch, algorithm, tile,
-                                                    on_device, tile_shrink)
+                                                    tile_shrink)
 
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,
