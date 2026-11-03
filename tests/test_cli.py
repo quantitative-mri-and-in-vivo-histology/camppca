@@ -149,3 +149,12 @@ def test_denoise_passes_the_aggregate_options(dataset):
     assert rc == 0
     prov = json.loads((qc / "provenance.json").read_text())
     assert (prov["denoise"]["aggregate"], prov["denoise"]["stride"]) == ("mean", 2)
+
+
+def test_the_patch_defaults_to_the_dwidenoise_rule(dataset, capsys):
+    """50 volumes: the smallest odd cube with at least 50 voxels is 5 x 5 x 5."""
+    qc = dataset / "qc_default_patch"
+    rc = main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc), *_grad(dataset)])
+    assert rc == 0
+    assert json.loads((qc / "provenance.json").read_text())["model"]["patch"] == [5, 5, 5]
+    assert "patch 5x5x5" in capsys.readouterr().out

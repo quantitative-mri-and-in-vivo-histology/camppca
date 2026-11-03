@@ -46,8 +46,9 @@ def _add_common(p):
                    help="brain mask (recommended). Without it one is estimated from the "
                         "mean b0, and denoise writes it next to the output as "
                         "<output>_mask.nii.gz")
-    p.add_argument("--patch", type=int, nargs=3, default=(5, 5, 5), metavar=("X", "Y", "Z"),
-                   help="patch shape, odd in every dimension (default: 5 5 5)")
+    p.add_argument("--patch", type=int, nargs=3, default=None, metavar=("X", "Y", "Z"),
+                   help="patch shape, odd in every dimension (default: dwidenoise's rule, "
+                        "the smallest odd cube with at least as many voxels as volumes)")
     p.add_argument("--qc", metavar="DIR", help="write QC byproducts here")
     p.add_argument("--lowb", type=float, default=100.0,
                    help="b-value at or below which a volume counts as a b0 (default: 100)")
@@ -150,7 +151,7 @@ def main(argv=None):
     args = _parser().parse_args(argv)
     say = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
     dwi, bvals, mask, affine, header = _load(args)
-    patch = tuple(args.patch)
+    patch = None if args.patch is None else tuple(args.patch)
 
     say(f"  {Path(args.input).name}  {dwi.shape}")
     noise_field = not getattr(args, "no_noise_field", False)   # estimate has no such flag
@@ -159,7 +160,8 @@ def main(argv=None):
                                  level_rounds=args.level_rounds, workers=args.workers)
     # A patch one voxel wide in-plane gives lag 0: no x=1 entry to show.
     lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
-    say(f"  noise model: lag {model.lag}{lag1}, U {model.provenance['u_kernel']:.3f}")
+    say(f"  noise model: patch {'x'.join(map(str, model.provenance['patch']))}, "
+        f"lag {model.lag}{lag1}, U {model.provenance['u_kernel']:.3f}")
 
     result = None
     if args.command == "denoise":

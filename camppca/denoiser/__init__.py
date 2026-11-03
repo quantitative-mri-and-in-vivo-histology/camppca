@@ -17,7 +17,7 @@ import warnings
 import numpy as np
 
 from ..noise_model import estimate_noise_model
-from ..patch import check_patch
+from ..patch import resolve_patch
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
 from .gather import TILE
@@ -48,13 +48,16 @@ def _effective_d(d, mask):
     return np.where(good, d, np.median(d[good])).astype(np.float32)
 
 
-def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
+def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
                              algo="cordero-grande", tile=TILE, shrink="hard", workers=None,
                              aggregate="centre", stride=1):
     """Denoise in the whitened domain, given a noise model.
 
     ``model``        a :class:`~camppca.noise_model.NoiseModel`.  Raises if ``patch`` is
                      wider than the lag the model measured -- never silently clipped.
+    ``patch``        None takes the patch the model was estimated for, the one its loop
+                     fitted to, or dwidenoise's default if the model records none
+                     (:func:`~camppca.patch.default_patch`).
     ``noise_field``  apply the model's relative level field ``d`` (Sigma = sigma^2 D C D).
                      Adds the WITHIN-patch heteroscedasticity, which widens the noise bulk
                      the same way off-diagonal colour does.
@@ -73,10 +76,11 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
     """
     shrink = check_shrink(shrink)
     aggregate, stride = check_aggregate(aggregate, stride)
-    patch = check_patch(patch)
     dwi = np.asarray(dwi)
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
+    patch = resolve_patch(model.provenance.get("patch") if patch is None else patch,
+                          dwi.shape)
     if dwi.shape[:3] != model.mask.shape:
         raise ValueError(f"dwi spatial shape {dwi.shape[:3]} != model mask "
                          f"{model.mask.shape}")
@@ -109,7 +113,7 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
                          provenance=prov)
 
 
-def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=True,
+def denoise_camppca(dwi, bvals=None, mask=None, patch=None, noise_field=True,
                     algo="cordero-grande", tile=TILE, shrink="hard", workers=None,
                     aggregate="centre", stride=1, **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
