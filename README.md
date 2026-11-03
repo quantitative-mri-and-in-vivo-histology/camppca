@@ -20,8 +20,8 @@ Python ≥ 3.10. numpy and scipy only, on the CPU.
 ## Command line
 
 ```bash
-camppca denoise  in.nii.gz out.nii.gz --noise sigma.nii.gz --qc qc/ -fslgrad in.bvec in.bval
-camppca estimate in.nii.gz --qc qc/                                 -fslgrad in.bvec in.bval
+camppca denoise  in.nii.gz out.nii.gz --mask brain.nii.gz --noise sigma.nii.gz --qc qc/ -fslgrad in.bvec in.bval
+camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/                                 -fslgrad in.bvec in.bval
 ```
 
 `estimate` stops after the noise model, without denoising, for inspection or QC.
@@ -29,10 +29,14 @@ camppca estimate in.nii.gz --qc qc/                                 -fslgrad in.
 | flag | writes |
 |---|---|
 | *(positional out)* | the denoised 4D image |
+| *(no `--mask`)* | `out_mask.nii.gz` next to the output: the brain mask estimated in its place |
 | `--noise PATH` | the σ̂ map, in the input's units — a first-class product, as `dwidenoise -noise` is |
 | `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the level field, σ̂, rank, `provenance.json` |
 
-`-fslgrad` only picks the b0s the default mask is drawn from. Without it the mask comes
+**Supply a brain mask with `--mask`.** The noise model is estimated inside it, and only
+voxels inside it are denoised. Without one, a mask is estimated from the mean b0 as a
+fallback and written next to the output, so it can be checked and reused.
+`-fslgrad` only picks the b0s that fallback mask is drawn from. Without it the mask comes
 from the mean of every volume. Every volume enters the estimate either way.
 `--patch X Y Z` sets the patch (default `5 5 5`, odd in every dimension).
 `--level-rounds N` re-estimates the level field from the whitened patches up to N times

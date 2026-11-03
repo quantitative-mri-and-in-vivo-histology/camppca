@@ -6,6 +6,10 @@
 Outputs split by AUDIENCE, not by kind:
 
     positional out   the denoised image
+    <out>_mask       the brain mask, written next to the denoised image ONLY when no
+                     --mask was given. A mask the user supplies is the recommended way;
+                     the estimated one is a fallback, written so it can be checked and
+                     reused.
     --noise PATH     the sigma_hat map -- a downstream product (SNR maps, weighting),
                      first-class, as `dwidenoise -noise` is
     --qc DIR         things to look at: rho as NIfTI + a plot, the level field d,
@@ -38,8 +42,10 @@ def _add_common(p):
                    help="FSL gradient table. Only used to find the b0s the default "
                         "mask is drawn from. Without it the mask comes from the mean of "
                         "every volume.")
-    p.add_argument("--mask", metavar="PATH", help="brain mask; estimated from the mean b0 "
-                                                  "when omitted")
+    p.add_argument("--mask", metavar="PATH",
+                   help="brain mask (recommended). Without it one is estimated from the "
+                        "mean b0, and denoise writes it next to the output as "
+                        "<output>_mask.nii.gz")
     p.add_argument("--patch", type=int, nargs=3, default=(5, 5, 5), metavar=("X", "Y", "Z"),
                    help="patch shape, odd in every dimension (default: 5 5 5)")
     p.add_argument("--qc", metavar="DIR", help="write QC byproducts here")
@@ -52,6 +58,15 @@ def _add_common(p):
                    help="CPU processes to split the work over (default: one per "
                         "physical core; 1 runs in one process)")
     p.add_argument("-q", "--quiet", action="store_true")
+
+
+def _mask_path(output):
+    """``out.nii.gz`` -> ``out_mask.nii.gz``; ``out.nii`` -> ``out_mask.nii``."""
+    out = Path(output)
+    for suffix in (".nii.gz", ".nii"):
+        if out.name.endswith(suffix):
+            return out.with_name(out.name[:-len(suffix)] + "_mask" + suffix)
+    return out.with_name(out.name + "_mask.nii.gz")
 
 
 def _parser():
@@ -154,6 +169,11 @@ def main(argv=None):
                                           aggregate=args.aggregate, stride=args.stride)
         io.save_like(args.output, result.denoised, affine, header)
         say(f"  wrote {args.output}")
+        if mask is None:
+            mask_path = _mask_path(args.output)
+            io.save_like(mask_path, model.mask.astype(np.uint8), affine, dtype=np.uint8)
+            say(f"  wrote {mask_path}: no --mask given, so one was estimated from the "
+                "mean b0. Check it; supplying your own brain mask is recommended.")
         if args.noise:
             io.save_like(args.noise, result.sigma_hat, affine)
             say(f"  wrote {args.noise}")

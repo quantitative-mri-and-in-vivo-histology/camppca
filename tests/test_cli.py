@@ -7,7 +7,7 @@ import pytest
 
 nib = pytest.importorskip("nibabel")
 
-from camppca.cli import main
+from camppca.cli import _mask_path, main
 
 
 @pytest.fixture(scope="module")
@@ -51,6 +51,29 @@ def test_denoise_writes_image_noise_map_and_qc(dataset, capsys):
 
     prov = json.loads((qc / "provenance.json").read_text())
     assert prov["model"]["level_rounds"] == 0, "no level rounds by default"
+
+    fallback = dataset / "out_mask.nii.gz"
+    assert fallback.exists(), "no --mask given: the estimated mask is written next to it"
+    np.testing.assert_array_equal(np.asanyarray(nib.load(str(fallback)).dataobj),
+                                  np.asanyarray(nib.load(str(qc / "mask.nii.gz")).dataobj))
+
+
+def test_a_supplied_mask_is_not_written_back(dataset):
+    mask = np.zeros((34, 34, 16), np.uint8)
+    mask[6:28, 6:28, 3:13] = 1
+    nib.save(nib.Nifti1Image(mask, np.eye(4)), str(dataset / "given_mask.nii.gz"))
+    out = dataset / "out_given.nii.gz"
+    rc = main(["denoise", str(dataset / "in.nii.gz"), str(out), "--mask",
+               str(dataset / "given_mask.nii.gz"), "--patch", "5", "5", "3", *_grad(dataset)])
+    assert rc == 0
+    assert out.exists()
+    assert not (dataset / "out_given_mask.nii.gz").exists()
+
+
+def test_the_fallback_mask_is_named_after_the_output():
+    assert _mask_path("a/out.nii.gz").name == "out_mask.nii.gz"
+    assert _mask_path("out.nii").name == "out_mask.nii"
+    assert _mask_path("out").name == "out_mask.nii.gz"
 
 
 def test_estimate_writes_qc_but_no_image(dataset):
