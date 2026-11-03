@@ -74,7 +74,7 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str):
 
 
 def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, algo: str,
-                  shrink: str, full: bool = False):
+                  shrink: str, full: bool = False, levels=None, root=None):
     """Denoise a batch of whitened patches, returning the centre voxel of each, or with
     ``full`` each whole rebuilt patch.
 
@@ -92,6 +92,10 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
         n_large: the larger of them.
         algo: which Marchenko-Pastur variant to cut with.
         shrink: "hard", "gd" or "lr"; see :mod:`camppca.denoiser.shrink`.
+        full: rebuild the whole patch instead of the centre row.
+        levels: with ``full`` and "lr", (B, n_vox) the patch voxels' levels ``d``, so
+            "lr" weighs the error over the whole patch in data units; None for ``D = I``.
+        root: ``C^(1/2)``, needed with ``levels``.
 
     Returns:
         ``(signal, sigma_hat, rank)``: (B, n_vols) denoised centre spectra, or with
@@ -107,8 +111,8 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
         r = int(rank.max())
         w = (np.arange(r)[None, :] < rank[:, None]).astype(patches.dtype)
         if shrink != "hard":
-            alignment = signal_alignment(whitened, evecs, evals, C) if shrink == "lr" \
-                else None
+            alignment = signal_alignment(whitened, evecs, evals, C, levels, root) \
+                if shrink == "lr" else None
             w = w * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)[:, :r]
         V = evecs[:, :, :r]
         return np.matmul(np.matmul(patches, V) * w[:, None, :], V.transpose(0, 2, 1)), \
@@ -218,11 +222,13 @@ def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, centre_row, C, patc
     return signal, sigma_hat, rank
 
 
-def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, centre_row, C, patch, algo,
-                          tile, shrink):
+def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, centre_row, root, C, patch,
+                          algo, tile, shrink):
     """Sum the rebuilt patches around ``centres`` over their box, for the mean.
 
-    Rows are divided by their level before whitening and multiplied back after.
+    Rows are divided by their level before whitening and multiplied back after. With
+    "lr", the shrink weights see the whole patch's levels, since every voxel of it
+    reaches the output.
 
     Returns:
         :meth:`~camppca.denoiser.aggregate.BoxSum.result`.
@@ -237,7 +243,8 @@ def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, centre_row, C, 
         if levels is not None:
             patches = patches / levels[:, :, None]
         recon, sigma_hat, rank = _denoise_tile(patches, whitener, centre_row, C, n_small,
-                                               n_large, algo, shrink, full=True)
+                                               n_large, algo, shrink, full=True,
+                                               levels=levels, root=root)
         if levels is not None:
             recon = recon * levels[:, :, None]
         box.add(index, recon, sigma_hat, rank)
@@ -293,6 +300,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
     if aggregate == "mean":
         assembly = MeanAssembly(dwi, mask)
         run_boxes(partial(_mean_whitened_voxels, whitener=whitener, centre_row=centre_row,
+                          root=sqrtm_psd(C, 0.5).astype(np.float32),
                           C=C.astype(np.float32), patch=patch, algo=algo, tile=tile,
                           shrink=shrink),
                   (dwi, d_field, mask),

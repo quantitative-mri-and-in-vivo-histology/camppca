@@ -243,7 +243,10 @@ Breaking any of these corrupts results without an error:
   at small N (see Exp2 below). `"gd"` also optimizes in the WHITENED metric while the
   output lands in data units. `"lr"` (Leeb–Romanov) corrects for that, but its guarantee
   is for the whole patch at large sizes, and camppca keeps only the centre voxel of a
-  small patch. Both shrinkers keep the MP rank and change only the weights.
+  small patch. There its noise loudness `q_k` uses `C` alone, since the centre level
+  drops out. With `aggregate="mean"` the whole patch reaches the output, so `q_k` uses
+  the patch's own levels, `|D C^(1/2) u_k|^2 / mean(d^2)`. Both shrinkers keep the MP
+  rank and change only the weights. Standard MP-PCA maps `"lr"` to `"gd"` (white noise).
 
 ## API rules
 

@@ -169,3 +169,17 @@ def test_bad_aggregate_settings_are_refused(dataset):
         check_aggregate("mean", 0)
     with pytest.raises(ValueError, match="needs aggregate='mean'"):
         denoise_mppca(dwi, mask, patch=PATCH, stride=2, workers=1)
+
+
+def test_mean_lr_weighs_the_whole_patch_and_pools_bit_for_bit(dataset):
+    """In mean mode "lr" runs with each patch's levels. It differs from "gd", and the
+    pool still changes nothing."""
+    dwi, mask, d = dataset
+    C = correlation(PATCH)
+    args = dict(patch=PATCH, d_field=d, aggregate="mean", stride=2)
+    serial = denoise_whitened(dwi, mask, C, shrink="lr", workers=1, **args)
+    pooled = denoise_whitened(dwi, mask, C, shrink="lr", workers=3, **args)
+    for a, b in zip(serial, pooled, strict=True):
+        np.testing.assert_array_equal(a, b)
+    gd = denoise_whitened(dwi, mask, C, shrink="gd", workers=1, **args)
+    assert not np.array_equal(serial[0], gd[0])
