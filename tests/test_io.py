@@ -31,3 +31,15 @@ def test_a_3d_image_is_refused(tmp_path):
     nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.float32), np.eye(4)), path)
     with pytest.raises(ValueError, match="expected a 4D image"):
         io.load_dwi(path)
+
+
+def test_save_like_writes_floats_under_an_integer_header(tmp_path):
+    """A uint16 input header must not pack the float output back into 16 bits."""
+    header = nib.Nifti1Header()
+    header.set_data_dtype(np.uint16)
+    data = np.linspace(-3.3, 7.7, 24, dtype=np.float32).reshape(2, 2, 2, 3)
+    io.save_like(tmp_path / "out.nii", data, np.eye(4), header)
+
+    saved = nib.load(tmp_path / "out.nii")
+    assert saved.get_data_dtype() == np.float32
+    np.testing.assert_array_equal(np.asanyarray(saved.dataobj), data)

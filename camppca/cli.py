@@ -2,6 +2,7 @@
 
     camppca denoise  in.nii out.nii [--noise n.nii] [--qc DIR] -fslgrad in.bvec in.bval
     camppca estimate in.nii --qc DIR                           -fslgrad in.bvec in.bval
+    camppca phase    mag.nii phase.nii real.nii [--filter dk|tukey] [--imag PATH]
 
 Outputs split by AUDIENCE, not by kind:
 
@@ -33,6 +34,7 @@ import numpy as np
 
 from . import io
 from .noise_model import estimate_noise_model
+from .phase import FILTERS, phase_scale, stabilize_phase
 
 __all__ = ["main"]
 
@@ -92,6 +94,23 @@ def _parser():
     e = sub.add_parser("estimate", help="estimate the noise model only, no denoised image")
     e.add_argument("input", help="4D input image")
     _add_common(e)
+
+    s = sub.add_parser("phase", help="rotate complex data onto the real axis; the real "
+                                     "part then denoises like a magnitude image")
+    s.add_argument("magnitude", help="4D magnitude image")
+    s.add_argument("phase", help="4D phase image, in radians or as the scanner stores it")
+    s.add_argument("output", help="4D real part")
+    s.add_argument("--filter", choices=FILTERS, default="dk",
+                   help="smooth phase estimate: dk, Sprenger et al.'s decorrelated kernel "
+                        "(default), or tukey, a k-space low-pass")
+    s.add_argument("--fwhm", type=float, default=0.58,
+                   help="tukey only: full width at half maximum as a fraction of k-space "
+                        "(default: 0.58, as in EDDEN)")
+    s.add_argument("--no-mean-phase", action="store_true",
+                   help="skip removing the phase of the mean over all volumes first")
+    s.add_argument("--imag", metavar="PATH",
+                   help="also write the imaginary part, which should hold noise only")
+    s.add_argument("-q", "--quiet", action="store_true")
     return p
 
 
@@ -147,9 +166,33 @@ def _plot_rho(path, model):
     return True
 
 
+def _phase(args, say):
+    magnitude, affine, header = io.load_dwi(args.magnitude)
+    phase, _, _ = io.load_dwi(args.phase)
+    scale = phase_scale(phase)
+    phase *= scale
+    slice_axis = header.get_dim_info()[2]
+    slice_axis = 2 if slice_axis is None else slice_axis
+    say(f"  {Path(args.magnitude).name}  {magnitude.shape}, phase x {scale:.6g} to radians, "
+        f"slices along axis {slice_axis}")
+    out = stabilize_phase(magnitude, phase, filter=args.filter, fwhm=args.fwhm,
+                          mean_phase=not args.no_mean_phase, slice_axis=slice_axis,
+                          imag=bool(args.imag))
+    real, imag = out if args.imag else (out, None)
+    del magnitude, phase
+    io.save_like(args.output, real, affine, header)
+    say(f"  wrote {args.output}")
+    if imag is not None:
+        io.save_like(args.imag, imag, affine, header)
+        say(f"  wrote {args.imag}")
+    return 0
+
+
 def main(argv=None):
     args = _parser().parse_args(argv)
     say = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
+    if args.command == "phase":
+        return _phase(args, say)
     dwi, bvals, mask, affine, header = _load(args)
     patch = None if args.patch is None else tuple(args.patch)
 

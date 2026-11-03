@@ -11,11 +11,12 @@ __version__ = "0.1.0"
 
 __all__ = ["NoiseModel", "DenoiseResult", "brain_mask", "denoise_camppca",
            "denoise_mppca", "denoise_with_noise_model", "estimate_noise_model",
-           "__version__"]
+           "stabilize_phase", "__version__"]
 
 # Lazy, so `import camppca` stays light.
 _LAZY = {"denoise_camppca": "denoiser", "denoise_mppca": "denoiser",
-         "denoise_with_noise_model": "denoiser", "DenoiseResult": "denoiser"}
+         "denoise_with_noise_model": "denoiser", "DenoiseResult": "denoiser",
+         "stabilize_phase": "phase"}
 
 
 def __getattr__(name):
