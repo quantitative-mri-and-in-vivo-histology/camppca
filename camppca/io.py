@@ -14,11 +14,44 @@ __all__ = ["load_dwi", "load_bvals", "load_mask", "save_like", "save_json"]
 
 
 def load_dwi(path, dtype=np.float32):
-    """Load a 4D image. Returns ``(data, affine, header)``."""
+    """Load a 4D image. Returns ``(data, affine, header)``.
+
+    A NIfTI is read one volume at a time into the result, so only the result and one
+    volume are ever in memory. ``np.asanyarray`` on nibabel's proxy held the unpacked
+    file, the stored integers and the float copy at once: 16 GB for the 5.5 GB float32
+    EDDEN 0.9 mm image, against 5.5 GB this way. Anything else falls back to it.
+    """
     img = nib.load(str(path))
     if img.ndim != 4:
         raise ValueError(f"{path}: expected a 4D image, got shape {img.shape}")
-    return np.asanyarray(img.dataobj, dtype=dtype), img.affine, img.header
+    data = _read_volumes(img, dtype)
+    if data is None:
+        data = np.asanyarray(img.dataobj, dtype=dtype)
+    return data, img.affine, img.header
+
+
+def _read_volumes(img, dtype):
+    """The 4D NIfTI's data, read volume by volume and scaled as nibabel scales it.
+
+    None when the image is not a NIfTI whose volumes follow each other in the file.
+    """
+    proxy = img.dataobj
+    if not (isinstance(img, (nib.Nifti1Image, nib.Nifti2Image)) and nib.is_proxy(proxy)
+            and getattr(proxy, "order", "F") == "F"):
+        return None
+    shape = img.shape
+    nbytes = int(np.prod(shape[:3])) * proxy.dtype.itemsize
+    scaled = proxy.slope != 1 or proxy.inter != 0
+    out = np.empty(shape, dtype)
+    with nib.openers.ImageOpener(proxy.file_like) as f:
+        f.seek(proxy.offset)
+        for i in range(shape[3]):
+            buf = f.read(nbytes)
+            if len(buf) != nbytes:
+                return None                        # truncated: let nibabel raise
+            vol = np.frombuffer(buf, proxy.dtype).reshape(shape[:3], order="F")
+            out[..., i] = vol.astype(np.float64) * proxy.slope + proxy.inter if scaled else vol
+    return out
 
 
 def load_bvals(path):

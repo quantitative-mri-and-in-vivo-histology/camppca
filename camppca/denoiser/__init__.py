@@ -19,6 +19,7 @@ import numpy as np
 from ..noise_model import estimate_noise_model
 from ..patch import check_patch
 from .camppca import denoise_whitened
+from .gather import TILE
 from .mppca import denoise_mppca
 from .result import DenoiseResult
 from .shrink import RULES, check_shrink
@@ -47,7 +48,7 @@ def _effective_d(d, mask):
 
 
 def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
-                             algo="cordero-grande", tile=256, shrink="hard", workers=None):
+                             algo="cordero-grande", tile=TILE, shrink="hard", workers=None):
     """Denoise in the whitened domain, given a noise model.
 
     ``model``        a :class:`~camppca.noise_model.NoiseModel`.  Raises if ``patch`` is
@@ -100,7 +101,7 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
 
 
 def denoise_camppca(dwi, bvals=None, mask=None, patch=(5, 5, 5), noise_field=True,
-                    algo="cordero-grande", tile=256, shrink="hard", workers=None,
+                    algo="cordero-grande", tile=TILE, shrink="hard", workers=None,
                     **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
