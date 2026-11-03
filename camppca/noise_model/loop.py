@@ -63,6 +63,7 @@ from contextlib import ExitStack
 from functools import partial
 
 import numpy as np
+from joblib import delayed
 from scipy.linalg import cho_factor, cho_solve, null_space
 from scipy.ndimage import binary_erosion
 
@@ -70,7 +71,7 @@ from ..denoiser import _effective_d
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
 from ..patch import patch_offsets
-from ..pool import get_pool, resolve_workers, shared_volume
+from ..pool import resolve_workers, worker_pool
 from . import _build_C
 
 __all__ = ["loop_kernel"]
@@ -100,8 +101,8 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
         seed: seeds the choice of patch centres.
         algo: the MP rule the denoiser will cut with.
         noise_field: whether the denoiser will divide rows by ``d``.
-        workers: pinned CPU processes the sampled patches are split over each round,
-            see :mod:`camppca.pool`. Each gathers and splits its own share. The fit stays
+        workers: CPU processes the sampled patches are split over each round, see
+            :mod:`camppca.pool`. Each gathers and splits its own share. The fit stays
             in this process.
 
     Returns:
@@ -121,13 +122,15 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
 
     with ExitStack() as stack:
         if workers > 1:
-            path = stack.enter_context(shared_volume(dwi, levels))
+            # One pool for every round: joblib maps the volume and the levels once.
+            parallel = stack.enter_context(worker_pool(workers))
             chunks = [tuple(c[part] for c in centres)
                       for part in np.array_split(np.arange(centres[0].size), workers)]
 
             def split(C):
-                return _split_pooled(get_pool(workers), path, dwi.shape[3], chunks, patch,
-                                     C, algo)
+                return _assemble(C, parallel(
+                    delayed(_split_task)(dwi, levels, chunk, patch, C, algo)
+                    for chunk in chunks))
         else:
             patches = _gather(dwi, levels, centres, patch)
 
@@ -267,18 +270,9 @@ def _split(patches, C, algo):
     return _assemble(C, [_split_chunk(patches, C, algo)])
 
 
-def _split_task(args):
-    """One worker's share of a round: gather its patches from the shared file, split."""
-    path, n_vols, centres, patch, C, algo = args
-    vol = np.load(path, mmap_mode="r")
-    patches = _gather(vol[..., :n_vols], vol[..., n_vols], centres, patch)
-    return _split_chunk(patches, C, algo)
-
-
-def _split_pooled(pool, path, n_vols, chunks, patch, C, algo):
-    """:func:`_split` with the patches gathered and split in the worker pool."""
-    tasks = [(path, n_vols, chunk, patch, C, algo) for chunk in chunks]
-    return _assemble(C, list(pool.map(_split_task, tasks)))
+def _split_task(dwi, levels, centres, patch, C, algo):
+    """One worker's share of a round: gather its patches and split them."""
+    return _split_chunk(_gather(dwi, levels, centres, patch), C, algo)
 
 
 class _WhitenedBulk:
@@ -290,9 +284,9 @@ class _WhitenedBulk:
 
     The per-patch products are many small GEMMs, which OpenBLAS runs on one thread each.
     They run in chunks of :data:`PRODUCT_CHUNK` patches on :data:`PRODUCT_THREADS` Python
-    threads, each chunk writing its own columns. Unlike LAPACK's eigh (see
-    :mod:`camppca.pool`), these calls do not queue on each other. On the crop at 7^3 the
-    products took 14.5 ms on one thread, 5.6 ms on 4 and 5.3 ms on 8.
+    threads, each chunk writing its own columns. numpy releases the GIL around them, and
+    at 8 threads OpenBLAS barely queues them (see :mod:`camppca.pool`). On the crop at
+    7^3 the products took 14.5 ms on one thread, 5.6 ms on 4 and 5.3 ms on 8.
     """
 
     def __init__(self, factors, dtype=np.float32):

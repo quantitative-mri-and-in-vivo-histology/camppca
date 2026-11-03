@@ -49,7 +49,7 @@ def _add_common(p):
                    help="re-estimate the level field d from the whitened patches up to N "
                         "times (default: 0, keep standard MP-PCA's level)")
     p.add_argument("--workers", type=int, default=None, metavar="N",
-                   help="pinned CPU processes to split the work over (default: one per "
+                   help="CPU processes to split the work over (default: one per "
                         "physical core; 1 runs in one process)")
     p.add_argument("-q", "--quiet", action="store_true")
 

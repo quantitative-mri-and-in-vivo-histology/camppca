@@ -176,7 +176,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, 
                and whether rows are divided by ``d``.  Pass the ones you will denoise with.
     ``level_rounds``  how many times ``d`` is re-estimated from the whitened patches.
                0, the default, keeps standard MP-PCA's level.
-    ``workers``  pinned CPU processes for the passes over every voxel and the loop's
+    ``workers``  CPU processes for the passes over every voxel and the loop's
                split, see :mod:`camppca.pool`. The default is one per physical core.
                1 runs everything in this process.
 

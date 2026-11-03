@@ -31,7 +31,7 @@ from functools import partial
 import numpy as np
 
 from ..patch import check_patch, patch_size
-from ..pool import resolve_workers, run_slabs
+from ..pool import resolve_workers, run_voxels
 from .gather import TILE, patch_tiles
 from .mp_threshold import mp_threshold
 from .shrink import shrink_weight, signal_alignment
@@ -106,11 +106,25 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
     return signal, sigma_hat, rank
 
 
-def _with_level_column(dwi, d_field):
-    """The level field as one extra column, wrap-padded and gathered with the data."""
-    if d_field is None:
-        return dwi
-    return np.concatenate([dwi, np.asarray(d_field, np.float32)[..., None]], axis=3)
+def _level_voxels(dwi, d_field, voxels, whitener, patch, algo, tile):
+    """The tile loop of :func:`whitened_level` for some voxels.
+
+    Returns:
+        ``(sigma_hat,)``: (V,) in d-normalized units, in the order of ``voxels``.
+    """
+    n_vols = dwi.shape[3]
+    n_vox = patch_size(patch)
+    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+    level = np.empty(voxels.size, np.float32)
+    for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
+        patches = np.asarray(dwi[index], np.float32)
+        if d_field is not None:
+            patches = patches / d_field[index][:, :, None]
+        if whitener is not None:
+            patches = np.matmul(whitener, patches)
+        evals = eigvalsh_descending(np.matmul(patches.transpose(0, 2, 1), patches))
+        level[sl] = mp_threshold(evals, n_small, n_large, algo)[1]
+    return (level,)
 
 
 def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TILE,
@@ -130,7 +144,7 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TI
         algo: which Marchenko-Pastur variant to cut with.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) level field, already guarded, or None.
-        workers: pinned CPU processes to split the volume over, see :mod:`camppca.pool`.
+        workers: CPU processes to split the voxels over, see :mod:`camppca.pool`.
 
     Returns:
         (X, Y, Z) ``sigma_hat`` in d-normalized units, zero outside ``mask``.
@@ -138,26 +152,51 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TI
     dwi = np.asarray(dwi, np.float32)
     mask = np.asarray(mask, bool)
     patch = check_patch(patch)
-    workers = resolve_workers(workers)
-    if workers > 1:
-        return run_slabs(partial(whitened_level, C=C, patch=patch, algo=algo, workers=1),
-                         dwi, mask, patch, (np.zeros(dwi.shape[:3], np.float32),),
-                         workers, tile, d_field=d_field)[0]
-    n_vols = dwi.shape[3]
-    n_vox = patch_size(patch)
-    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
     whitener = None if C is None else sqrtm_psd(
         np.asarray(C, np.float64), -0.5).astype(np.float32)
+    d_field = None if d_field is None else np.asarray(d_field, np.float32)
 
+    voxels = np.flatnonzero(mask)
+    coords = np.unravel_index(voxels, mask.shape)
     level = np.zeros(dwi.shape[:3], np.float32)
-    for coords, block in patch_tiles(_with_level_column(dwi, d_field), mask, patch,
-                                     tile=tile):
-        patches = block if d_field is None else block[:, :, :n_vols] / block[:, :, n_vols:]
-        if whitener is not None:
-            patches = np.matmul(whitener, patches)
-        evals = eigvalsh_descending(np.matmul(patches.transpose(0, 2, 1), patches))
-        level[coords] = mp_threshold(evals, n_small, n_large, algo)[1]
+
+    def write(sl, outputs):
+        level[tuple(c[sl] for c in coords)] = outputs[0]
+
+    run_voxels(partial(_level_voxels, whitener=whitener, patch=patch, algo=algo, tile=tile),
+               (dwi, d_field), voxels, write, resolve_workers(workers), tile)
     return level
+
+
+def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, centre_row, C, patch, algo,
+                             tile, shrink):
+    """The tile loop of :func:`denoise_whitened` for some voxels.
+
+    Each voxel row is divided by its level before whitening, and the centre row is
+    multiplied back on the way out.
+
+    Returns:
+        ``(signal, sigma_hat, rank)``: (V, N) in data units, (V,) in d-normalized units,
+        (V,), in the order of ``voxels``.
+    """
+    n_vols = dwi.shape[3]
+    n_vox = patch_size(patch)
+    center = n_vox // 2
+    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
+    signal = np.empty((voxels.size, n_vols), np.float32)
+    sigma_hat = np.empty(voxels.size, np.float32)
+    rank = np.empty(voxels.size, np.int32)
+    for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
+        patches = np.asarray(dwi[index], np.float32)
+        levels = None if d_field is None else d_field[index]
+        if levels is not None:
+            patches = patches / levels[:, :, None]          # D^(-1): homoscedastic rows
+        tile_signal, sigma_hat[sl], rank[sl] = _denoise_tile(
+            patches, whitener, centre_row, C, n_small, n_large, algo, shrink)
+        if levels is not None:
+            tile_signal = tile_signal * levels[:, center, None]   # data units at the centre
+        signal[sl] = tile_signal
+    return signal, sigma_hat, rank
 
 
 def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TILE,
@@ -178,7 +217,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
             heteroscedasticity, which widens the noise bulk the same way off-diagonal
             colour does.
         shrink: weight on the kept components; see :mod:`camppca.denoiser.shrink`.
-        workers: pinned CPU processes to split the volume over, see :mod:`camppca.pool`.
+        workers: CPU processes to split the voxels over, see :mod:`camppca.pool`.
 
     Returns:
         ``(denoised, sigma_hat, rank)``. ``sigma_hat`` is in d-normalized units; the
@@ -187,45 +226,30 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
     dwi = np.asarray(dwi, np.float32)
     mask = np.asarray(mask, bool)          # non-bool would make `& mask` an integer op
     patch = check_patch(patch)             # odd dims: centre = n_vox // 2 must BE the centre
-    n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
     center = n_vox // 2
-    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
 
     C = np.asarray(C, np.float64)
     if C.shape != (n_vox, n_vox):
         raise ValueError(f"C must be ({n_vox}, {n_vox}) for patch "
                          f"{tuple(int(v) for v in patch)}, got {C.shape}")
 
-    workers = resolve_workers(workers)
-    if workers > 1:
-        outputs = (dwi.copy(), np.zeros(dwi.shape[:3], np.float32),
-                   np.zeros(dwi.shape[:3], np.int32))
-        return run_slabs(partial(denoise_whitened, C=C, patch=patch, algo=algo,
-                                 shrink=shrink, workers=1),
-                         dwi, mask, patch, outputs, workers, tile, d_field=d_field)
-
     whitener = sqrtm_psd(C, -0.5).astype(np.float32)
     centre_row = sqrtm_psd(C, 0.5)[center].astype(np.float32)
-    C32 = C.astype(np.float32)
+    d_field = None if d_field is None else np.asarray(d_field, np.float32)
 
-    # The level field rides along as one extra column, so it is wrap-padded and gathered
-    # by exactly the same indices as the data.
-    volumes = _with_level_column(dwi, d_field)
-
+    voxels = np.flatnonzero(mask)
+    coords = np.unravel_index(voxels, mask.shape)
     denoised = dwi.copy()
     sigma_hat = np.zeros(dwi.shape[:3], np.float32)
     rank = np.zeros(dwi.shape[:3], np.int32)
 
-    for coords, block in patch_tiles(volumes, mask, patch, tile=tile):
-        if d_field is None:
-            patches, levels = block, None
-        else:
-            patches, levels = block[:, :, :n_vols], block[:, :, n_vols]
-            patches = patches / levels[:, :, None]          # D^(-1): homoscedastic rows
-        signal, tile_sigma, tile_rank = _denoise_tile(
-            patches, whitener, centre_row, C32, n_small, n_large, algo, shrink)
-        if levels is not None:
-            signal = signal * levels[:, center, None]       # back to data units at the centre
-        denoised[coords], sigma_hat[coords], rank[coords] = signal, tile_sigma, tile_rank
+    def write(sl, outputs):
+        where = tuple(c[sl] for c in coords)
+        denoised[where], sigma_hat[where], rank[where] = outputs
+
+    run_voxels(partial(_denoise_whitened_voxels, whitener=whitener, centre_row=centre_row,
+                       C=C.astype(np.float32), patch=patch, algo=algo, tile=tile,
+                       shrink=shrink),
+               (dwi, d_field), voxels, write, resolve_workers(workers), tile)
     return denoised, sigma_hat, rank

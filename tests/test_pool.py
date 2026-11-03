@@ -1,7 +1,7 @@
-"""The pinned process pool: chunks cover the mask once, and pooling changes nothing.
+"""The worker pool: chunks cover the voxels once, and pooling changes nothing.
 
-A pooled pass is the serial pass, bit for bit: each chunk's slab carries a half-patch
-border, so every voxel sees the same patch.
+A pooled pass is the serial pass, bit for bit: chunks hold whole tiles, and every patch
+is gathered from the whole volume with the same wrap at its edges.
 """
 
 import subprocess
@@ -50,12 +50,14 @@ def test_chunks_cover_every_mask_voxel_once_in_whole_tiles():
     mask[2:12] = True
     mask[16:28, :3] = True
 
-    chunks = voxel_chunks(mask, 4, multiple=64)
+    voxels = np.flatnonzero(mask)
 
-    assert np.array_equal(np.concatenate(chunks), np.flatnonzero(mask)), "once, in order"
+    chunks = voxel_chunks(voxels, 4, multiple=64)
+
+    assert np.array_equal(np.concatenate(chunks), voxels), "once, in order"
     assert all(c.size % 64 == 0 for c in chunks[:-1]), "full tiles but the last"
     assert 2 <= len(chunks) <= 4, "rounding up to whole tiles only ever merges chunks"
-    assert voxel_chunks(np.zeros((5, 4, 4), bool), 4, 64) == []
+    assert voxel_chunks(np.array([], int), 4, 64) == []
 
 
 def test_worker_count_is_checked():
@@ -95,8 +97,8 @@ def test_pooled_level_pass_is_the_serial_pass(dataset, model, white):
 
 
 def test_the_pooled_loop_lands_on_the_serial_kernel(dataset, model):
-    """Not bit for bit: the split's matmuls round differently on one thread, and in
-    float64 a near-tied patch rank can flip, which moves the kernel by about 1e-4."""
+    """Not bit for bit: the split's matmuls round differently on one thread, and a
+    near-tied patch rank can flip, which moves the kernel by about 1e-4."""
     dwi, mask = dataset
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
@@ -110,7 +112,7 @@ def test_the_pooled_loop_lands_on_the_serial_kernel(dataset, model):
 
 
 def test_a_script_without_a_main_guard_runs(tmp_path):
-    """Spawned workers do not re-run the caller's script."""
+    """The workers do not re-run the caller's script."""
     script = tmp_path / "unguarded.py"
     script.write_text(textwrap.dedent("""
         import numpy as np

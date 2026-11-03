@@ -35,6 +35,8 @@ dependencies = [
     "scipy>=1.10.0",
     # I/O boundary only — every core function takes and returns arrays.
     "nibabel>=5.0.0",
+    # The worker processes and their memory-mapped inputs. 1.4 for unordered results.
+    "joblib>=1.4.0",
 ]
 
 [project.optional-dependencies]

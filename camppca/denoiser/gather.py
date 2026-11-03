@@ -1,14 +1,10 @@
-"""Patch extraction: turn a masked volume into tiles of patch matrices.
+"""Patch extraction: the box of voxels around each requested voxel, a tile at a time.
 
-Visit every masked voxel, pull the box of voxels around it, and hand a batch of those
-boxes to the denoiser.
-
-The volume is wrap-padded first, so a voxel at the border still gets a full box. When
-every requested voxel already has a half-patch border inside the volume, as in the pool's
-slabs, the padding would never be read and is skipped: it is a copy of the whole volume.
-Rows come
-out in :func:`camppca.patch.patch_offsets` order, C order with z fastest, which is the
-order ``rho`` is indexed in. The two must agree.
+The box wraps around the volume's edges, so a voxel at the border still gets a full box.
+The wrap is done by index arithmetic on the original volume, so no padded copy is ever
+made: neither of the whole volume nor of a worker's share. Rows come out in
+:func:`camppca.patch.patch_offsets` order, C order with z fastest, which is the order
+``rho`` is indexed in. The two must agree.
 
 Tiles are small on purpose. A 256-patch tile at 297 volumes is about 100 MB, and 16 pool
 workers streaming such tiles fought over memory bandwidth: a whitened voxel cost 6.8 ms
@@ -30,37 +26,27 @@ __all__ = ["TILE", "patch_tiles"]
 TILE = 8
 
 
-def patch_tiles(dwi: np.ndarray, mask: np.ndarray, patch, tile: int = TILE
-                ) -> Iterator[tuple[tuple[np.ndarray, ...], np.ndarray]]:
-    """Yield the masked voxels' patch matrices, one tile at a time.
+def patch_tiles(shape, voxels: np.ndarray, patch, tile: int = TILE
+                ) -> Iterator[tuple[slice, tuple[np.ndarray, np.ndarray, np.ndarray]]]:
+    """Yield, a tile at a time, the indices of the requested voxels' patches.
 
     Args:
-        dwi: (X, Y, Z, N) volume.
-        mask: (X, Y, Z) boolean; only these voxels are visited.
+        shape: the volume's spatial shape (X, Y, Z).
+        voxels: flat voxel indices, C order, into that shape.
         patch: length-3 odd box shape.
         tile: voxels per yielded tile.
 
     Yields:
-        ``(coords, patches)``. ``coords`` is ``(ix, iy, iz)``, three index arrays of length
-        B addressing the original volume. ``patches`` is ``(B, n_vox, N)``, rows in
-        patch-offset order, the dtype of ``dwi``.
+        ``(sl, index)``. ``sl`` slices ``voxels`` to this tile. ``index`` is three (B, n_vox)
+        integer arrays, so ``volume[index]`` is the tile's (B, n_vox, ...) patches of any
+        array with that spatial shape, rows in patch-offset order.
     """
     patch = check_patch(patch)
-    mask = np.asarray(mask, bool)
-    n_cols = dwi.shape[3]
-    half = patch // 2
-    xs, ys, zs = np.where(mask)
-    bordered = all(c.size and c.min() >= h and c.max() < n - h
-                   for c, h, n in zip((xs, ys, zs), half, dwi.shape[:3], strict=True))
-    if bordered:
-        src, offsets = dwi, patch_offsets(patch) - half
-    else:
-        src = np.pad(dwi, [(h, h) for h in half] + [(0, 0)], mode="wrap")
-        offsets = patch_offsets(patch)
-    pad_y, pad_z = src.shape[1:3]
-    flat = src.reshape(-1, n_cols)
-    step = offsets[:, 0] * pad_y * pad_z + offsets[:, 1] * pad_z + offsets[:, 2]
-    base = xs * pad_y * pad_z + ys * pad_z + zs
-    for start in range(0, xs.size, int(tile)):
+    shape = tuple(int(s) for s in shape)
+    off = patch_offsets(patch) - patch // 2
+    ix, iy, iz = np.unravel_index(np.asarray(voxels), shape)
+    for start in range(0, ix.size, int(tile)):
         sl = slice(start, start + int(tile))
-        yield (xs[sl], ys[sl], zs[sl]), flat[base[sl, None] + step[None, :]]
+        yield sl, ((ix[sl, None] + off[None, :, 0]) % shape[0],
+                   (iy[sl, None] + off[None, :, 1]) % shape[1],
+                   (iz[sl, None] + off[None, :, 2]) % shape[2])

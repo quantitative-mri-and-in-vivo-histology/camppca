@@ -104,7 +104,7 @@ The two halves meet at **the noise model** (`rho` + `d`). A follow-up paper esti
 must never assume how `rho` was estimated.
 
 Both halves are numpy and scipy, CPU only. JAX was removed 2026-11-03: per-patch
-eigendecompositions over a pool of pinned processes beat the GPU on a 16-core host. The
+eigendecompositions over a pool of CPU processes beat the GPU on a 16-core host. The
 estimator reuses the engine's own split.
 
 Patch2Self was removed from the estimator 2026-11-02 (spec:
@@ -177,7 +177,7 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
         spectrum.py        batched eigh through scipy's LAPACK, descending
         result.py          DenoiseResult, what both denoisers return
       patch.py             patch geometry — both halves of the seam need it
-      pool.py              pinned CPU process pool — both halves use it
+      pool.py              CPU worker processes through joblib — both halves use it
       io.py                nibabel edge
       cli.py               camppca denoise | estimate
       __init__.py          public names
@@ -250,21 +250,28 @@ Breaking any of these corrupts results without an error:
 
 ## Gotchas
 
-- **Every full-volume pass and the loop's split run in a pinned process pool by default**
-  (`pool.py`, `workers=None` = one per physical core, `workers=1` = in-process).
+- **Every full-volume pass and the loop's split run in worker processes by default**
+  (`pool.py`, joblib's loky workers, `workers=None` = one per physical core, `workers=1`
+  = in-process).
   Measured 2026-11-03 on the EDDEN crop at 297 volumes and 7³, 16 cores: estimate 17 s
   (6 loop rounds), camppca denoise 8 s, MP-PCA denoise 5 s. main with P2S and JAX took
   74 s for the estimate.
-  - Processes, not threads: OpenBLAS serializes concurrent LAPACK calls from one process.
-  - Each worker is pinned to one core and loads OpenBLAS with one thread.
-  - Workers do not re-import `__main__`, so functions defined there cannot be sent to
-    them. Only camppca's own functions run in the pool.
+  - Processes, not threads: scipy's `eigh` holds the GIL, and OpenBLAS queues callers
+    from several threads (5.9x at 8 threads, 2.7x at 16, called through ctypes). MKL
+    scales across threads but would be a large x86-only dependency, and only ties.
+  - Workers run OpenBLAS with one thread and are not pinned; pinning gained nothing.
+  - The volume and the level field reach the workers as joblib memory maps in the temp
+    directory, once per pass (the loop keeps one pool for all its rounds). joblib's own
+    default, `/dev/shm`, pinned the whole volume in RAM for no speed gain.
+  - Each task returns only its voxels. The gather wraps at the volume's edges by index
+    arithmetic, so no padded copy exists. Patch averaging, when added, will need tasks
+    that return summed reconstructions over their box plus a weight map.
   - A pooled pass is the serial pass bit for bit. The loop is not: its split rounds
     differently on one thread, and a near-tied rank moves `rho` by about 1e-4.
-  - Memory, MP-PCA on the full EDDEN image (140 x 140 x 92, 297 volumes, every voxel):
-    8 GB above idle at the peak. The main process holds the input and the output, 4.3 GB,
-    and briefly 2.2 GB more while it writes the shared file. A worker holds 0.28 GB:
-    its slab mapped from that file and its slab output.
+  - EDDEN 0.9 mm (228 x 228 x 132, 199 volumes, 2.0M brain voxels, 7³), whole camppca
+    pipeline: 298 s (estimate 103 s, of which the level pass 90 s; denoise 195 s).
+    Peak system RAM above idle, image included: loading 5.5 GB, estimate 8.4 GB, denoise
+    12.8 GB. The main process holds the input and the output, 5.5 GB each.
   - What the 17 s is: the level pass 3 s, six splits at 1.0 s, six fits at 1.2 s. A fit
     is 3 to 4 preconditioned steps of two bulk maps each, plus 0.25 s to build the
     preconditioner. The splits are slower in the pool than alone, about 1.5 times, from

@@ -58,7 +58,7 @@ def denoise_with_noise_model(dwi, model, patch=(5, 5, 5), noise_field=True,
                      the same way off-diagonal colour does.
     ``shrink``       weight on the kept components: "hard" (default), "gd" or "lr"; see
                      :mod:`camppca.denoiser.shrink`.
-    ``workers``      pinned CPU processes to split the volume over, see
+    ``workers``      CPU processes to split the voxels over, see
                      :mod:`camppca.pool`. The default is one per physical core. 1 runs in
                      this process.
 

@@ -28,7 +28,7 @@ from functools import partial
 import numpy as np
 
 from ..patch import check_patch, patch_size
-from ..pool import resolve_workers, run_slabs
+from ..pool import resolve_workers, run_voxels
 from .gather import TILE, patch_tiles
 from .mp_threshold import mp_threshold
 from .result import DenoiseResult
@@ -70,25 +70,28 @@ def _denoise_tile(patches: np.ndarray, center: int, n_small: int, n_large: int,
     return signal, sigma_hat, rank
 
 
-def _denoise_arrays(dwi, mask, patch, algorithm, tile, shrink):
-    """The tile loop of :func:`denoise_mppca`, in this process, on checked inputs.
+def _denoise_voxels(dwi, voxels, patch, algorithm, tile, shrink):
+    """The tile loop of :func:`denoise_mppca` for some voxels, on checked inputs.
+
+    Args:
+        dwi: (X, Y, Z, N) data.
+        voxels: flat voxel indices, C order.
 
     Returns:
-        ``(denoised, sigma_hat, rank)``, full-size, with voxels outside ``mask`` left as
-        the input and zero.
+        ``(signal, sigma_hat, rank)``: (V, N) denoised centre spectra, (V,) fitted noise
+        level, (V,) retained component count, in the order of ``voxels``.
     """
     n_vox, n_vols = patch_size(patch), dwi.shape[3]
     center = n_vox // 2
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
 
-    denoised = dwi.copy()
-    sigma_hat = np.zeros(dwi.shape[:3], np.float32)
-    rank = np.zeros(dwi.shape[:3], np.int32)
-
-    for coords, patches in patch_tiles(dwi, mask, patch, tile=tile):
-        denoised[coords], sigma_hat[coords], rank[coords] = _denoise_tile(
-            patches, center, n_small, n_large, algorithm, shrink)
-    return denoised, sigma_hat, rank
+    signal = np.empty((voxels.size, n_vols), np.float32)
+    sigma_hat = np.empty(voxels.size, np.float32)
+    rank = np.empty(voxels.size, np.int32)
+    for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
+        signal[sl], sigma_hat[sl], rank[sl] = _denoise_tile(
+            np.asarray(dwi[index], np.float32), center, n_small, n_large, algorithm, shrink)
+    return signal, sigma_hat, rank
 
 
 def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 5),
@@ -106,7 +109,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         shrink: weight on the kept components, "hard" (default), "gd" or "lr"; see
             :mod:`camppca.denoiser.shrink`. With white noise "lr" is "gd".
-        workers: pinned CPU processes to split the volume over, see
+        workers: CPU processes to split the voxels over, see
             :mod:`camppca.pool`. The default is one per physical core. 1 runs in this
             process.
 
@@ -132,18 +135,19 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
             raise ValueError(
                 f"mask shape {mask.shape} does not match dwi spatial shape {dwi.shape[:3]}")
 
-    workers = resolve_workers(workers)
+    voxels = np.flatnonzero(mask)
+    coords = np.unravel_index(voxels, mask.shape)
+    denoised = dwi.copy()
+    sigma_hat = np.zeros(dwi.shape[:3], np.float32)
+    rank = np.zeros(dwi.shape[:3], np.int32)
 
-    if workers > 1:
-        outputs = (dwi.copy(), np.zeros(dwi.shape[:3], np.float32),
-                   np.zeros(dwi.shape[:3], np.int32))
-        run_slabs(partial(_denoise_arrays, patch=patch, algorithm=algorithm, tile=tile,
-                          shrink=tile_shrink),
-                  dwi, mask, patch, outputs, workers, tile)
-        denoised, sigma_hat, rank = outputs
-    else:
-        denoised, sigma_hat, rank = _denoise_arrays(dwi, mask, patch, algorithm, tile,
-                                                    tile_shrink)
+    def write(sl, outputs):
+        where = tuple(c[sl] for c in coords)
+        denoised[where], sigma_hat[where], rank[where] = outputs
+
+    run_voxels(partial(_denoise_voxels, patch=patch, algorithm=algorithm, tile=tile,
+                       shrink=tile_shrink),
+               (dwi,), voxels, write, resolve_workers(workers), tile)
 
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,
