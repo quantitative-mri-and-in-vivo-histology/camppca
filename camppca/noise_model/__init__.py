@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.ndimage import uniform_filter
 
-from ..patch import check_patch, patch_offsets, required_lag
+from ..patch import check_patch, patch_offsets, required_lag, resolve_patch
 from .masks import brain_mask
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask"]
@@ -158,7 +158,7 @@ def _pool_level(level, mask, size):
     return pooled
 
 
-def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, seed=0,
+def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=0,
                          pool=3, algo="cordero-grande", noise_field=True, level_rounds=0,
                          workers=None):
     """Estimate the noise model from the data itself. No noise-only scan required.
@@ -168,6 +168,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, 
     ``bvals``  (N,) b-values, used only to find the b0s the default mask is drawn from.
     ``mask``   (X, Y, Z) bool.  Estimated from the mean b0 when omitted.
     ``patch``  the patch this model must be able to serve; sets the lag rho covers.
+               None picks dwidenoise's default, see :func:`~camppca.patch.default_patch`.
     ``lowb``   b-value at or below which a volume counts as a b0.
     ``seed``   picks the loop's patch centres, so re-estimating gives an identical model.
     ``pool``   box width, in voxels, the level field ``d`` is averaged over.  Averaged in
@@ -198,7 +199,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=(5, 5, 5), lowb=100, 
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
     n_vols = dwi.shape[3]
-    patch = check_patch(patch)
+    patch = resolve_patch(patch, dwi.shape)
     if np.any(patch > np.asarray(dwi.shape[:3])):
         # The denoiser wrap-pads, so a patch deeper than the volume holds one slice twice.
         raise ValueError(f"patch {tuple(int(v) for v in patch)} is larger than the "

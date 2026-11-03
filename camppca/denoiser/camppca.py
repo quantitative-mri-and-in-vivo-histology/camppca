@@ -30,7 +30,7 @@ from functools import partial
 
 import numpy as np
 
-from ..patch import check_patch, patch_size
+from ..patch import patch_size, resolve_patch
 from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
 from .gather import TILE, patch_tiles
@@ -150,7 +150,7 @@ def _level_voxels(dwi, d_field, voxels, whitener, patch, algo, tile):
     return (level,)
 
 
-def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TILE,
+def whitened_level(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
                    d_field=None, workers=None):
     """The MP noise level of every mask voxel's whitened patch, without denoising.
 
@@ -163,7 +163,8 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TI
         mask: (X, Y, Z) boolean.
         C: (n_vox, n_vox) patch correlation with unit diagonal, or None for white noise,
             which skips the whitening multiply.
-        patch: box shape, three odd integers.
+        patch: box shape, three odd integers. None picks dwidenoise's default, see
+            :func:`~camppca.patch.default_patch`.
         algo: which Marchenko-Pastur variant to cut with.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) level field, already guarded, or None.
@@ -174,7 +175,7 @@ def whitened_level(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TI
     """
     dwi = np.asarray(dwi, np.float32)
     mask = np.asarray(mask, bool)
-    patch = check_patch(patch)
+    patch = resolve_patch(patch, dwi.shape)
     whitener = None if C is None else sqrtm_psd(
         np.asarray(C, np.float64), -0.5).astype(np.float32)
     d_field = None if d_field is None else np.asarray(d_field, np.float32)
@@ -251,7 +252,7 @@ def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, centre_row, roo
     return box.result()
 
 
-def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=TILE,
+def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
                      d_field=None, shrink="hard", workers=None, aggregate="centre",
                      stride=1):
     """MP-PCA on the patch whitened by ``C^(-1/2)``.
@@ -260,7 +261,8 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
         dwi: (X, Y, Z, N) data.
         mask: (X, Y, Z) boolean; only these voxels are denoised.
         C: (n_vox, n_vox) patch correlation with unit diagonal.
-        patch: box shape, three odd integers.
+        patch: box shape, three odd integers. None picks dwidenoise's default, see
+            :func:`~camppca.patch.default_patch`.
         algo: which Marchenko-Pastur variant to cut with.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) level field, ALREADY guarded by the caller
@@ -282,7 +284,7 @@ def denoise_whitened(dwi, mask, C, patch=(5, 5, 5), algo="cordero-grande", tile=
     """
     dwi = np.asarray(dwi, np.float32)
     mask = np.asarray(mask, bool)          # non-bool would make `& mask` an integer op
-    patch = check_patch(patch)             # odd dims: centre = n_vox // 2 must BE the centre
+    patch = resolve_patch(patch, dwi.shape)  # odd dims: centre = n_vox // 2 must BE the centre
     aggregate, stride = check_aggregate(aggregate, stride)
     n_vox = patch_size(patch)
     center = n_vox // 2

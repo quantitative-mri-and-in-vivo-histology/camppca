@@ -29,7 +29,7 @@ from functools import partial
 
 import numpy as np
 
-from ..patch import check_patch, patch_size
+from ..patch import patch_size, resolve_patch
 from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
 from .gather import TILE, patch_tiles
@@ -126,7 +126,7 @@ def _mean_voxels(dwi, mask, centres, patch, algorithm, tile, shrink):
     return box.result()
 
 
-def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 5),
+def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
                   algorithm: str = "cordero-grande", tile: int = TILE,
                   shrink: str = "hard", workers: int | None = None,
                   aggregate: str = "centre", stride: int = 1) -> DenoiseResult:
@@ -136,7 +136,8 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
         dwi: (X, Y, Z, N) data.
         mask: (X, Y, Z) boolean; only these voxels are denoised, the rest are passed
             through. Defaults to the whole volume.
-        patch: box shape, three odd integers.
+        patch: box shape, three odd integers. None picks dwidenoise's default, see
+            :func:`~camppca.patch.default_patch`.
         algorithm: which Marchenko-Pastur variant to cut with, see
             :data:`~camppca.denoiser.mp_threshold.ALGORITHMS`.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
@@ -158,13 +159,13 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=(5, 5, 
         ValueError: if ``dwi`` is not 4D, ``mask`` does not match its spatial shape,
             ``patch`` is not three odd positive integers, or ``shrink`` is unknown.
     """
-    patch = check_patch(patch)
     shrink = check_shrink(shrink)
     aggregate, stride = check_aggregate(aggregate, stride)
     tile_shrink = "gd" if shrink == "lr" else shrink   # C = I: the correction is exactly 1
     dwi = np.asarray(dwi, np.float32)
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X, Y, Z, N), got shape {dwi.shape}")
+    patch = resolve_patch(patch, dwi.shape)
     if mask is None:
         mask = np.ones(dwi.shape[:3], bool)
     else:

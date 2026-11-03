@@ -226,6 +226,11 @@ Breaking any of these corrupts results without an error:
   Outside the mask, which edge patches include, `d` is its median over the mask.
 - **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
   once across every volume.
+- **The default patch is dwidenoise's rule** (`patch.default_patch`, MRtrix 3.0.4): the
+  smallest odd cube with at least N voxels, each side clipped to the largest odd size
+  that fits the image. MRtrix clips to the image size, even or not. `patch=None` means
+  this everywhere, except `denoise_with_noise_model`, which takes the patch the model was
+  estimated for: the loop fitted `rho` to that patch's split.
 - **Centre-voxel by default** — no overlap averaging. Intentional; matches the MP theory
   the noise estimate rests on. `aggregate="mean"` (with `stride`) averages the overlapping
   patch reconstructions as an option (`denoiser/aggregate.py`): plain mean, no weights,

@@ -38,7 +38,9 @@ voxels inside it are denoised. Without one, a mask is estimated from the mean b0
 fallback and written next to the output, so it can be checked and reused.
 `-fslgrad` only picks the b0s that fallback mask is drawn from. Without it the mask comes
 from the mean of every volume. Every volume enters the estimate either way.
-`--patch X Y Z` sets the patch (default `5 5 5`, odd in every dimension).
+`--patch X Y Z` sets the patch, odd in every dimension. The default follows dwidenoise.
+It is the smallest odd cube with at least as many voxels as there are volumes: `5 5 5` up
+to 125 volumes, `7 7 7` up to 343.
 `--level-rounds N` re-estimates the level field from the whitened patches up to N times
 (default 0).
 
@@ -63,12 +65,12 @@ supplied from elsewhere:
 ```python
 from camppca import estimate_noise_model, denoise_with_noise_model
 
-model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 5))
+model = estimate_noise_model(dwi, bvals, mask)   # patch: dwidenoise's rule
 model.rho           # the correlation lag table — the pattern, no level
 model.d             # relative noise level per voxel
-model.patch_correlation((5, 5, 5))          # the P×P patch correlation, derived on demand
+model.patch_correlation(model.provenance["patch"])   # the P×P patch correlation, on demand
 
-result = denoise_with_noise_model(dwi, model, patch=(5, 5, 5))
+result = denoise_with_noise_model(dwi, model)    # the patch the model was estimated for
 ```
 
 That split is deliberate: `denoise_with_noise_model` never asks where the model came from,

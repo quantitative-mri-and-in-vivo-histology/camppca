@@ -34,6 +34,25 @@ def required_lag(patch):
     return int(max(patch[0], patch[1])) - 1
 
 
+def default_patch(shape):
+    """dwidenoise's default patch for an (X, Y, Z, N) image.
+
+    The smallest odd cube with at least N voxels, so the patch matrix is never wider than
+    tall: 5 x 5 x 5 up to 125 volumes, 7 x 7 x 7 up to 343. Each side is clipped to the
+    image. MRtrix 3.0.4 clips to the image size itself, which can be even. Here a side is
+    clipped to the largest odd size that fits, since the patch needs a centre voxel.
+    """
+    side = 1
+    while side ** 3 < shape[3]:
+        side += 2
+    return tuple(min(side, n - 1 + n % 2) for n in shape[:3])
+
+
+def resolve_patch(patch, shape):
+    """``patch`` validated, or :func:`default_patch` for ``shape`` when it is None."""
+    return check_patch(default_patch(shape) if patch is None else patch)
+
+
 def check_patch(patch):
     """Validate a patch shape; returns it as a length-3 int array."""
     patch = np.asarray(patch, int)
