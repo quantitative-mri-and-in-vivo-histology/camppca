@@ -22,7 +22,8 @@ Conventions for user-facing text: **MP-PCA** (hyphenated), American spelling.
 ## Scope
 
 **In:** noise covariance estimation from MP-PCA itself; the noise-level field; whitened
-MP-PCA (whiten → MP-PCA → unwhiten); the CLI around them.
+MP-PCA (whiten → MP-PCA → unwhiten); phase stabilization of complex data, as a step
+before denoising; the CLI around them.
 
 **Out:** the warp/alignment lane (reusing FSL eddy displacement fields to denoise in a
 common anatomical frame) — a separate project. The research repo this is ported from is
@@ -178,6 +179,8 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
         spectrum.py        batched eigh through scipy's LAPACK, descending
         result.py          DenoiseResult, what both denoisers return
       patch.py             patch geometry — both halves of the seam need it
+      phase.py             phase stabilization: complex data onto the real axis, before
+                           denoising
       pool.py              CPU worker processes through joblib — both halves use it
       io.py                nibabel edge
       cli.py               camppca denoise | estimate
@@ -188,7 +191,7 @@ do not repeat it, and each `__init__.py` is that half's public face.
 
 **The public API is flat.** Everything a user calls is `camppca.<name>`:
 `denoise_camppca`, `denoise_mppca`, `denoise_with_noise_model`, `estimate_noise_model`,
-`brain_mask`, `NoiseModel`, `DenoiseResult`. Nothing public needs a `camppca.denoiser.`
+`brain_mask`, `NoiseModel`, `DenoiseResult`, `stabilize_phase`. Nothing public needs a `camppca.denoiser.`
 or `camppca.noise_model.` prefix.
 
 - **Never `estimate` or `model` bare** — they do not say *what* is estimated or modeled.
@@ -261,6 +264,26 @@ Breaking any of these corrupts results without an error:
   number.
 - `_effective_d` in `denoiser/__init__.py` is the **only** place `d` is guarded (bad or
   outside-mask voxels get the median). The engine takes the field as given.
+
+## Phase stabilization
+
+`phase.py`, `camppca phase`: complex data rotated onto the real axis, and the real part
+denoised like a magnitude image. A separate step before `estimate`/`denoise`, so the
+noise model is estimated on exactly the data that is denoised. Per slice and volume: the
+phase of the complex mean over volumes, then a smooth estimate, `"dk"` (default) or
+`"tukey"`. Complex denoising, keeping both channels, is planned as a later step.
+
+- ⚠ **Do not copy or translate NORDIC code** (NORDIC_Raw, NIFTI_NORDIC, NORDIC-python).
+  It is University of Minnesota copyright, research use only, no redistribution, and
+  NORDIC is patented (US 10,768,260). The filters here come from the papers: Sprenger et
+  al. 2017 for `"dk"`, EDDEN's description for `"tukey"`.
+- The `"dk"` weights are Sprenger's Opt5, which the paper gives only as a colour map
+  (Fig. 3). They were read off it by colour and summed to 1.008.
+- `"tukey"` at 58% reads EDDEN's "Tukey filter with an FWHM of 58%" as a Tukey window
+  whose half maximum sits at 58% of k-space. EDDEN does not say more.
+- The phase is removed with a smooth estimate, which leaves neighbours' noise correlation
+  in the real part close to the complex one. The estimator measures it from the real
+  part anyway.
 
 ## Gotchas
 

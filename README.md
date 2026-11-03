@@ -44,6 +44,28 @@ to 125 volumes, `7 7 7` up to 343.
 `--level-rounds N` re-estimates the level field from the whitened patches up to N times
 (default 0).
 
+### Complex data: phase stabilization
+
+With magnitude and phase images, rotate the data onto the real axis first, then denoise
+the real part:
+
+```bash
+camppca phase   mag.nii.gz phase.nii.gz real.nii.gz --imag imag.nii.gz
+camppca denoise real.nii.gz out.nii.gz --mask brain.nii.gz -fslgrad in.bvec in.bval
+```
+
+The real part keeps Gaussian noise, so it has no Rician noise floor. In each slice and
+volume the phase of the mean over all volumes is removed first, then a smooth estimate of
+the phase that is left. `--filter dk`, the default, estimates it with the decorrelated
+kernel of Sprenger et al. (2017). `--filter tukey --fwhm 0.58` uses a k-space low-pass, as
+in the EDDEN preprocessing (Manzano-Patrón et al. 2024). The phase is read in radians or
+as the scanner stores it, -4096 to 4094 on Siemens. `--imag` writes the imaginary part,
+which should hold noise only.
+
+On complex white noise the real part's mean over pure noise is 0.28σ with `dk` and 0.91σ
+with `tukey` at 58%, against 1.25σ for the magnitude. In the image corners of EDDEN's 2 mm
+data it was 0.07σ with `dk`, against 1.35σ for the magnitude.
+
 ## Python
 
 ```python
@@ -93,6 +115,10 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
   noise model is only valid inside the mask. Apply the mask yourself if you want zeros.
 - **Keep ≳ 50 volumes in the pooled patch.** The noise-level estimator degenerates as the
   retained rank approaches `min(P, N)`.
+
+Phase stabilization follows Eichner et al., NeuroImage 2015;122:373-384, and Sprenger et
+al., Magn Reson Med 2017;77:559-570. The EDDEN data and its preprocessing are from
+Manzano-Patrón et al., Imaging Neuroscience 2024, doi:10.1162/imag_a_00060.
 
 `CLAUDE.md` carries the notation, the method invariants, and the reasoning behind them.
 

@@ -71,11 +71,15 @@ def save_like(path, data, affine, header=None, dtype=np.float32):
     """Write ``data`` as a NIfTI carrying the input's geometry.
 
     The header is only reused when the array still has the input's shape -- a 3-D map
-    written with a 4-D header would carry a stale dim[4].
+    written with a 4-D header would carry a stale dim[4]. The file is written as
+    ``dtype``. A reused header otherwise keeps the input's type, and nibabel packed a
+    float image from a uint16 input back into scaled 16-bit integers.
     """
     arr = np.asarray(data, dtype)
     use_header = header if (header is not None and arr.ndim == 4) else None
-    nib.save(nib.Nifti1Image(arr, affine, use_header), str(path))
+    img = nib.Nifti1Image(arr, affine, use_header)
+    img.set_data_dtype(arr.dtype)
+    nib.save(img, str(path))
 
 
 def save_json(path, obj):
