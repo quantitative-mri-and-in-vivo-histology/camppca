@@ -66,6 +66,13 @@ On complex white noise the real part's mean over pure noise is 0.28σ with `dk` 
 with `tukey` at 58%, against 1.25σ for the magnitude. In the image corners of EDDEN's 2 mm
 data it was 0.07σ with `dk`, against 1.35σ for the magnitude.
 
+### Complex data: denoising both channels
+
+`camppca denoise` also takes a complex image and writes a complex one. Both channels are
+denoised together. The noise model is estimated on the real part. σ̂ is the noise level of
+one channel. After phase stabilization the imaginary part holds mostly noise, so denoising
+the real part alone usually gives the lower error. On EDDEN's 2 mm data it did.
+
 ## Python
 
 ```python

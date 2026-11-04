@@ -33,7 +33,7 @@ import numpy as np
 from ..patch import patch_size, resolve_patch
 from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
-from .gather import TILE, patch_tiles
+from .gather import TILE, as_data, patch_tiles
 from .mp_threshold import mp_threshold
 from .shrink import shrink_weight, signal_alignment
 from .spectrum import eigh_descending, eigvalsh_descending
@@ -67,7 +67,7 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str):
         fitted noise level.
     """
     whitened = np.matmul(whitener, patches)
-    gram = np.matmul(whitened.transpose(0, 2, 1), whitened)
+    gram = np.matmul(whitened.conj().transpose(0, 2, 1), whitened)
     evals, evecs = eigh_descending(gram)
     rank, sigma_hat = mp_threshold(evals, n_small, n_large, algo)
     return whitened, evals, evecs, rank, sigma_hat
@@ -115,7 +115,7 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
                 if shrink == "lr" else None
             w = w * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)[:, :r]
         V = evecs[:, :, :r]
-        return np.matmul(np.matmul(patches, V) * w[:, None, :], V.transpose(0, 2, 1)), \
+        return np.matmul(np.matmul(patches, V) * w[:, None, :], V.conj().transpose(0, 2, 1)), \
             sigma_hat, rank
 
     centre = np.einsum("p,bpm->bm", centre_row, whitened)    # e_c^T C^(1/2) Yw
@@ -125,7 +125,7 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
     if shrink != "hard":
         alignment = signal_alignment(whitened, evecs, evals, C) if shrink == "lr" else None
         kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)
-    signal = np.einsum("bk,bnk->bn", kept, evecs)
+    signal = np.einsum("bk,bnk->bn", kept, evecs.conj())
     return signal, sigma_hat, rank
 
 
@@ -207,11 +207,11 @@ def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, centre_row, C, patc
     n_vox = patch_size(patch)
     center = n_vox // 2
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
-    signal = np.empty((voxels.size, n_vols), np.float32)
+    signal = np.empty((voxels.size, n_vols), dwi.dtype)
     sigma_hat = np.empty(voxels.size, np.float32)
     rank = np.empty(voxels.size, np.int32)
     for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
-        patches = np.asarray(dwi[index], np.float32)
+        patches = np.asarray(dwi[index], dwi.dtype)
         levels = None if d_field is None else d_field[index]
         if levels is not None:
             patches = patches / levels[:, :, None]          # D^(-1): homoscedastic rows
@@ -237,9 +237,9 @@ def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, centre_row, roo
     n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
-    box = BoxSum(dwi.shape, centres, patch, mask)
+    box = BoxSum(dwi.shape, centres, patch, mask, dwi.dtype)
     for _, index in patch_tiles(dwi.shape[:3], centres, patch, tile=tile):
-        patches = np.asarray(dwi[index], np.float32)
+        patches = np.asarray(dwi[index], dwi.dtype)
         levels = None if d_field is None else d_field[index]
         if levels is not None:
             patches = patches / levels[:, :, None]
@@ -258,7 +258,8 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
     """MP-PCA on the patch whitened by ``C^(-1/2)``.
 
     Args:
-        dwi: (X, Y, Z, N) data.
+        dwi: (X, Y, Z, N) data, real or complex; see :mod:`camppca.denoiser.mppca` for
+            complex data.
         mask: (X, Y, Z) boolean; only these voxels are denoised.
         C: (n_vox, n_vox) patch correlation with unit diagonal.
         patch: box shape, three odd integers. None picks dwidenoise's default, see
@@ -282,7 +283,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
         caller multiplies by ``d`` to get data units. With "mean", ``rank`` is the mean
         rank as float32.
     """
-    dwi = np.asarray(dwi, np.float32)
+    dwi = as_data(dwi)
     mask = np.asarray(mask, bool)          # non-bool would make `& mask` an integer op
     patch = resolve_patch(patch, dwi.shape)  # odd dims: centre = n_vox // 2 must BE the centre
     aggregate, stride = check_aggregate(aggregate, stride)
@@ -308,7 +309,10 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
                   (dwi, d_field, mask),
                   voxel_chunks(patch_centres(mask, patch, stride), MEAN_CHUNKS, tile),
                   assembly.add, workers)
-        return assembly.finish()
+        denoised, sigma_hat, rank = assembly.finish()
+        if np.iscomplexobj(dwi):
+            sigma_hat /= np.sqrt(2.0)      # one channel's level, as for real data
+        return denoised, sigma_hat, rank
 
     voxels = np.flatnonzero(mask)
     coords = np.unravel_index(voxels, mask.shape)
@@ -324,4 +328,6 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
                        C=C.astype(np.float32), patch=patch, algo=algo, tile=tile,
                        shrink=shrink),
                (dwi, d_field), voxels, write, workers, tile)
+    if np.iscomplexobj(dwi):
+        sigma_hat /= np.sqrt(2.0)
     return denoised, sigma_hat, rank

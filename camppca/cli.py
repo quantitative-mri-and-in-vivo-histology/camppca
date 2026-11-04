@@ -78,8 +78,8 @@ def _parser():
     sub = p.add_subparsers(dest="command", required=True)
 
     d = sub.add_parser("denoise", help="estimate the noise model, then denoise")
-    d.add_argument("input", help="4D input image")
-    d.add_argument("output", help="denoised 4D image")
+    d.add_argument("input", help="4D input image, real or complex")
+    d.add_argument("output", help="denoised 4D image, complex if the input is")
     d.add_argument("--noise", metavar="PATH", help="write the sigma_hat map here")
     d.add_argument("--no-noise-field", action="store_true",
                    help="ignore the per-voxel level field d (whiten with the pattern only)")
@@ -212,7 +212,8 @@ def main(argv=None):
         result = denoise_with_noise_model(dwi, model, patch=patch,
                                           noise_field=noise_field, workers=args.workers,
                                           aggregate=args.aggregate, stride=args.stride)
-        io.save_like(args.output, result.denoised, affine, header)
+        io.save_like(args.output, result.denoised, affine, header,
+                     dtype=result.denoised.dtype)
         say(f"  wrote {args.output}")
         if mask is None:
             mask_path = _mask_path(args.output)

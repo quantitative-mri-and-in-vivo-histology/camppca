@@ -20,10 +20,16 @@ import numpy as np
 
 from ..patch import check_patch, patch_offsets
 
-__all__ = ["TILE", "patch_tiles"]
+__all__ = ["TILE", "as_data", "patch_tiles"]
 
 #: Patches per tile.
 TILE = 8
+
+
+def as_data(dwi) -> np.ndarray:
+    """``dwi`` as the denoisers hold it: complex64 if it is complex, float32 otherwise."""
+    dwi = np.asarray(dwi)
+    return dwi.astype(np.complex64 if np.iscomplexobj(dwi) else np.float32, copy=False)
 
 
 def patch_tiles(shape, voxels: np.ndarray, patch, tile: int = TILE

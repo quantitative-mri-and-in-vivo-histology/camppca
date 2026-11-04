@@ -10,6 +10,11 @@ Per masked voxel:
 2. Find the Marchenko-Pastur edge in the eigenvalues of ``X``. No demeaning.
 3. Drop everything below the edge, rebuild, and keep only the centre voxel's signal.
 
+Complex data are denoised as complex: the Gram matrix is ``X^H X`` and the rebuild uses the
+conjugated eigenvectors, both no-ops on real data. The Marchenko-Pastur law is the same,
+with the variance of a complex entry, twice that of one channel. So ``sigma_hat`` is divided
+by sqrt(2) on the way out and stays the noise level of one channel.
+
 Centre-voxel only by default, with no averaging across the overlapping patches. The noise
 estimate is a per-patch quantity, and averaging reconstructions departs from the theory it
 rests on. ``aggregate="mean"`` averages them anyway, as an option; see
@@ -32,7 +37,7 @@ import numpy as np
 from ..patch import patch_size, resolve_patch
 from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
-from .gather import TILE, patch_tiles
+from .gather import TILE, as_data, patch_tiles
 from .mp_threshold import mp_threshold
 from .result import DenoiseResult
 from .shrink import RULES, check_shrink, shrink_weight
@@ -62,7 +67,7 @@ def _denoise_tile(patches: np.ndarray, center: int, n_small: int, n_large: int,
     """
     n_vox, n_vols = patches.shape[1], patches.shape[2]
 
-    gram = np.matmul(patches.transpose(0, 2, 1), patches)
+    gram = np.matmul(patches.conj().transpose(0, 2, 1), patches)
     evals, evecs = eigh_descending(gram)
 
     rank, sigma_hat = mp_threshold(evals, n_small, n_large, algorithm)
@@ -73,7 +78,7 @@ def _denoise_tile(patches: np.ndarray, center: int, n_small: int, n_large: int,
         if shrink != "hard":
             w = w * shrink_weight(evals, sigma_hat, n_vox, n_vols)[:, :r]
         V = evecs[:, :, :r]
-        return np.matmul(np.matmul(patches, V) * w[:, None, :], V.transpose(0, 2, 1)), \
+        return np.matmul(np.matmul(patches, V) * w[:, None, :], V.conj().transpose(0, 2, 1)), \
             sigma_hat, rank
 
     coords = np.einsum("bn,bnm->bm", patches[:, center, :], evecs)
@@ -81,7 +86,7 @@ def _denoise_tile(patches: np.ndarray, center: int, n_small: int, n_large: int,
     kept = np.where(keep, coords, 0.0)
     if shrink != "hard":
         kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols)
-    signal = np.einsum("bm,bnm->bn", kept, evecs)
+    signal = np.einsum("bm,bnm->bn", kept, evecs.conj())
     return signal, sigma_hat, rank
 
 
@@ -100,12 +105,12 @@ def _denoise_voxels(dwi, voxels, patch, algorithm, tile, shrink):
     center = n_vox // 2
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
 
-    signal = np.empty((voxels.size, n_vols), np.float32)
+    signal = np.empty((voxels.size, n_vols), dwi.dtype)
     sigma_hat = np.empty(voxels.size, np.float32)
     rank = np.empty(voxels.size, np.int32)
     for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
         signal[sl], sigma_hat[sl], rank[sl] = _denoise_tile(
-            np.asarray(dwi[index], np.float32), center, n_small, n_large, algorithm, shrink)
+            np.asarray(dwi[index], dwi.dtype), center, n_small, n_large, algorithm, shrink)
     return signal, sigma_hat, rank
 
 
@@ -117,9 +122,9 @@ def _mean_voxels(dwi, mask, centres, patch, algorithm, tile, shrink):
     """
     n_vox, n_vols = patch_size(patch), dwi.shape[3]
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
-    box = BoxSum(dwi.shape, centres, patch, mask)
+    box = BoxSum(dwi.shape, centres, patch, mask, dwi.dtype)
     for _, index in patch_tiles(dwi.shape[:3], centres, patch, tile=tile):
-        recon, sigma_hat, rank = _denoise_tile(np.asarray(dwi[index], np.float32),
+        recon, sigma_hat, rank = _denoise_tile(np.asarray(dwi[index], dwi.dtype),
                                                n_vox // 2, n_small, n_large, algorithm,
                                                shrink, full=True)
         box.add(index, recon, sigma_hat, rank)
@@ -133,7 +138,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
     """Denoise a 4D volume with standard MP-PCA.
 
     Args:
-        dwi: (X, Y, Z, N) data.
+        dwi: (X, Y, Z, N) data, real or complex. Complex data are denoised as complex.
         mask: (X, Y, Z) boolean; only these voxels are denoised, the rest are passed
             through. Defaults to the whole volume.
         patch: box shape, three odd integers. None picks dwidenoise's default, see
@@ -162,7 +167,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
     shrink = check_shrink(shrink)
     aggregate, stride = check_aggregate(aggregate, stride)
     tile_shrink = "gd" if shrink == "lr" else shrink   # C = I: the correction is exactly 1
-    dwi = np.asarray(dwi, np.float32)
+    dwi = as_data(dwi)
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X, Y, Z, N), got shape {dwi.shape}")
     patch = resolve_patch(patch, dwi.shape)
@@ -199,6 +204,8 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
                            shrink=tile_shrink),
                    (dwi,), voxels, write, workers, tile)
         rule = f"{RULES[tile_shrink]}, centre-voxel only"
+    if np.iscomplexobj(dwi):
+        sigma_hat /= np.sqrt(2.0)      # one channel's level, as for real data
 
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,
