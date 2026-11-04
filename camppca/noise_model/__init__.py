@@ -146,6 +146,10 @@ def _pool_level(level, mask, size):
     Both sums run over mask voxels only, so the edge is not pulled toward the background.
     ``mode="constant"`` extends that past the array edge: the default, ``reflect``, would
     mirror the rim back in and count it twice.
+
+    ⚠ ``uniform_filter`` keeps a running sum. Where levels near zero sit next to normal
+    ones, its rounding can leave a sum of squares slightly below zero, so it is clipped
+    at zero before the root.
     """
     if size <= 1:
         return level
@@ -154,7 +158,7 @@ def _pool_level(level, mask, size):
     den = uniform_filter(mask.astype(np.float64), **kw)
     pooled = np.zeros_like(level)
     ok = mask & (den > 0)
-    pooled[ok] = np.sqrt(num[ok] / den[ok])
+    pooled[ok] = np.sqrt(np.maximum(num[ok], 0.0) / den[ok])
     return pooled
 
 

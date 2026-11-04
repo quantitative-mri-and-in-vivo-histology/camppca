@@ -67,7 +67,7 @@ from joblib import delayed
 from scipy.linalg import cho_factor, cho_solve, null_space
 from scipy.ndimage import binary_erosion
 
-from ..denoiser import _effective_d
+from ..denoiser import _effective_d, _good_level
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
 from ..patch import patch_offsets
@@ -112,12 +112,14 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
         correlation) and ``n_centres``.
 
     Raises:
-        ValueError: if no mask voxel has its whole patch inside the mask.
+        ValueError: if no mask voxel has its whole patch inside the mask, among the
+            voxels whose level passes the floor of ``_effective_d``.
     """
     patch = np.asarray(patch, int)
     dzmax = rho_start.shape[2] - 1
     workers = resolve_workers(workers)
-    centres = _sample_centres(mask, patch, np.random.default_rng(seed))
+    # Patches with a level below the floor hold near-constant data, which the fit cannot use.
+    centres = _sample_centres(_good_level(d, mask), patch, np.random.default_rng(seed))
     levels = _effective_d(d, mask) if noise_field else np.ones(mask.shape, np.float32)
 
     with ExitStack() as stack:
