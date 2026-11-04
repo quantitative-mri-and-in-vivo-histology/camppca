@@ -16,6 +16,8 @@ __all__ = ["load_dwi", "load_bvals", "load_mask", "save_like", "save_json"]
 def load_dwi(path, dtype=np.float32):
     """Load a 4D image. Returns ``(data, affine, header)``.
 
+    A complex image is read as complex64 whatever ``dtype`` says.
+
     A NIfTI is read one volume at a time into the result, so only the result and one
     volume are ever in memory. ``np.asanyarray`` on nibabel's proxy held the unpacked
     file, the stored integers and the float copy at once: 16 GB for the 5.5 GB float32
@@ -24,6 +26,8 @@ def load_dwi(path, dtype=np.float32):
     img = nib.load(str(path))
     if img.ndim != 4:
         raise ValueError(f"{path}: expected a 4D image, got shape {img.shape}")
+    if np.iscomplexobj(np.empty(0, img.get_data_dtype())):
+        dtype = np.complex64
     data = _read_volumes(img, dtype)
     if data is None:
         data = np.asanyarray(img.dataobj, dtype=dtype)

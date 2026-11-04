@@ -121,8 +121,8 @@ def signal_alignment(whitened: np.ndarray, evecs: np.ndarray, evals: np.ndarray,
     U = np.einsum("bpn,bnk->bpk", whitened, evecs)
     U = U / np.sqrt(np.maximum(evals, 1e-12))[:, None, :]
     if levels is None:
-        q = np.einsum("bpk,bpk->bk", U, np.einsum("pq,bqk->bpk", C, U))
+        q = np.einsum("bpk,bpk->bk", U.conj(), np.einsum("pq,bqk->bpk", C, U)).real
         return q / (np.trace(C) / n_vox)
     back = levels[:, :, None] * np.einsum("pq,bqk->bpk", root, U)        # D C^(1/2) u_k
-    q = np.einsum("bpk,bpk->bk", back, back)
+    q = np.einsum("bpk,bpk->bk", back.conj(), back).real
     return q / np.mean(levels ** 2 * np.diag(C)[None, :], axis=1)[:, None]

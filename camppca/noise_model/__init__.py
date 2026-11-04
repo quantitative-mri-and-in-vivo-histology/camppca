@@ -164,7 +164,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     """Estimate the noise model from the data itself. No noise-only scan required.
 
     ``dwi``    (X, Y, Z, N) diffusion data.  Every volume enters, b0s included, because the
-               denoiser whitens them all.
+               denoiser whitens them all.  Complex data are estimated on their real part,
+               which holds the signal once the phase is stabilized (:mod:`camppca.phase`).
+               The noise has the same correlation and level in both channels.
     ``bvals``  (N,) b-values, used only to find the b0s the default mask is drawn from.
     ``mask``   (X, Y, Z) bool.  Estimated from the mean b0 when omitted.
     ``patch``  the patch this model must be able to serve; sets the lag rho covers.
@@ -198,6 +200,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     dwi = np.asarray(dwi)
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
+    complex_input = np.iscomplexobj(dwi)
+    if complex_input:
+        dwi = np.ascontiguousarray(dwi.real, np.float32)
     n_vols = dwi.shape[3]
     patch = resolve_patch(patch, dwi.shape)
     if np.any(patch > np.asarray(dwi.shape[:3])):
@@ -277,6 +282,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
                 u_kernel=info["u_kernel"], n_centres=info["n_centres"],
                 loop_algo=algo, loop_noise_field=bool(noise_field),
                 level_rounds=level_rounds, level_rounds_run=rounds_run)
+    if complex_input:
+        prov.update(data="complex, estimated on the real part")
     if rounds_run:
         prov.update(level_converged=change < LEVEL_TOL, level_change=change,
                     s_spread=spread)

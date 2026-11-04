@@ -158,3 +158,19 @@ def test_the_patch_defaults_to_the_dwidenoise_rule(dataset, capsys):
     assert rc == 0
     assert json.loads((qc / "provenance.json").read_text())["model"]["patch"] == [5, 5, 5]
     assert "patch 5x5x5" in capsys.readouterr().out
+
+
+def test_a_complex_input_gives_a_complex_output(dataset, tmp_path):
+    real = nib.load(str(dataset / "in.nii.gz")).get_fdata(dtype=np.float32)
+    rng = np.random.default_rng(1)
+    cplx = (real + 1j * 10 * rng.standard_normal(real.shape)).astype(np.complex64)
+    src, out = tmp_path / "cplx.nii.gz", tmp_path / "out.nii.gz"
+    nib.save(nib.Nifti1Image(cplx, np.eye(4)), str(src))
+
+    rc = main(["denoise", str(src), str(out), "--patch", "5", "5", "3", "-q",
+               *_grad(dataset)])
+
+    assert rc == 0
+    img = nib.load(str(out))
+    assert img.get_data_dtype() == np.complex64
+    assert np.iscomplexobj(np.asanyarray(img.dataobj))

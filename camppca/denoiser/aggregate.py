@@ -68,7 +68,7 @@ class BoxSum:
     Only voxels inside the mask receive anything.
     """
 
-    def __init__(self, shape, centres, patch, mask):
+    def __init__(self, shape, centres, patch, mask, dtype=np.float32):
         X, Y, Z, n_vols = shape
         half = int(patch[0]) // 2
         xs = np.asarray(centres) // (Y * Z)
@@ -81,7 +81,7 @@ class BoxSum:
         # A patch wider than the volume wraps onto itself and repeats indices.
         self.repeats = any(int(p) > n for p, n in zip(patch, (X, Y, Z), strict=True))
         n = self.x.size * Y * Z
-        self.sum = np.zeros((n, n_vols), np.float32)
+        self.sum = np.zeros((n, n_vols), dtype)
         self.count = np.zeros(n, np.int32)
         self.var = np.zeros(n, np.float64)
         self.rank = np.zeros(n, np.float64)
