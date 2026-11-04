@@ -265,7 +265,11 @@ Breaking any of these corrupts results without an error:
   number.
 - `_effective_d` in `denoiser/__init__.py` is the **only** place `d` is guarded (bad or
   outside-mask voxels get the nearest good mask voxel's level). The engine takes the
-  field as given.
+  field as given. Bad includes a level below 1% of the median (`LEVEL_FLOOR`): a patch of
+  near-constant data, such as zero-filled slices, has an MP level near zero, and
+  whitening would divide by it. The loop also skips patches holding such a voxel.
+  ideas01 sub-103 hit this in its top two slices: pooling returned NaN, and sub-01
+  finished with a suspect correction of 16.8%.
 - **Every voxel is denoised by default**, inside the mask or not. camppca's `mask` says
   where the noise model is estimated, and a brain mask always misses some brain at its
   edge. `mask_only=True` (`--mask-only`) denoises only inside it and passes the rest

@@ -29,13 +29,26 @@ from .shrink import RULES, check_shrink
 __all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",
            "denoise_with_noise_model"]
 
+#: Levels below this fraction of the median over the mask count as bad. Whitening divides
+#: by ``d``, so a patch of near-constant data, whose MP level is near zero, would blow up.
+LEVEL_FLOOR = 1e-2
+
+def _good_level(d, mask):
+    """Mask voxels whose level is finite and at least :data:`LEVEL_FLOOR` of the median."""
+    d = np.asarray(d, np.float32)
+    good = np.isfinite(d) & (d > 0) & np.asarray(mask, bool)
+    if not good.any():
+        raise ValueError("noise field d is empty or non-positive everywhere in the mask")
+    return good & (d >= LEVEL_FLOOR * np.median(d[good]))
+
+
 def _effective_d(d, mask):
     """The level field as the engine uses it. The one place ``d`` is guarded.
 
     ``d`` is defined up to scale: rows are divided by it and the centre voxel multiplied
     back, so a constant cancels in the denoised image, the rank and ``sigma_hat`` in data
-    units. Voxels that are non-finite, not positive, or outside the mask get the level of
-    the nearest good mask voxel. Edge patches include outside voxels, and by default they
+    units. Voxels that are non-finite, below :data:`LEVEL_FLOOR` times the median over the
+    mask, or outside the mask get the level of the nearest good mask voxel. Edge patches include outside voxels, and by default they
     are denoised too, so a brain voxel the mask missed gets a local level.
 
     The engine takes the field as given and rescales the denoised image by it at the centre
@@ -43,10 +56,7 @@ def _effective_d(d, mask):
     applying this same field, which is why it is computed here and passed down.
     """
     d = np.asarray(d, np.float32)
-    mask = np.asarray(mask, bool)          # a uint8 mask makes `d[good]` a fancy INDEX
-    good = np.isfinite(d) & (d > 0) & mask
-    if not good.any():
-        raise ValueError("noise field d is empty or non-positive everywhere in the mask")
+    good = _good_level(d, mask)
     nearest = ndimage.distance_transform_edt(~good, return_distances=False,
                                              return_indices=True)
     return d[tuple(nearest)].astype(np.float32)

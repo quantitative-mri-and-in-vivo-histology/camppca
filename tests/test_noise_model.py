@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 
-from camppca import denoise_mppca
+from camppca import denoise_mppca, denoise_with_noise_model
+from camppca.denoiser import _effective_d
 from camppca.noise_model import NoiseModel, _pool_level, estimate_noise_model
 from camppca.patch import patch_offsets
 
@@ -229,6 +230,39 @@ def test_pooling_of_size_one_is_a_no_op():
     mask = np.ones((4, 4, 4), bool)
     level = np.random.default_rng(0).uniform(1, 2, (4, 4, 4))
     assert np.array_equal(_pool_level(level, mask, 1), level)
+
+
+def test_pooling_next_to_levels_near_zero_gives_no_nan():
+    """The running sum of uniform_filter rounds below zero there. ideas01 sub-103 hit it."""
+    level = np.random.default_rng(0).uniform(50, 150, (40, 40, 20))
+    level[:, :, 15:] = 1e-7
+    pooled = _pool_level(level, np.ones(level.shape, bool), 3)
+    assert np.isfinite(pooled).all() and (pooled >= 0).all()
+
+
+def test_levels_near_zero_take_their_neighbours_level():
+    d = np.full((10, 10, 10), 5.0, np.float32)
+    d[:, :, 8:] = 1e-7
+    d[:, :, :2] = 9.0
+    eff = _effective_d(d, np.ones(d.shape, bool))
+    np.testing.assert_array_equal(eff[:, :, 8:], 5.0)
+    np.testing.assert_array_equal(eff[:, :, :2], 9.0)
+
+
+def test_zero_filled_slices_inside_the_mask_do_not_break_the_estimate():
+    """Whole patches of zeros have an MP level of zero. The loop skips them, and the
+    denoiser whitens them with their neighbours' level."""
+    rng = np.random.default_rng(0)
+    shape, n_vols, sigma = (24, 24, 20), 60, 10.0
+    dwi = (rng.standard_normal(shape + (3,)) @ rng.standard_normal((3, n_vols)) * 30 + 300
+           + sigma * rng.standard_normal(shape + (n_vols,))).astype(np.float32)
+    dwi[:, :, 13:] = 0
+    model = estimate_noise_model(dwi, mask=np.ones(shape, bool), patch=(5, 5, 5), workers=1)
+    result = denoise_with_noise_model(dwi, model, workers=1)
+
+    assert np.isfinite(result.denoised).all() and np.isfinite(result.sigma_hat).all()
+    assert abs(model.rho[model.lag + 1, model.lag, 0]) < 0.02, "the noise is white"
+    assert np.median(result.sigma_hat[:, :, 3:10]) == pytest.approx(sigma, rel=0.05)
 
 
 def test_estimate_pools_d():
