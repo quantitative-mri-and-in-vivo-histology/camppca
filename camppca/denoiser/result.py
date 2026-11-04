@@ -17,8 +17,8 @@ class DenoiseResult:
 
     ``sigma_hat`` is an OUTPUT. It is what the fit measured, in the input's units.
 
-    Voxels outside the mask are passed through unchanged. Both denoisers write back the
-    centre voxel of each patch by default; ``aggregate="mean"`` averages the overlapping
+    Voxels outside the region denoised are passed through unchanged. Both denoisers write
+    back the centre voxel of each patch by default; ``aggregate="mean"`` averages the overlapping
     patch reconstructions instead (:mod:`camppca.denoiser.aggregate`).
     """
 
@@ -26,12 +26,13 @@ class DenoiseResult:
     """(X, Y, Z, N) denoised data."""
 
     sigma_hat: np.ndarray
-    """(X, Y, Z) fitted noise level, zero outside the mask. With ``aggregate="mean"``, the
-    root of the mean sigma_hat^2 over the patches covering each voxel."""
+    """(X, Y, Z) fitted noise level, zero outside the region denoised. With
+    ``aggregate="mean"``, the root of the mean sigma_hat^2 over the patches covering each
+    voxel."""
 
     rank: np.ndarray
-    """(X, Y, Z) retained component count, zero outside the mask. With
-    ``aggregate="mean"``, the mean rank over the covering patches, as float32."""
+    """(X, Y, Z) retained component count, zero outside the region denoised.
+    With ``aggregate="mean"``, the mean rank over the covering patches, as float32."""
 
     model: NoiseModel | None = None
     """The noise model used, or None for standard MP-PCA, which does not use one."""

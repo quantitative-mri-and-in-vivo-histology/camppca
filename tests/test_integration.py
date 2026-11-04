@@ -128,9 +128,23 @@ def test_denoise_reduces_variance_and_keeps_shape(dataset):
 
     assert result.denoised.shape == dwi.shape
     assert result.sigma_hat.shape == dwi.shape[:3]
-    passthrough = dwi.astype(result.denoised.dtype)      # engine works in float32
-    assert np.all(result.denoised[~mask] == passthrough[~mask]), "outside the mask is untouched"
     assert (dwi - result.denoised)[mask].std() < SIGMA_TRUE * 1.2
+
+
+def test_every_voxel_is_denoised_unless_mask_only(dataset, model):
+    """The mask says where the model holds. A brain voxel the mask missed is still denoised."""
+    dwi, bvals, mask = dataset
+    everywhere = denoise_with_noise_model(dwi, model)
+    only = denoise_with_noise_model(dwi, model, mask_only=True)
+
+    assert (everywhere.sigma_hat > 0).all() and (everywhere.rank > 0).all()
+    assert (dwi - everywhere.denoised)[~mask].std() > 0.5 * SIGMA_TRUE
+    passthrough = dwi.astype(only.denoised.dtype)        # engine works in float32
+    assert np.all(only.denoised[~mask] == passthrough[~mask]), "outside the mask is untouched"
+    assert not only.sigma_hat[~mask].any()
+    np.testing.assert_array_equal(only.denoised[mask], everywhere.denoised[mask])
+    assert everywhere.provenance["mask_only"] is False
+    assert only.provenance["mask_only"] is True
 
 
 def test_the_scale_of_d_cancels(dataset, model):

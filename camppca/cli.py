@@ -45,7 +45,8 @@ def _add_common(p):
                         "mask is drawn from. Without it the mask comes from the mean of "
                         "every volume.")
     p.add_argument("--mask", metavar="PATH",
-                   help="brain mask (recommended). Without it one is estimated from the "
+                   help="brain mask (recommended), where the noise model is estimated. "
+                        "Without it one is estimated from the "
                         "mean b0, and denoise writes it next to the output as "
                         "<output>_mask.nii.gz")
     p.add_argument("--patch", type=int, nargs=3, default=None, metavar=("X", "Y", "Z"),
@@ -89,6 +90,9 @@ def _parser():
     d.add_argument("--stride", type=int, default=1, metavar="N",
                    help="with --aggregate mean, a patch centre every N voxels per axis "
                         "(default: 1)")
+    d.add_argument("--mask-only", action="store_true",
+                   help="denoise only inside the mask and pass the rest through "
+                        "(default: denoise every voxel)")
     _add_common(d)
 
     e = sub.add_parser("estimate", help="estimate the noise model only, no denoised image")
@@ -211,7 +215,8 @@ def main(argv=None):
         from .denoiser import denoise_with_noise_model
         result = denoise_with_noise_model(dwi, model, patch=patch,
                                           noise_field=noise_field, workers=args.workers,
-                                          aggregate=args.aggregate, stride=args.stride)
+                                          aggregate=args.aggregate, stride=args.stride,
+                                          mask_only=args.mask_only)
         io.save_like(args.output, result.denoised, affine, header,
                      dtype=result.denoised.dtype)
         say(f"  wrote {args.output}")
