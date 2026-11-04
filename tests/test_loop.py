@@ -247,8 +247,8 @@ def _relative_error(d, mask):
 
 
 def test_level_rounds_recover_the_injected_level_and_flatten_s(dataset, model):
-    """Away from the mask edge. Edge patches reach outside the mask, where d is set to its
-    median, so the rounds push the rim off the true level."""
+    """Away from the mask edge. Edge patches reach outside the mask, where d is only the
+    nearest mask voxel's level, so the rim is less exact."""
     dwi, bvals, mask = dataset
     rounds = estimate_noise_model(dwi, bvals, mask, patch=PATCH, level_rounds=3)
     interior = mask & (distance_transform_cdt(mask, metric="chessboard") > PATCH.max() // 2)

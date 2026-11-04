@@ -236,8 +236,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     if mask is None:
         b0 = np.where(bvals <= lowb)[0]
         b0_mean = dwi[..., b0].mean(-1) if b0.size else dwi.mean(-1)
-        # erode=0: the stored mask is also the set of voxels the engine WRITES, so
-        # eroding here would leave an un-denoised rim.
+        # erode=0: with mask_only the stored mask is also the set of voxels the engine
+        # WRITES, so eroding here would leave an un-denoised rim.
         mask = brain_mask(b0_mean, erode=0)
     mask = np.asarray(mask, bool)
     if mask.shape != dwi.shape[:3]:

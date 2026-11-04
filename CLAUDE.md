@@ -129,9 +129,10 @@ picks the b0s the default mask is drawn from.
 `level_rounds` (default 0) re-estimates `d` as `pool(d * s)`, with `s` the whitened σ̂
 of every mask voxel's patch, then refits the loop. The fixed point is a flat `s`. It
 changed U by at most 0.006 and σ̂ by at most 0.3% at three to four times the cost, hence
-the default. ⚠ On synthetic data the rounds sharpen `d` in the interior but push a rim
-of half a patch at the mask edge off the true level (median 4%, up to 32%): edge patches
-include outside-mask voxels, where `d` is the median.
+the default. Edge patches include outside-mask voxels, where `d` takes the nearest mask
+voxel's level. On synthetic data the rim of half a patch at the mask edge then stays
+within a median 0.8% of the true level, up to 5%. The old fill, the median over the mask,
+pushed it off by a median 2.9%, up to 32%.
 
 Each round fits one value per lag class (595 at 7³) to the pooled bulk, in whitened
 units, by conjugate gradients. ⚠ **The hole.** Every patch keeps its patch-mean pattern
@@ -226,7 +227,7 @@ Breaking any of these corrupts results without an error:
 - **`d` is defined up to scale.** Rows are divided by it and the centre voxel multiplied
   back, so a constant cancels in the denoised image, the rank and σ̂ in data units (×0.25
   is bit-identical; a generic factor flips near-tied MP cuts by float32 rounding).
-  Outside the mask, which edge patches include, `d` is its median over the mask.
+  Outside the mask `d` is the level of the nearest mask voxel.
 - **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
   once across every volume.
 - **The default patch is dwidenoise's rule** (`patch.default_patch`, MRtrix 3.0.4): the
@@ -237,8 +238,8 @@ Breaking any of these corrupts results without an error:
 - **Centre-voxel by default** — no overlap averaging. Intentional; matches the MP theory
   the noise estimate rests on. `aggregate="mean"` (with `stride`) averages the overlapping
   patch reconstructions as an option (`denoiser/aggregate.py`): plain mean, no weights,
-  only patches centred in the mask, nothing written outside it, `sigma_hat` the root of
-  the mean `sigma_hat^2`, `rank` the mean rank (float32). The whole rebuilt patch is
+  only patches centred in the region denoised, nothing written outside it, `sigma_hat`
+  the root of the mean `sigma_hat^2`, `rank` the mean rank (float32). The whole rebuilt patch is
   `X V diag(w) V^T` for both denoisers: camppca's `C^(1/2) C^(-1/2) = I`, so the
   whole-patch unwhitening needs no `C^(1/2)` product.
 - **Hard threshold by default, shrinkage opt-in** (`shrink="hard" | "gd" | "lr"`,
@@ -263,7 +264,14 @@ Breaking any of these corrupts results without an error:
   default. σ̂ is the headline metric — the scale of `d` must not leak into the reported
   number.
 - `_effective_d` in `denoiser/__init__.py` is the **only** place `d` is guarded (bad or
-  outside-mask voxels get the median). The engine takes the field as given.
+  outside-mask voxels get the nearest good mask voxel's level). The engine takes the
+  field as given.
+- **Every voxel is denoised by default**, inside the mask or not. camppca's `mask` says
+  where the noise model is estimated, and a brain mask always misses some brain at its
+  edge. `mask_only=True` (`--mask-only`) denoises only inside it and passes the rest
+  through, about 2.7 times faster on EDDEN 2 mm. The loop fits only patches wholly
+  inside the mask, so the output region never changes `rho`. Standard MP-PCA takes a
+  mask only as the region to denoise, and without one denoises everything.
 
 ## Phase stabilization
 

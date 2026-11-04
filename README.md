@@ -33,8 +33,9 @@ camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/                         
 | `--noise PATH` | the σ̂ map, in the input's units — a first-class product, as `dwidenoise -noise` is |
 | `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the level field, σ̂, rank, `provenance.json` |
 
-**Supply a brain mask with `--mask`.** The noise model is estimated inside it, and only
-voxels inside it are denoised. Without one, a mask is estimated from the mean b0 as a
+**Supply a brain mask with `--mask`.** The noise model is estimated inside it. Every voxel
+is denoised, so brain the mask missed at its edge is denoised too. `--mask-only` denoises
+only inside the mask, which is faster. Without a mask, one is estimated from the mean b0 as a
 fallback and written next to the output, so it can be checked and reused.
 `-fslgrad` only picks the b0s that fallback mask is drawn from. Without it the mask comes
 from the mean of every volume. Every volume enters the estimate either way.
@@ -118,8 +119,8 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
   matches the MP theory the noise estimate rests on. `aggregate="mean"`
   (`--aggregate mean`) averages the overlapping patch reconstructions instead, and
   `stride` (`--stride N`) keeps a patch every N voxels per axis.
-- **Voxels outside the mask pass through unchanged**, and `sigma_hat` is zero there. The
-  noise model is only valid inside the mask. Apply the mask yourself if you want zeros.
+- **With `--mask-only`, voxels outside the mask pass through unchanged**, and `sigma_hat`
+  is zero there. Apply the mask yourself if you want zeros.
 - **Keep ≳ 50 volumes in the pooled patch.** The noise-level estimator degenerates as the
   retained rank approaches `min(P, N)`.
 

@@ -151,6 +151,23 @@ def test_denoise_passes_the_aggregate_options(dataset):
     assert (prov["denoise"]["aggregate"], prov["denoise"]["stride"]) == ("mean", 2)
 
 
+def test_mask_only_passes_the_outside_through(dataset):
+    mask = np.zeros((34, 34, 16), np.uint8)
+    mask[6:28, 6:28, 3:13] = 1
+    nib.save(nib.Nifti1Image(mask, np.eye(4)), str(dataset / "only_mask.nii.gz"))
+    src = nib.load(str(dataset / "in.nii.gz")).get_fdata(dtype=np.float32)
+    outside = mask == 0
+    for flag, out in (([], "out_all.nii.gz"), (["--mask-only"], "out_only.nii.gz")):
+        rc = main(["denoise", str(dataset / "in.nii.gz"), str(dataset / out), "--mask",
+                   str(dataset / "only_mask.nii.gz"), "--patch", "5", "5", "3", "-q",
+                   *flag, *_grad(dataset)])
+        assert rc == 0
+    every = nib.load(str(dataset / "out_all.nii.gz")).get_fdata(dtype=np.float32)
+    only = nib.load(str(dataset / "out_only.nii.gz")).get_fdata(dtype=np.float32)
+    assert not np.allclose(every[outside], src[outside]), "denoised everywhere by default"
+    np.testing.assert_array_equal(only[outside], src[outside])
+
+
 def test_the_patch_defaults_to_the_dwidenoise_rule(dataset, capsys):
     """50 volumes: the smallest odd cube with at least 50 voxels is 5 x 5 x 5."""
     qc = dataset / "qc_default_patch"
