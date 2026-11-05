@@ -234,6 +234,13 @@ Breaking any of these corrupts results without an error:
   back, so a constant cancels in the denoised image, the rank and σ̂ in data units (×0.25
   is bit-identical; a generic factor flips near-tied MP cuts by float32 rounding).
   Outside the mask `d` is the level of the nearest mask voxel.
+- **At the image edge the box moves inward** until it fits, as in dwidenoise
+  (`gather.box_centres`), and the voxel's own row is written back. `C` depends only on
+  offsets within the box, so it is unchanged. Unwhitening uses that row of `C^(1/2)`,
+  and the centre-voxel "lr" weight reads `C` alone, so it needs nothing. In mean mode
+  each distinct box counts once. Until 2026-11-05 the box wrapped to the opposite face,
+  which mixed in voxels that are not neighbours: on a test volume an edge voxel came out
+  51 to 421 off. Interior voxels were bit for bit unchanged in centre mode.
 - **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
   once across every volume.
 - **The default patch is dwidenoise's rule** (`patch.default_patch`, MRtrix 3.0.4): the
@@ -335,8 +342,8 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
   - The volume and the level field reach the workers as joblib memory maps in the temp
     directory, once per pass (the loop keeps one pool for all its rounds). joblib's own
     default, `/dev/shm`, pinned the whole volume in RAM for no speed gain.
-  - Each task returns only its voxels. The gather wraps at the volume's edges by index
-    arithmetic, so no padded copy exists. In mean mode a task returns its sums over its
+  - Each task returns only its voxels. The gather builds each box by index arithmetic,
+    so no padded copy exists. In mean mode a task returns its sums over its
     box (the x-slices its patches reach) and the main process adds them in chunk order,
     over a fixed 32 chunks, so the result does not depend on the number of workers.
   - A pooled pass is the serial pass bit for bit. The loop is not: its split rounds

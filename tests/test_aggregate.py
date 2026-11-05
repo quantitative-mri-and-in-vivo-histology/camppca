@@ -1,7 +1,7 @@
 """Patch averaging (aggregate="mean"), checked against the long way written out in float64.
 
-The reference rebuilds every patch centred in the mask, wraps it into the volume,
-accumulates only into mask voxels, and divides. For camppca it unwhitens with an explicit
+The reference rebuilds every patch centred in the mask, its box moved inward at the image
+edge, accumulates only into mask voxels, and divides. For camppca it unwhitens with an explicit
 ``D C^(1/2)``, which also checks that the engine may skip that product.
 
 Each patch's rank, sigma_hat and eigenvectors come from the float32 split of that one
@@ -34,7 +34,7 @@ def dataset():
     dwi = (signal * 30 + 200 + rng.standard_normal(SHAPE + (N_VOLS,))).astype(np.float32)
     mask = np.zeros(SHAPE, bool)
     mask[2:12, 1:11, 1:7] = True
-    mask[0, 0, 0] = True                      # a lone voxel at the corner: wraps, no neighbours
+    mask[0, 0, 0] = True                      # a lone voxel at the corner: its box moves in
     d = np.linspace(1.0, 1.6, SHAPE[0], dtype=np.float32)[:, None, None] * np.ones(
         SHAPE, np.float32)
     return dwi, mask, d
@@ -55,13 +55,14 @@ def reference_mean(dwi, mask, centres, C=None, d=None):
     W = None if C is None else sqrtm_psd(C, -0.5)
     root = None if C is None else sqrtm_psd(C, 0.5)
     W32 = None if C is None else W.astype(np.float32)
-    crow = None if C is None else root[n_vox // 2].astype(np.float32)
+    root32 = None if C is None else root.astype(np.float32)
+    half = np.array(PATCH) // 2
     total = np.zeros(SHAPE + (N_VOLS,))
     count = np.zeros(SHAPE)
     var = np.zeros(SHAPE)
     ranks = np.zeros(SHAPE)
     for c in np.array(np.unravel_index(centres, SHAPE)).T:
-        idx = tuple(((c + off) % shape).T)
+        idx = tuple((np.clip(c, half, shape - 1 - half) + off).T)
         X = dwi[idx].astype(np.float64)
         levels = np.ones(n_vox) if d is None else d[idx].astype(np.float64)
         Y = X / levels[:, None]
@@ -71,7 +72,7 @@ def reference_mean(dwi, mask, centres, C=None, d=None):
         Y32 = patch32[0] if W32 is None else W32 @ patch32[0]
         V = eigh_descending((Y32.T @ Y32)[None])[1][0].astype(np.float64)
         C32 = None if C is None else C.astype(np.float32)
-        _, s, r = engine._denoise_tile(patch32, W32, crow, C32, n_small, n_large,
+        _, s, r = engine._denoise_tile(patch32, W32, root32, C32, n_small, n_large,
                                        "cordero-grande", "hard")
         r, s = int(r[0]), float(s[0])
         rebuilt = Y @ V[:, :r] @ V[:, :r].T
