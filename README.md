@@ -56,9 +56,10 @@ camppca denoise real.nii.gz out.nii.gz --mask brain.nii.gz -fslgrad in.bvec in.b
 ```
 
 The real part keeps Gaussian noise, so it has no Rician noise floor. In each slice and
-volume the phase of the mean over all volumes is removed first, then a smooth estimate of
-the phase that is left. `--filter dk`, the default, estimates it with the decorrelated
-kernel of Sprenger et al. (2017). `--filter tukey --fwhm 0.58` uses a k-space low-pass, as
+volume a smooth estimate of the phase is removed, as in NIFTI_NORDIC2. `--mean-phase`
+first removes the phase of the mean over all volumes, as in the EDDEN preprocessing.
+`--filter dk`, the default, estimates the phase with the decorrelated kernel of Sprenger et
+al. (2017). `--filter tukey --fwhm 0.58` uses a k-space low-pass, as
 in the EDDEN preprocessing (Manzano-Patrón et al. 2024). The phase is read in radians or
 as the scanner stores it, -4096 to 4094 on Siemens. `--imag` writes the imaginary part,
 which should hold noise only.
