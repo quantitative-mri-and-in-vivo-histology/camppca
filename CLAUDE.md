@@ -124,7 +124,9 @@ with `d` = standard MP-PCA's σ̂ pooled 3³, gave the same kernel and median σ
 `estimate_noise_model` starts `rho` from white noise (1 at lag 0) and refines it until it
 explains the MP-PCA bulk of 3000 sampled patches at once (`noise_model/loop.py`). It fits
 to the denoiser's own split: `algorithm` and `noise_field` are passed to
-`estimate_noise_model`, recorded in provenance, and a mismatch at denoising warns.
+`estimate_noise_model`, stored with the patch in `NoiseModel.fitted_to`, and a mismatch
+at denoising warns. The denoiser reads `fitted_to`, never `provenance`, which is only a
+record: a second estimator sets `fitted_to` or leaves keys out.
 Every volume enters, b0s included, because the denoiser whitens them all. `bvals` only
 picks the b0s the default mask is drawn from.
 
@@ -212,6 +214,8 @@ or `camppca.noise_model.` prefix.
   function, or the import is circular.
 - `NoiseModel` lives in `noise_model/__init__.py`, not with the estimation math: a future
   alignment-based estimator builds the same object and must not import the loop to get it.
+  The level guard lives there too, as `NoiseModel.effective_d()`, since it belongs to the
+  model. The estimator uses the same `_effective_d` and `_good_level`.
 - Flat, with `noise_model_loop.py`-style prefixes, is the same structure with the noun
   repeated in every filename. Do not "simplify" back to it.
 
@@ -236,7 +240,7 @@ Breaking any of these corrupts results without an error:
   Outside the mask `d` is the level of the nearest mask voxel.
 - **At the image edge the box moves inward** until it fits, as in dwidenoise
   (`gather.box_centers`), and the voxel's own row is written back. `C` depends only on
-  offsets within the box, so it is unchanged. Unwhitening uses that row of `C^(1/2)`,
+  offsets within the box, so it is unchanged. Unwhitening takes that row of the patch,
   and the center-voxel "lr" weight reads `C` alone, so it needs nothing. In mean mode
   each distinct box counts once. Until 2026-11-05 the box wrapped to the opposite face,
   which mixed in voxels that are not neighbours: on a test volume an edge voxel came out
@@ -254,7 +258,10 @@ Breaking any of these corrupts results without an error:
   only patches centered in the region denoised, nothing written outside it, `sigma_hat`
   the root of the mean `sigma_hat^2`, `rank` the mean rank (float32). The whole rebuilt patch is
   `X V diag(w) V^T` for both denoisers: camppca's `C^(1/2) C^(-1/2) = I`, so the
-  whole-patch unwhitening needs no `C^(1/2)` product.
+  whole-patch unwhitening needs no `C^(1/2)` product. The center voxel is the same
+  identity for one row: `e_c^T C^(1/2) Yw = e_c^T X`. Since 2026-11-05 the engine takes
+  the voxel's row of `X` directly. Through `C^(1/2)` in float32 it was off a float64
+  reference by 0.5 to 0.7 on values near 200, directly by 0.04 to 0.1.
 - **Hard threshold by default, shrinkage opt-in** (`shrink="hard" | "gd" | "lr"`,
   `denoiser/shrink.py`). ⚠ The default is NOT hard because shrinkage would break
   exactness — it would not. The unwhitening identity `eᶜᵀ C^(1/2) · (Yw V diag(f) Vᵀ)` is
@@ -276,7 +283,7 @@ Breaking any of these corrupts results without an error:
   `d` at the center voxel but *not* `sigma_hat`, so the API must apply that multiply by
   default. σ̂ is the headline metric — the scale of `d` must not leak into the reported
   number.
-- `_effective_d` in `denoiser/__init__.py` is the **only** place `d` is guarded (bad or
+- `_effective_d` in `noise_model/__init__.py` is the **only** place `d` is guarded (bad or
   outside-mask voxels get the nearest good mask voxel's level). The engine takes the
   field as given. Bad includes a level below 1% of the median (`LEVEL_FLOOR`): a patch of
   near-constant data, such as zero-filled slices, has an MP level near zero, and
@@ -309,6 +316,10 @@ phase of the complex mean over volumes, then a smooth estimate, `"dk"` (default)
   (Fig. 3). They were read off it by color and sum to 1.006.
 - `"tukey"` at 58% reads EDDEN's "Tukey filter with an FWHM of 58%" as a Tukey window
   whose half maximum sits at 58% of k-space. EDDEN does not say more.
+- The volumes are stabilized in the worker pool, chunks of volumes per task, and the
+  result does not depend on the number of workers. On EDDEN 0.9 mm the step took about
+  125 s on one core before and 22 s on 16 workers after (2026-11-05), the phasor now
+  taken as `conj(s) / |s|` without `angle`.
 - The phase is removed with a smooth estimate, which leaves neighbours' noise correlation
   in the real part close to the complex one. The estimator measures it from the real
   part anyway.
@@ -360,6 +371,12 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
   - ⚠ OpenBLAS in the main process starts one thread per hardware thread, 32 on 16
     cores. Held to 16 threads, a bulk map took 24 ms against 49 ms and the estimate
     18 s against 21 s, before the split moved to float32. Not set in the code yet.
+
+- **Tests run one worker and one BLAS thread each**, set in `tests/conftest.py`, and
+  pytest runs them side by side (`-n auto` in `pyproject.toml`): 22 s against 85 s with a
+  pool per test. Serial with one BLAS thread the suite takes 103 s on one core. A serial
+  test with OpenBLAS at its default took 158 s, from a thread per hardware thread on
+  small matrices. `test_pool.py` tests the pool with explicit worker counts.
 
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a

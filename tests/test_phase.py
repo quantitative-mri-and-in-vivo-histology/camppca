@@ -6,7 +6,7 @@ import pytest
 
 from camppca import stabilize_phase as public
 from camppca.cli import main
-from camppca.phase import _dk_weights, _tukey, phase_scale, stabilize_phase
+from camppca.phase import FILTERS, _dk_weights, _tukey, phase_scale, stabilize_phase
 
 SHAPE = (48, 40, 3, 8)
 
@@ -144,3 +144,17 @@ def test_cli_writes_real_and_imaginary_parts(tmp_path):
     inside = magnitude > 20
     np.testing.assert_allclose(real[inside], magnitude[inside], rtol=5e-3)
     assert (tmp_path / "imag.nii.gz").exists()
+
+
+@pytest.mark.parametrize("filt", FILTERS)
+@pytest.mark.parametrize("mean_phase", [False, True])
+def test_the_pooled_result_is_the_serial_one(filt, mean_phase):
+    rng = np.random.default_rng(5)
+    magnitude = blob()[..., None] * np.ones(SHAPE[3]) + rng.random(SHAPE)
+    phase = phases(rng)
+    serial = stabilize_phase(magnitude, phase, filter=filt, mean_phase=mean_phase,
+                             imag=True, workers=1)
+    pooled = stabilize_phase(magnitude, phase, filter=filt, mean_phase=mean_phase,
+                             imag=True, workers=3)
+    for a, b in zip(serial, pooled, strict=True):
+        np.testing.assert_array_equal(a, b)

@@ -99,7 +99,7 @@ def _shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment):
 
 def signal_alignment(whitened: np.ndarray, evecs: np.ndarray, evals: np.ndarray,
                      C: np.ndarray, levels: np.ndarray | None = None,
-                     root: np.ndarray | None = None) -> np.ndarray:
+                     root: np.ndarray | None = None, r: int | None = None) -> np.ndarray:
     """How loud the noise is along each component, for "lr".
 
     Without ``levels``, for the center-voxel output: ``q_k = u_k^T C u_k / (tr C / n_vox)``.
@@ -113,10 +113,19 @@ def signal_alignment(whitened: np.ndarray, evecs: np.ndarray, evals: np.ndarray,
         C: (n_vox, n_vox) the patch correlation the patches were whitened with.
         levels: (B, n_vox) each patch voxel's level ``d``, or None.
         root: (n_vox, n_vox) ``C^(1/2)``; needed with ``levels``.
+        r: compute only the first ``r`` components, the most any patch keeps; the rest
+            get 1. Their weight is zero anyway, and at 7^3 and 297 volumes all of them
+            cost twice the whitening and the Gram together.
 
     Returns:
         (B, n_vols). Above 1 where the component lies where the noise is loud.
     """
+    n_vols = evecs.shape[2]
+    if r is not None and r < n_vols:
+        out = np.ones(evals.shape, np.result_type(evals.dtype, np.float32))
+        out[:, :r] = signal_alignment(whitened, evecs[:, :, :r], evals[:, :r], C, levels,
+                                      root)
+        return out
     n_vox = whitened.shape[1]
     U = np.einsum("bpn,bnk->bpk", whitened, evecs)
     U = U / np.sqrt(np.maximum(evals, 1e-12))[:, None, :]

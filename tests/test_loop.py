@@ -12,9 +12,8 @@ import pytest
 from scipy.ndimage import distance_transform_cdt
 
 from camppca import estimate_noise_model
-from camppca.denoiser import _effective_d
 from camppca.denoiser.camppca import sqrtm_psd
-from camppca.noise_model import loop
+from camppca.noise_model import _effective_d, loop
 
 HX = np.array([0.3, 1.0, 0.3])          # in-plane correlation along x
 HY = np.array([0.15, 1.0, 0.15])        # and along y; z left uncorrelated
@@ -56,7 +55,7 @@ def dataset():
 @pytest.fixture(scope="module")
 def model(dataset):
     dwi, bvals, mask = dataset
-    return estimate_noise_model(dwi, bvals, mask, patch=PATCH)
+    return estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
 
 
 def test_loop_keeps_the_injected_correlation_under_a_varying_level(model):
@@ -147,7 +146,7 @@ def test_a_mask_too_thin_for_the_patch_is_refused():
 def test_lags_the_patch_never_spans_keep_the_white_start(dataset):
     """A 3 x 5 patch has in-plane lag 4 but spans only |dx| <= 2."""
     dwi, bvals, mask = dataset
-    looped = estimate_noise_model(dwi, bvals, mask, patch=(3, 5, 3))
+    looped = estimate_noise_model(dwi, mask, bvals=bvals, patch=(3, 5, 3))
     lag = looped.lag
 
     assert lag == 4
@@ -172,7 +171,7 @@ def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
     """Lag-1 correlation 0.7 alone is indefinite on 5 voxels."""
     dwi, bvals, mask = dataset
 
-    def indefinite(S, factors, C, patch, lag, dzmax, start):
+    def indefinite(S, factors, C, patch, lag, dzmax, start, threads=1):
         rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
         rho[lag, lag, 0] = 1.0
         rho[lag - 1, lag, 0] = rho[lag + 1, lag, 0] = 0.7
@@ -180,12 +179,12 @@ def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
 
     monkeypatch.setattr(loop, "_fit_table", indefinite)
     with pytest.raises(ValueError, match="loop kernel is not usable"):
-        estimate_noise_model(dwi, bvals, mask, patch=PATCH)
+        estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
 
 
 def test_the_loop_fits_to_the_denoisers_settings(dataset, model):
     dwi, bvals, mask = dataset
-    other = estimate_noise_model(dwi, bvals, mask, patch=PATCH, algorithm="veraart",
+    other = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, algorithm="veraart",
                                  noise_field=False)
 
     assert (model.provenance["loop_algorithm"], model.provenance["loop_noise_field"]) == \
@@ -209,7 +208,7 @@ def test_denoising_with_other_settings_than_the_loop_fitted_warns(dataset, model
 def test_an_unknown_algo_is_refused_before_the_estimate(dataset):
     dwi, bvals, mask = dataset
     with pytest.raises(ValueError, match="algorithm must be"):
-        estimate_noise_model(dwi, bvals, mask, patch=PATCH, algorithm="exp3")
+        estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, algorithm="exp3")
 
 
 def test_the_fit_is_the_pinned_least_squares(dataset, model):
@@ -254,7 +253,7 @@ def test_every_level_round_fits_the_same_patches(dataset, monkeypatch):
     original = loop._sample_centers
     monkeypatch.setattr(loop, "_sample_centers",
                         lambda *a: drawn.append(original(*a)) or drawn[-1])
-    estimate_noise_model(dwi, bvals, mask, patch=PATCH, level_rounds=2, workers=1)
+    estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, level_rounds=2, workers=1)
     assert len(drawn) >= 2
     for later in drawn[1:]:
         for a, b in zip(drawn[0], later, strict=True):
@@ -265,7 +264,7 @@ def test_level_rounds_recover_the_injected_level_and_flatten_s(dataset, model):
     """Away from the mask edge. Edge patches reach outside the mask, where d is only the
     nearest mask voxel's level, so the rim is less exact."""
     dwi, bvals, mask = dataset
-    rounds = estimate_noise_model(dwi, bvals, mask, patch=PATCH, level_rounds=3)
+    rounds = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, level_rounds=3)
     interior = mask & (distance_transform_cdt(mask, metric="chessboard") > PATCH.max() // 2)
 
     assert rounds.provenance["level_converged"]
@@ -277,7 +276,7 @@ def test_level_rounds_recover_the_injected_level_and_flatten_s(dataset, model):
 
 def test_without_the_noise_field_d_is_one_and_no_level_round_runs(dataset):
     dwi, bvals, mask = dataset
-    flat = estimate_noise_model(dwi, bvals, mask, patch=PATCH, noise_field=False,
+    flat = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, noise_field=False,
                                 level_rounds=2)
 
     assert np.all(flat.d[mask] == 1)

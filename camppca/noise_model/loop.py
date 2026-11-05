@@ -67,12 +67,11 @@ from joblib import delayed
 from scipy.linalg import cho_factor, cho_solve, null_space
 from scipy.ndimage import binary_erosion
 
-from ..denoiser import _effective_d, _good_level
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
 from ..patch import patch_offsets
 from ..pool import resolve_workers, worker_pool
-from . import _build_C
+from . import _build_C, _effective_d, _good_level
 
 __all__ = ["loop_kernel"]
 
@@ -85,7 +84,7 @@ MAX_FIT_STEPS = 300
 PRODUCT_THREADS = 8     # threads for the bulk map's per-patch products
 PRODUCT_CHUNK = 64      # patches per thread task
 
-_product_pool = None
+_product_pools = {}     # one thread pool per thread count, kept: starting one costs time
 
 
 def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande",
@@ -153,7 +152,8 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
         converged = False
         for rounds in range(1, MAX_ROUNDS + 1):  # noqa: B007 - read after the loop
             S, factors = split(C)
-            rho = _fit_table(S, factors, C, patch, lag, dzmax, rho)
+            rho = _fit_table(S, factors, C, patch, lag, dzmax, rho,
+                             threads=min(PRODUCT_THREADS, workers))
             C = _build_C(rho, patch, lag)
             u = _sphericity_excess(C)
             change = abs(u - u_prev)
@@ -293,13 +293,15 @@ class _WhitenedBulk:
     their results, never copies.
 
     The per-patch products are many small GEMMs, which OpenBLAS runs on one thread each.
-    They run in chunks of :data:`PRODUCT_CHUNK` patches on :data:`PRODUCT_THREADS` Python
-    threads, each chunk writing its own columns. numpy releases the GIL around them, and
+    They run in chunks of :data:`PRODUCT_CHUNK` patches on up to :data:`PRODUCT_THREADS`
+    Python threads, never more than ``workers``, each chunk writing its own columns, so
+    the thread count cannot change the result. numpy releases the GIL around them, and
     at 8 threads OpenBLAS barely queues them (see :mod:`camppca.pool`). On the crop at
     7^3 the products took 14.5 ms on one thread, 5.6 ms on 4 and 5.3 ms on 8.
     """
 
-    def __init__(self, factors, dtype=np.float32):
+    def __init__(self, factors, threads=PRODUCT_THREADS, dtype=np.float32):
+        self.threads = int(threads)
         self.n_b = factors.n_b
         self.groups = [(off, k, np.ascontiguousarray(Ug, dtype),
                         np.ascontiguousarray(Ug.transpose(0, 2, 1), dtype))
@@ -320,15 +322,19 @@ class _WhitenedBulk:
         np.matmul(Ug, np.matmul(Ugt, y), out=z)
 
     def __call__(self, X):
-        global _product_pool
-        if _product_pool is None:
-            _product_pool = ThreadPoolExecutor(PRODUCT_THREADS)
         Y = X @ self.U_cat
-        list(_product_pool.map(partial(self._products, Y), self.chunks))
+        products = partial(self._products, Y)
+        if self.threads > 1:                     # each chunk writes its own columns
+            if self.threads not in _product_pools:
+                _product_pools[self.threads] = ThreadPoolExecutor(self.threads)
+            list(_product_pools[self.threads].map(products, self.chunks))
+        else:
+            for chunk in self.chunks:
+                products(chunk)
         return X - self.Um @ X - X @ self.Um + (self.Z @ self.U_cat.T) / self.n_b
 
 
-def _fit_table(S, factors, C, patch, lag, dzmax, start):
+def _fit_table(S, factors, C, patch, lag, dzmax, start, threads=PRODUCT_THREADS):
     """The stationary table whose pooled bulk best fits ``S``, far lags pinned.
 
     One value per lag class, least squares in whitened units::
@@ -353,7 +359,7 @@ def _fit_table(S, factors, C, patch, lag, dzmax, start):
     """
     whitener64 = sqrtm_psd(C, -0.5)
     whitener = whitener64.astype(np.float32)
-    op = _WhitenedBulk(factors)
+    op = _WhitenedBulk(factors, threads)
     cls, lags = _lag_classes(patch)
     n_cls, flat = len(lags), cls.ravel()
     reach = np.abs(lags).max(0)

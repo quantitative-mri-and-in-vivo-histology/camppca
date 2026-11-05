@@ -51,12 +51,14 @@ def _physical_cores():
 
 
 def default_workers() -> int:
-    """Physical cores this process may run on, at most its CPU quota. 32 workers on 16
-    cores were 4% faster.
+    """``CAMPPCA_WORKERS`` if set, else the physical cores this process may run on, at
+    most its CPU quota. 32 workers on 16 cores were 4% faster.
 
     joblib's count reads the container's CPU quota, so a job limited to 4 CPUs on a
     32-core host starts 4 workers, not 16 throttled ones.
     """
+    if os.environ.get("CAMPPCA_WORKERS"):
+        return max(1, int(os.environ["CAMPPCA_WORKERS"]))
     return max(1, min(_physical_cores(), joblib.cpu_count()))
 
 

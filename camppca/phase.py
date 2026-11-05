@@ -41,8 +41,13 @@ References:
 
 from __future__ import annotations
 
+from functools import partial
+
 import numpy as np
+from joblib import delayed
 from scipy import ndimage
+
+from .pool import resolve_workers, worker_pool
 
 __all__ = ["FILTERS", "stabilize_phase", "phase_scale"]
 
@@ -88,7 +93,7 @@ def phase_scale(phase) -> float:
 
 
 def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
-                    slice_axis=2, imag=False):
+                    slice_axis=2, imag=False, workers=None):
     """Rotate complex 4D data onto the real axis and return the real part.
 
     Args:
@@ -101,6 +106,8 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
         mean_phase: first remove the phase of the complex mean over all volumes.
         slice_axis: the spatial axis across slices. The filters work in the other two.
         imag: also return the imaginary part, which should hold noise only.
+        workers: CPU processes the volumes are split over, see :mod:`camppca.pool`. The
+            volumes are independent, so the result does not depend on it.
 
     Returns:
         (X, Y, Z, N) float32 real part, or ``(real, imag)``.
@@ -115,39 +122,78 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
     if magnitude.ndim != 4 or magnitude.shape != phase.shape:
         raise ValueError(f"magnitude and phase must be 4D and alike, got {magnitude.shape} "
                          f"and {phase.shape}")
-    plane = tuple(a for a in range(3) if a != slice_axis)
     n_vols = magnitude.shape[3]
-    scale = phase_scale(phase)             # per volume below: no scaled copy of the phase
+    scale = phase_scale(phase)             # per volume: no scaled copy of the phase
+    workers = resolve_workers(workers)
 
-    def volume(n):
-        return (magnitude[..., n] * np.exp(1j * scale * phase[..., n])).astype(np.complex64)
-
-    fixed = np.ones(magnitude.shape[:3], np.complex64)
+    fixed = None
     if mean_phase:
         total = np.zeros(magnitude.shape[:3], np.complex128)
         for n in range(n_vols):
-            total += volume(n)
+            total += _volume(magnitude, phase, n, scale)
         fixed = np.exp(-1j * np.angle(total)).astype(np.complex64)
-
-    if filter == "tukey":
-        window = np.ones(magnitude.shape[:3], np.float32)
-        for a in plane:
-            window = window * _tukey(magnitude.shape[a], fwhm).reshape(
-                [-1 if b == a else 1 for b in range(3)]).astype(np.float32)
-    else:
-        weights = np.expand_dims(_dk_weights(), slice_axis)
 
     real = np.empty(magnitude.shape, np.float32)
     im = np.empty(magnitude.shape, np.float32) if imag else None
-    for n in range(n_vols):
-        z = volume(n) * fixed
+
+    def write(chunk, out):
+        real[..., chunk] = out[0]
+        if imag:
+            im[..., chunk] = out[1]
+
+    task = partial(_rotate_volumes, scale=scale, filter=filter, fwhm=fwhm,
+                   slice_axis=slice_axis, imag=imag)
+    chunks = np.array_split(np.arange(n_vols), min(n_vols, 4 * workers))
+    if workers == 1:
+        for chunk in chunks:
+            write(chunk, task(magnitude, phase, fixed, chunk))
+    else:
+        with worker_pool(workers, return_as="generator_unordered") as parallel:
+            for chunk, out in parallel(delayed(_chunk_task)(task, chunk, magnitude, phase,
+                                                            fixed) for chunk in chunks):
+                write(chunk, out)
+    return (real, im) if imag else real
+
+
+def _volume(magnitude, phase, n, scale):
+    """Volume ``n`` as complex64."""
+    return (magnitude[..., n] * np.exp(1j * scale * phase[..., n])).astype(np.complex64)
+
+
+def _chunk_task(task, chunk, magnitude, phase, fixed):
+    return chunk, task(magnitude, phase, fixed, chunk)
+
+
+def _rotate_volumes(magnitude, phase, fixed, volumes, scale, filter, fwhm, slice_axis,
+                    imag):
+    """Stabilize the phase of some volumes. Returns their real and imaginary parts,
+    (X, Y, Z, len(volumes)) each, the imaginary part None unless ``imag``."""
+    plane = tuple(a for a in range(3) if a != slice_axis)
+    shape = magnitude.shape[:3]
+    if filter == "tukey":
+        window = np.ones(shape, np.float32)
+        for a in plane:
+            window = window * _tukey(shape[a], fwhm).reshape(
+                [-1 if b == a else 1 for b in range(3)]).astype(np.float32)
+    else:
+        weights = np.expand_dims(_dk_weights(), slice_axis)
+    real = np.empty(shape + (len(volumes),), np.float32)
+    im = np.empty_like(real) if imag else None
+    for k, n in enumerate(volumes):
+        z = _volume(magnitude, phase, n, scale)
+        if fixed is not None:
+            z *= fixed
         if filter == "tukey":
             smooth = np.fft.ifftn(np.fft.fftn(z, axes=plane) * window, axes=plane)
         else:
             smooth = (ndimage.convolve(z.real, weights, mode="constant")
                       + 1j * ndimage.convolve(z.imag, weights, mode="constant"))
-        z = z * np.exp(-1j * np.angle(smooth)).astype(np.complex64)
-        real[..., n] = z.real
+        size = np.abs(smooth)
+        # The unit phasor of the smooth phase, conjugated: exp(-i angle) without the
+        # angle. Where the estimate is zero, outside the head, nothing is turned.
+        turn = np.where(size > 0, smooth.conj() / np.where(size > 0, size, 1), 1)
+        z *= turn.astype(np.complex64)
+        real[..., k] = z.real
         if imag:
-            im[..., n] = z.imag
-    return (real, im) if imag else real
+            im[..., k] = z.imag
+    return real, im

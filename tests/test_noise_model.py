@@ -4,8 +4,7 @@ import numpy as np
 import pytest
 
 from camppca import denoise_mppca, denoise_with_noise_model
-from camppca.denoiser import _effective_d
-from camppca.noise_model import NoiseModel, _pool_level, estimate_noise_model
+from camppca.noise_model import NoiseModel, _effective_d, _pool_level, estimate_noise_model
 from camppca.patch import patch_offsets
 
 
@@ -96,7 +95,7 @@ def test_estimate_serves_a_one_slice_patch_on_a_thin_volume():
     dwi, bvals, _, _ = _synthetic(np.random.default_rng(5), shape=(40, 40, 3))
     mask = np.zeros(dwi.shape[:3], bool)
     mask[4:36, 4:36, :] = True
-    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 1))
+    model = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 1))
 
     assert model.rho.shape == (9, 9, 1)
     assert np.isfinite(model.rho).all()
@@ -108,12 +107,12 @@ def test_estimate_refuses_a_patch_larger_than_the_volume():
     mask = np.zeros(dwi.shape[:3], bool)
     mask[3:17, 3:17, :] = True
     with pytest.raises(ValueError, match="larger than the image"):
-        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 5))
+        estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 5))
 
 
 def test_estimate_covers_the_lags_the_patch_needs():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(0))
-    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+    model = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
 
     assert model.rho.shape == (9, 9, 3), "through-slice reach follows the patch depth"
     assert model.lag == 4
@@ -122,7 +121,7 @@ def test_estimate_covers_the_lags_the_patch_needs():
 
 def test_d_is_the_standard_mppca_level_pooled():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(1))
-    model = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+    model = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
     standard = denoise_mppca(dwi, mask, patch=(5, 5, 3)).sigma_hat
     pooled = _pool_level(np.where(mask, standard, 0.0).astype(np.float64), mask, 3)
 
@@ -137,8 +136,8 @@ def test_d_is_the_standard_mppca_level_pooled():
 @pytest.mark.parametrize("level_rounds", [0, 1])
 def test_estimate_is_deterministic(level_rounds):
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(2))
-    a = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), level_rounds=level_rounds)
-    b = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), level_rounds=level_rounds)
+    a = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3), level_rounds=level_rounds)
+    b = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3), level_rounds=level_rounds)
     assert np.array_equal(a.rho, b.rho)
     assert np.array_equal(a.d, b.d)
     assert a.provenance == b.provenance
@@ -147,8 +146,8 @@ def test_estimate_is_deterministic(level_rounds):
 def test_bvals_do_not_enter_the_estimate_when_the_mask_is_given():
     """They only pick the b0s the default mask is drawn from."""
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(3))
-    with_bvals = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
-    without = estimate_noise_model(dwi, None, mask, patch=(5, 5, 3))
+    with_bvals = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
+    without = estimate_noise_model(dwi, mask, bvals=None, patch=(5, 5, 3))
     assert np.array_equal(with_bvals.rho, without.rho)
     assert np.array_equal(with_bvals.d, without.d)
 
@@ -156,19 +155,19 @@ def test_bvals_do_not_enter_the_estimate_when_the_mask_is_given():
 def test_estimate_rejects_mismatched_bvals():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(4))
     with pytest.raises(ValueError, match="bvals has"):
-        estimate_noise_model(dwi, bvals[:-1], mask, patch=(5, 5, 3))
+        estimate_noise_model(dwi, mask, bvals=bvals[:-1], patch=(5, 5, 3))
 
 
 def test_fewer_volumes_than_the_mp_fit_trusts_warns():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(0), n_dirs=17)   # 40 volumes
     with pytest.warns(RuntimeWarning, match="fewer than 50"):
-        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+        estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
 
 
 def test_a_negative_level_round_count_is_refused():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(0))
     with pytest.raises(ValueError, match="level_rounds must be"):
-        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), level_rounds=-1)
+        estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3), level_rounds=-1)
 
 
 def test_the_auto_mask_is_the_whole_brain_not_the_eroded_interior():
@@ -189,7 +188,7 @@ def test_the_auto_mask_is_the_whole_brain_not_the_eroded_interior():
     dwi[brain] = (signal * 20 + 400)[brain]
     dwi += (rng.standard_normal(shape + (n_vols,)) * 8).astype(np.float32)
 
-    model = estimate_noise_model(dwi, bvals, None, patch=(5, 5, 3))
+    model = estimate_noise_model(dwi, None, bvals=bvals, patch=(5, 5, 3))
     covered = model.mask.sum() / brain.sum()
     assert covered > 0.95, f"the mask must cover the brain, got {covered:.0%}"
 
@@ -277,8 +276,8 @@ def test_zero_filled_slices_inside_the_mask_do_not_break_the_estimate():
 
 def test_estimate_pools_d():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(5))
-    raw = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), pool=1)
-    pooled = estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+    raw = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3), pool=1)
+    pooled = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
 
     assert pooled.provenance["pool"] == 3, "pooling is on by default"
     assert np.median(pooled.d[mask]) == pytest.approx(np.median(raw.d[mask]), rel=0.02)
@@ -290,4 +289,4 @@ def test_estimate_pools_d():
 def test_estimate_rejects_a_pool_smaller_than_one_voxel():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(6))
     with pytest.raises(ValueError, match="pool must be"):
-        estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3), pool=0)
+        estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3), pool=0)

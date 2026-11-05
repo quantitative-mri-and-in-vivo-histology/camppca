@@ -111,8 +111,8 @@ def _parser():
     s = sub.add_parser("phase", help="rotate complex data onto the real axis; the real "
                                      "part then denoises like a magnitude image")
     s.add_argument("magnitude", help="4D magnitude image")
-    s.add_argument("phase", help="4D phase image, in radians or in any unit whose range is one full "
-                        "turn, as scanners store it")
+    s.add_argument("phase", help="4D phase image, in radians or in any unit whose range "
+                                 "is one full turn, as scanners store it")
     s.add_argument("output", help="4D real part")
     s.add_argument("--filter", choices=FILTERS, default="dk",
                    help="smooth phase estimate: dk, Sprenger et al.'s decorrelated kernel "
@@ -124,6 +124,9 @@ def _parser():
                    help="first remove the phase of the mean over all volumes, as in EDDEN")
     s.add_argument("--imag", metavar="PATH",
                    help="also write the imaginary part, which should hold noise only")
+    s.add_argument("--workers", type=int, default=None, metavar="N",
+                   help="CPU processes to split the volumes over (default: one per "
+                        "physical core; 1 runs in one process)")
     s.add_argument("-q", "--quiet", action="store_true")
     return p
 
@@ -191,7 +194,7 @@ def _phase(args, say):
         f"slices along axis {slice_axis}")
     out = stabilize_phase(magnitude, phase, filter=args.filter, fwhm=args.fwhm,
                           mean_phase=args.mean_phase, slice_axis=slice_axis,
-                          imag=bool(args.imag))
+                          imag=bool(args.imag), workers=args.workers)
     real, imag = out if args.imag else (out, None)
     del magnitude, phase
     io.save_like(args.output, real, affine, header)

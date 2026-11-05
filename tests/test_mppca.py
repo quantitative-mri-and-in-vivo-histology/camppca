@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from camppca import denoise_mppca
+from camppca.denoiser.camppca import denoise_whitened
 
 SHAPE = (10, 10, 10)
 N_VOLS = 36
@@ -139,11 +140,11 @@ def test_tiling_does_not_change_the_answer():
     dwi = (rng.standard_normal(SHAPE + (N_VOLS,)) * 10.0).astype(np.float32)
     mask = interior_mask()
 
-    one_tile = denoise_mppca(dwi, mask, patch=PATCH, tile=10_000)
-    many_tiles = denoise_mppca(dwi, mask, patch=PATCH, tile=7)
+    one_tile = denoise_whitened(dwi, mask, None, patch=PATCH, tile=10_000, workers=1)
+    many_tiles = denoise_whitened(dwi, mask, None, patch=PATCH, tile=7, workers=1)
 
-    np.testing.assert_array_equal(one_tile.denoised, many_tiles.denoised)
-    np.testing.assert_array_equal(one_tile.rank, many_tiles.rank)
+    np.testing.assert_array_equal(one_tile[0], many_tiles[0])
+    np.testing.assert_array_equal(one_tile[2], many_tiles[2])
 
 
 def test_the_input_is_not_modified():

@@ -40,7 +40,7 @@ def test_mppca_defaults_to_the_rule():
 
 def test_denoising_with_a_model_defaults_to_the_model_patch():
     """The loop fitted rho to that patch's split, so the denoise uses it too. A model that
-    records no patch gets the rule."""
+    names no patch in ``fitted_to`` gets the rule. Provenance is a record, never read."""
     mask = np.zeros((10, 10, 8), bool)
     mask[4:6, 4:6, 3:5] = True
     dwi = _noise(mask.shape, 130)                   # the rule would say 7 x 7 x 7
@@ -48,13 +48,13 @@ def test_denoising_with_a_model_defaults_to_the_model_patch():
     rho[3, 3, 0] = 1.0
     d = np.ones(mask.shape, np.float32)
 
-    fitted = NoiseModel(rho=rho, d=d, mask=mask, lag=3, provenance={"patch": (3, 3, 3)})
+    fitted = NoiseModel(rho=rho, d=d, mask=mask, lag=3, fitted_to={"patch": (3, 3, 3)})
     got = denoise_with_noise_model(dwi, fitted, workers=1)
     assert got.provenance["patch"] == (3, 3, 3)
 
     wide = np.zeros((13, 13, 7))
     wide[6, 6, 0] = 1.0
-    bare = NoiseModel(rho=wide, d=d, mask=mask, lag=6)
+    bare = NoiseModel(rho=wide, d=d, mask=mask, lag=6, provenance={"patch": (3, 3, 3)})
     got = denoise_with_noise_model(dwi, bare, workers=1)
     assert got.provenance["patch"] == (7, 7, 7)
 
