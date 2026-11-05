@@ -26,6 +26,24 @@ def test_load_dwi_matches_nibabel(tmp_path, suffix, scaled):
     np.testing.assert_array_equal(affine, nib.load(path).affine)
 
 
+@pytest.mark.parametrize("scaled", [False, True])
+def test_a_complex_image_keeps_its_imaginary_part(tmp_path, scaled):
+    rng = np.random.default_rng(1)
+    data = (rng.standard_normal((6, 5, 4, 7))
+            + 1j * rng.standard_normal((6, 5, 4, 7))).astype(np.complex64)
+    img = nib.Nifti1Image(data, np.eye(4))
+    if scaled:
+        img.header.set_slope_inter(2.0, 0.0)
+    path = tmp_path / "dwi.nii"
+    nib.save(img, path)
+
+    loaded, _, _ = io.load_dwi(path)
+
+    assert loaded.dtype == np.complex64
+    np.testing.assert_allclose(loaded, np.asanyarray(nib.load(path).dataobj), rtol=1e-6)
+    assert np.abs(loaded.imag).max() > 1
+
+
 def test_a_3d_image_is_refused(tmp_path):
     path = tmp_path / "vol.nii"
     nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.float32), np.eye(4)), path)

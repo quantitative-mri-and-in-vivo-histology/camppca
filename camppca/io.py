@@ -54,7 +54,10 @@ def _read_volumes(img, dtype):
             if len(buf) != nbytes:
                 return None                        # truncated: let nibabel raise
             vol = np.frombuffer(buf, proxy.dtype).reshape(shape[:3], order="F")
-            out[..., i] = vol.astype(np.float64) * proxy.slope + proxy.inter if scaled else vol
+            # result_type keeps complex data complex: a float64 cast would drop the
+            # imaginary part.
+            wide = np.result_type(vol.dtype, np.float64)
+            out[..., i] = vol.astype(wide) * proxy.slope + proxy.inter if scaled else vol
     return out
 
 
