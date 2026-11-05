@@ -54,7 +54,7 @@ def test_the_dk_kernel_is_symmetric_and_avoids_the_centre():
 def test_without_noise_the_real_part_is_the_magnitude(filt):
     rng = np.random.default_rng(0)
     magnitude = blob()[..., None] * np.ones(SHAPE[3])
-    real, imag = stabilize_phase(magnitude, phases(rng), filter=filt, imag=True)
+    real, imag = stabilize_phase(magnitude, phases(rng), filter=filt, mean_phase=True, imag=True)
     inside = magnitude > 20
     np.testing.assert_allclose(real[inside], magnitude[inside], rtol=2e-3)
     assert np.abs(imag[inside] / magnitude[inside]).max() < 0.1   # under 0.1 rad off
@@ -111,7 +111,7 @@ def test_cli_writes_real_and_imaginary_parts(tmp_path):
     nib.save(nib.Nifti1Image(magnitude.astype(np.float32), np.eye(4)), tmp_path / "mag.nii.gz")
 
     rc = main(["phase", str(tmp_path / "mag.nii.gz"), str(tmp_path / "phase.nii.gz"),
-               str(tmp_path / "real.nii.gz"), "--imag", str(tmp_path / "imag.nii.gz"), "-q"])
+               str(tmp_path / "real.nii.gz"), "--imag", str(tmp_path / "imag.nii.gz"), "--mean-phase", "-q"])
     assert rc == 0
     real = np.asanyarray(nib.load(tmp_path / "real.nii.gz").dataobj)
     assert real.shape == SHAPE and real.dtype == np.float32
