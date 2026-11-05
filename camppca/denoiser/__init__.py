@@ -63,7 +63,7 @@ def _effective_d(d, mask):
 
 
 def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
-                             algo="cordero-grande", tile=TILE, shrink="hard", workers=None,
+                             algorithm="cordero-grande", tile=TILE, shrink="hard", workers=None,
                              aggregate="centre", stride=1, mask_only=False):
     """Denoise in the whitened domain, given a noise model.
 
@@ -103,10 +103,10 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
         raise ValueError(f"dwi spatial shape {dwi.shape[:3]} != model mask "
                          f"{model.mask.shape}")
 
-    fitted = (model.provenance.get("loop_algo"), model.provenance.get("loop_noise_field"))
-    if "loop_algo" in model.provenance and fitted != (algo, bool(noise_field)):
-        warnings.warn(f"the loop kernel was fitted with algo={fitted[0]!r}, "
-                      f"noise_field={fitted[1]}, but this denoise uses algo={algo!r}, "
+    fitted = (model.provenance.get("loop_algorithm"), model.provenance.get("loop_noise_field"))
+    if "loop_algorithm" in model.provenance and fitted != (algorithm, bool(noise_field)):
+        warnings.warn(f"the loop kernel was fitted with algorithm={fitted[0]!r}, "
+                      f"noise_field={fitted[1]}, but this denoise uses algorithm={algorithm!r}, "
                       f"noise_field={bool(noise_field)}. Re-estimate with the same settings.",
                       RuntimeWarning, stacklevel=2)
     C = model.patch_correlation(patch)
@@ -114,7 +114,7 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
 
     region = model.mask if mask_only else np.ones(model.mask.shape, bool)
     denoised, sigma_hat, rank = denoise_whitened(
-        dwi, region, C, patch=tuple(int(v) for v in patch), algo=algo, tile=tile,
+        dwi, region, C, patch=tuple(int(v) for v in patch), algorithm=algorithm, tile=tile,
         d_field=d_eff, shrink=shrink, workers=workers, aggregate=aggregate, stride=stride)
 
     if d_eff is not None:
@@ -124,7 +124,7 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
 
     where = "centre-voxel only" if aggregate == "centre" else \
         f"mean over overlapping patches, stride {stride}"
-    prov = dict(method="camppca", patch=tuple(int(v) for v in patch), algo=algo,
+    prov = dict(method="camppca", patch=tuple(int(v) for v in patch), algorithm=algorithm,
                 noise_field=bool(noise_field), shrink=shrink, aggregate=aggregate,
                 stride=stride, mask_only=bool(mask_only),
                 rule=f"Cordero-Grande/Exp2, {RULES[shrink]}, {where}",
@@ -134,7 +134,7 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
 
 
 def denoise_camppca(dwi, bvals=None, mask=None, patch=None, noise_field=True,
-                    algo="cordero-grande", tile=TILE, shrink="hard", workers=None,
+                    algorithm="cordero-grande", tile=TILE, shrink="hard", workers=None,
                     aggregate="centre", stride=1, mask_only=False, **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
@@ -145,10 +145,10 @@ def denoise_camppca(dwi, bvals=None, mask=None, patch=None, noise_field=True,
     """
     check_shrink(shrink)                   # before the estimate, which can take a while
     check_aggregate(aggregate, stride)
-    model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch, algo=algo,
+    model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch, algorithm=algorithm,
                                  noise_field=noise_field, workers=workers,
                                  **estimate_kwargs)
     return denoise_with_noise_model(dwi, model, patch=patch, noise_field=noise_field,
-                                    algo=algo, tile=tile, shrink=shrink, workers=workers,
+                                    algorithm=algorithm, tile=tile, shrink=shrink, workers=workers,
                                     aggregate=aggregate, stride=stride,
                                     mask_only=mask_only)

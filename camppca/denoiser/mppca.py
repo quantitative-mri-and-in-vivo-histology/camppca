@@ -94,7 +94,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
                 f"mask shape {mask.shape} does not match dwi spatial shape {dwi.shape[:3]}")
 
     denoised, sigma_hat, rank = denoise_whitened(
-        dwi, mask, None, patch=patch, algo=algorithm, tile=tile, shrink=tile_shrink,
+        dwi, mask, None, patch=patch, algorithm=algorithm, tile=tile, shrink=tile_shrink,
         workers=workers, aggregate=aggregate, stride=stride)
     where = "centre-voxel only" if aggregate == "centre" else \
         f"mean over overlapping patches, stride {stride}"

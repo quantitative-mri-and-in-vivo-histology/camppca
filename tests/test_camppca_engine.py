@@ -32,14 +32,14 @@ def patch_at(dwi, voxel, patch=PATCH):
     return dwi[box].reshape(patch_size(patch), dwi.shape[3]).astype(np.float64)
 
 
-def literal_centre_voxel(Y, C, algo="cordero-grande"):
+def literal_centre_voxel(Y, C, algorithm="cordero-grande"):
     """Whiten the patch, cut, unwhiten the WHOLE patch, then read the centre row out."""
     n_vox, n_vols = Y.shape
     whitened = sqrtm_psd(C, -0.5) @ Y
     evals, evecs = np.linalg.eigh(whitened.T @ whitened)
     evecs = evecs[:, ::-1]
     rank, _ = mp_threshold(np.maximum(evals[::-1], 0.0)[None],
-                           min(n_vox, n_vols), max(n_vox, n_vols), algo)
+                           min(n_vox, n_vols), max(n_vox, n_vols), algorithm)
     kept = evecs[:, :int(np.asarray(rank)[0])]
     return (sqrtm_psd(C, 0.5) @ (whitened @ kept @ kept.T))[n_vox // 2]
 
