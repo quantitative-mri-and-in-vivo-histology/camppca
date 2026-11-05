@@ -211,10 +211,6 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     dwi = zero_nonfinite(dwi)[0]
     n_vols = dwi.shape[3]
     patch = resolve_patch(patch, dwi.shape)
-    if np.any(patch > np.asarray(dwi.shape[:3])):
-        # The denoiser wrap-pads, so a patch deeper than the volume holds one slice twice.
-        raise ValueError(f"patch {tuple(int(v) for v in patch)} is larger than the "
-                         f"volume {dwi.shape[:3]}")
     lag = required_lag(patch)
     dzmax = int(patch[2]) - 1
     from ..denoiser.mp_threshold import ALGORITHMS  # here: denoiser imports this package

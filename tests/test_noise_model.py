@@ -107,7 +107,7 @@ def test_estimate_refuses_a_patch_larger_than_the_volume():
     dwi, bvals, _, _ = _synthetic(np.random.default_rng(6), shape=(20, 20, 3))
     mask = np.zeros(dwi.shape[:3], bool)
     mask[3:17, 3:17, :] = True
-    with pytest.raises(ValueError, match="larger than the volume"):
+    with pytest.raises(ValueError, match="larger than the image"):
         estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 5))
 
 
