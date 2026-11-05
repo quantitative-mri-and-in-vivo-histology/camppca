@@ -1,7 +1,7 @@
 """The covariance-aware engine, checked against paths we write out longhand.
 
 The engine never forms the whitened patch's full reconstruction. It carries only the
-centre row of ``C^(1/2)`` and projects that. These tests write the long way out in plain
+center row of ``C^(1/2)`` and projects that. These tests write the long way out in plain
 numpy float64 and demand the same answer.
 """
 
@@ -32,8 +32,8 @@ def patch_at(dwi, voxel, patch=PATCH):
     return dwi[box].reshape(patch_size(patch), dwi.shape[3]).astype(np.float64)
 
 
-def literal_centre_voxel(Y, C, algorithm="cordero-grande"):
-    """Whiten the patch, cut, unwhiten the WHOLE patch, then read the centre row out."""
+def literal_center_voxel(Y, C, algorithm="cordero-grande"):
+    """Whiten the patch, cut, unwhiten the WHOLE patch, then read the center row out."""
     n_vox, n_vols = Y.shape
     whitened = sqrtm_psd(C, -0.5) @ Y
     evals, evecs = np.linalg.eigh(whitened.T @ whitened)
@@ -67,7 +67,7 @@ def test_an_identity_whitener_reproduces_standard_mppca(dataset):
     np.testing.assert_array_equal(rank[mask], plain.rank[mask])
 
 
-def test_the_centre_row_shortcut_matches_unwhitening_the_whole_patch(dataset):
+def test_the_center_row_shortcut_matches_unwhitening_the_whole_patch(dataset):
     """The engine's whole reason for being cheap, checked against the long way."""
     dwi, _ = dataset
     C = separable_correlation(PATCH)
@@ -76,7 +76,7 @@ def test_the_centre_row_shortcut_matches_unwhitening_the_whole_patch(dataset):
     mask[voxel] = True
 
     denoised, _, _ = denoise_whitened(dwi, mask, C, patch=PATCH)
-    expected = literal_centre_voxel(patch_at(dwi, voxel), C)
+    expected = literal_center_voxel(patch_at(dwi, voxel), C)
 
     np.testing.assert_allclose(denoised[voxel], expected, rtol=1e-4,
                                atol=1e-4 * np.abs(expected).max())
@@ -93,7 +93,7 @@ def test_every_masked_voxel_matches_the_long_way(dataset):
 
     worst = 0.0
     for voxel in zip(*np.where(mask), strict=True):
-        expected = literal_centre_voxel(patch_at(dwi, voxel), C)
+        expected = literal_center_voxel(patch_at(dwi, voxel), C)
         worst = max(worst, np.abs(denoised[voxel] - expected).max() / np.abs(expected).max())
     assert worst < 1e-4, f"worst relative error {worst:.2e}"
 
@@ -127,7 +127,7 @@ def test_a_constant_level_field_changes_nothing(dataset):
     assert np.abs(with_flat[0][mask] - without[0][mask]).max() < 1e-5 * scale
 
 
-def test_a_varying_level_field_is_undone_at_the_centre_voxel(dataset):
+def test_a_varying_level_field_is_undone_at_the_center_voxel(dataset):
     """Scaling one voxel's noise up and the data with it must give back the same signal."""
     dwi, _ = dataset
     C = separable_correlation(PATCH)

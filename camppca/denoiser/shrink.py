@@ -27,8 +27,8 @@ with ``s_k^2 = 1 - c_k^2``, ``mu_tau_k = c_k^2 / (q_k - s_k^2)`` and
 whitened patch. Where ``q_k <= s_k^2`` there is no valid ``tau_k`` and "lr" falls back to
 "gd". The weight on the component is ``t_k / sw_k``, and 0 below the edge.
 
-With the centre voxel as output, ``q_k`` measures noise loudness with ``C`` alone. The
-loss that matters is the error at the centre voxel, whose level ``d_c`` scales every
+With the center voxel as output, ``q_k`` measures noise loudness with ``C`` alone. The
+loss that matters is the error at the center voxel, whose level ``d_c`` scales every
 component equally and so drops out of the weights; the other voxels' levels never enter.
 With patch averaging every voxel of a patch reaches the output, and the loss is Leeb &
 Romanov's own, the error over the whole patch in data units. The way back is then
@@ -102,7 +102,7 @@ def signal_alignment(whitened: np.ndarray, evecs: np.ndarray, evals: np.ndarray,
                      root: np.ndarray | None = None) -> np.ndarray:
     """How loud the noise is along each component, for "lr".
 
-    Without ``levels``, for the centre-voxel output: ``q_k = u_k^T C u_k / (tr C / n_vox)``.
+    Without ``levels``, for the center-voxel output: ``q_k = u_k^T C u_k / (tr C / n_vox)``.
     With them, for the whole patch: ``q_k = |D C^(1/2) u_k|^2 / mean(d^2 diag C)``, with
     ``D`` the patch's own levels.
 

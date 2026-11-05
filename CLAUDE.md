@@ -105,7 +105,7 @@ The two halves meet at **the noise model** (`rho` + `d`). A follow-up paper esti
 must never assume how `rho` was estimated.
 
 There is one engine. `denoise_mppca` calls `denoise_whitened` with `C=None` and no level
-field, which skips the whitening multiply and takes the centre row from the patch. Its
+field, which skips the whitening multiply and takes the center row from the patch. Its
 output was bit for bit the same as the old separate copy in 228 cases (2026-11-05). Every
 split goes through `_whiten_split`: both denoisers, the level pass (eigenvalues only) and
 the loop.
@@ -230,17 +230,17 @@ Breaking any of these corrupts results without an error:
   the two orders must agree.
 - `rho` is a correlation (unit at zero lag): **pattern only**. The absolute level comes
   from the per-patch MP fit. Only *ratios* of `d` matter.
-- **`d` is defined up to scale.** Rows are divided by it and the centre voxel multiplied
+- **`d` is defined up to scale.** Rows are divided by it and the center voxel multiplied
   back, so a constant cancels in the denoised image, the rank and σ̂ in data units (×0.25
   is bit-identical; a generic factor flips near-tied MP cuts by float32 rounding).
   Outside the mask `d` is the level of the nearest mask voxel.
 - **At the image edge the box moves inward** until it fits, as in dwidenoise
-  (`gather.box_centres`), and the voxel's own row is written back. `C` depends only on
+  (`gather.box_centers`), and the voxel's own row is written back. `C` depends only on
   offsets within the box, so it is unchanged. Unwhitening uses that row of `C^(1/2)`,
-  and the centre-voxel "lr" weight reads `C` alone, so it needs nothing. In mean mode
+  and the center-voxel "lr" weight reads `C` alone, so it needs nothing. In mean mode
   each distinct box counts once. Until 2026-11-05 the box wrapped to the opposite face,
   which mixed in voxels that are not neighbours: on a test volume an edge voxel came out
-  51 to 421 off. Interior voxels were bit for bit unchanged in centre mode.
+  51 to 421 off. Interior voxels were bit for bit unchanged in center mode.
 - **One global `rho`.** There is no per-shell pattern and no per-shell level. `rho` is fit
   once across every volume.
 - **The default patch is dwidenoise's rule** (`patch.default_patch`, MRtrix 3.0.4): the
@@ -248,10 +248,10 @@ Breaking any of these corrupts results without an error:
   that fits the image. MRtrix clips to the image size, even or not. `patch=None` means
   this everywhere, except `denoise_with_noise_model`, which takes the patch the model was
   estimated for: the loop fitted `rho` to that patch's split.
-- **Centre-voxel by default** — no overlap averaging. Intentional; matches the MP theory
+- **Center-voxel by default** — no overlap averaging. Intentional; matches the MP theory
   the noise estimate rests on. `aggregate="mean"` (with `stride`) averages the overlapping
   patch reconstructions as an option (`denoiser/aggregate.py`): plain mean, no weights,
-  only patches centred in the region denoised, nothing written outside it, `sigma_hat`
+  only patches centered in the region denoised, nothing written outside it, `sigma_hat`
   the root of the mean `sigma_hat^2`, `rank` the mean rank (float32). The whole rebuilt patch is
   `X V diag(w) V^T` for both denoisers: camppca's `C^(1/2) C^(-1/2) = I`, so the
   whole-patch unwhitening needs no `C^(1/2)` product.
@@ -264,8 +264,8 @@ Breaking any of these corrupts results without an error:
   retained component by a continuous function of `sigma_hat` — and `sigma_hat` is fragile
   at small N (see Exp2 below). `"gd"` also optimizes in the WHITENED metric while the
   output lands in data units. `"lr"` (Leeb–Romanov) corrects for that, but its guarantee
-  is for the whole patch at large sizes, and camppca keeps only the centre voxel of a
-  small patch. There its noise loudness `q_k` uses `C` alone, since the centre level
+  is for the whole patch at large sizes, and camppca keeps only the center voxel of a
+  small patch. There its noise loudness `q_k` uses `C` alone, since the center level
   drops out. With `aggregate="mean"` the whole patch reaches the output, so `q_k` uses
   the patch's own levels, `|D C^(1/2) u_k|^2 / mean(d^2)`. Both shrinkers keep the MP
   rank and change only the weights. Standard MP-PCA maps `"lr"` to `"gd"` (white noise).
@@ -305,8 +305,8 @@ phase of the complex mean over volumes, then a smooth estimate, `"dk"` (default)
   It is University of Minnesota copyright, research use only, no redistribution, and
   NORDIC is patented (US 10,768,260). The filters here come from the papers: Sprenger et
   al. 2017 for `"dk"`, EDDEN's description for `"tukey"`.
-- The `"dk"` weights are Sprenger's Opt5, which the paper gives only as a colour map
-  (Fig. 3). They were read off it by colour and summed to 1.008.
+- The `"dk"` weights are Sprenger's Opt5, which the paper gives only as a color map
+  (Fig. 3). They were read off it by color and sum to 1.006.
 - `"tukey"` at 58% reads EDDEN's "Tukey filter with an FWHM of 58%" as a Tukey window
   whose half maximum sits at 58% of k-space. EDDEN does not say more.
 - The phase is removed with a smooth estimate, which leaves neighbours' noise correlation

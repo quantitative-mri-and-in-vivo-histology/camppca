@@ -8,21 +8,21 @@ Per masked voxel:
 1. Take the patch box around it, giving ``X`` of shape ``(n_vox, n_vols)``. Rows are patch
    voxels, columns are diffusion volumes.
 2. Find the Marchenko-Pastur edge in the eigenvalues of ``X``. No demeaning.
-3. Drop everything below the edge, rebuild, and keep only the centre voxel's signal.
+3. Drop everything below the edge, rebuild, and keep only the center voxel's signal.
 
 Complex data are denoised as complex: the Gram matrix is ``X^H X`` and the rebuild uses the
 conjugated eigenvectors, both no-ops on real data. The Marchenko-Pastur law is the same,
 with the variance of a complex entry, twice that of one channel. So ``sigma_hat`` is divided
 by sqrt(2) on the way out and stays the noise level of one channel.
 
-Centre-voxel only by default, with no averaging across the overlapping patches. The noise
+Center-voxel only by default, with no averaging across the overlapping patches. The noise
 estimate is a per-patch quantity, and averaging reconstructions departs from the theory it
 rests on. ``aggregate="mean"`` averages them anyway, as an option; see
 :mod:`camppca.denoiser.aggregate`.
 
 The core eigendecomposes the ``n_vols x n_vols`` Gram matrix instead of taking the SVD of
-``X``. For the centre row that is exact rather than an approximation: ``x_centre @ V``
-equals ``u[centre] * s``, so projecting the centre row onto the retained eigenvectors
+``X``. For the center row that is exact rather than an approximation: ``x_center @ V``
+equals ``u[center] * s``, so projecting the center row onto the retained eigenvectors
 gives what reconstructing the whole patch and reading one row out would give.
 
 It runs the covariance-aware engine with no patch correlation and no level field, which is
@@ -48,13 +48,15 @@ __all__ = ["denoise_mppca"]
 def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
                   algorithm: str = "cordero-grande", tile: int = TILE,
                   shrink: str = "hard", workers: int | None = None,
-                  aggregate: str = "centre", stride: int = 1) -> DenoiseResult:
+                  aggregate: str = "center", stride: int = 1) -> DenoiseResult:
     """Denoise a 4D volume with standard MP-PCA.
 
     Args:
         dwi: (X, Y, Z, N) data, real or complex. Complex data are denoised as complex.
         mask: (X, Y, Z) boolean; only these voxels are denoised, the rest are passed
-            through. Defaults to the whole volume.
+            through. Defaults to the whole volume. In camppca the mask says where the
+            noise model is estimated, and every voxel is denoised unless ``mask_only``.
+            Comparing the two on one region takes ``mask_only=True`` there.
         patch: box shape, three odd integers. None picks dwidenoise's default, see
             :func:`~camppca.patch.default_patch`.
         algorithm: which Marchenko-Pastur variant to cut with, see
@@ -65,10 +67,10 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
         workers: CPU processes to split the voxels over, see
             :mod:`camppca.pool`. The default is one per physical core. 1 runs in this
             process.
-        aggregate: "centre" (default) writes back each patch's centre voxel; "mean"
+        aggregate: "center" (default) writes back each patch's center voxel; "mean"
             averages the overlapping patch reconstructions, see
             :mod:`camppca.denoiser.aggregate`.
-        stride: with "mean", a patch centre every ``stride`` voxels per axis.
+        stride: with "mean", a patch center every ``stride`` voxels per axis.
 
     Returns:
         A :class:`~camppca.denoiser.result.DenoiseResult` with ``model`` unset, since standard
@@ -96,7 +98,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
     denoised, sigma_hat, rank = denoise_whitened(
         dwi, mask, None, patch=patch, algorithm=algorithm, tile=tile, shrink=tile_shrink,
         workers=workers, aggregate=aggregate, stride=stride)
-    where = "centre-voxel only" if aggregate == "centre" else \
+    where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,

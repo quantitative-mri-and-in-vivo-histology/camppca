@@ -6,7 +6,7 @@ import pytest
 
 from camppca import stabilize_phase as public
 from camppca.cli import main
-from camppca.phase import _dk_kernel, _tukey, phase_scale, stabilize_phase
+from camppca.phase import _dk_weights, _tukey, phase_scale, stabilize_phase
 
 SHAPE = (48, 40, 3, 8)
 
@@ -68,8 +68,8 @@ def test_the_tukey_window_has_its_half_maximum_at_fwhm():
     assert np.interp(fwhm, r[order], w[order]) == pytest.approx(0.5, abs=1e-3)
 
 
-def test_the_dk_kernel_is_symmetric_and_avoids_the_centre():
-    k = _dk_kernel()
+def test_the_dk_filter_is_symmetric_and_avoids_the_center():
+    k = _dk_weights()
     assert k.sum() == pytest.approx(1)
     np.testing.assert_array_equal(k, k.T)
     np.testing.assert_array_equal(k, k[::-1, ::-1])

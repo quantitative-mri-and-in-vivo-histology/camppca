@@ -22,7 +22,7 @@ index.html) it writes into the SAME directory -- no second flag, no rename.
 
 `--model` (a reloadable NoiseModel npz) is deliberately NOT here. Estimation is seconds
 against a minutes-long denoise and is deterministic given the seed, so re-estimating is
-identical; the only strong reason is cross-dataset kernel transfer, which is a research
+identical; the only strong reason is cross-dataset rho transfer, which is a research
 activity for now. Purely additive whenever that changes.
 """
 
@@ -33,6 +33,8 @@ from pathlib import Path
 import numpy as np
 
 from . import io
+from .denoiser.mp_threshold import ALGORITHMS
+from .denoiser.shrink import RULES
 from .noise_model import estimate_noise_model
 from .phase import FILTERS, phase_scale, stabilize_phase
 
@@ -58,6 +60,9 @@ def _add_common(p):
     p.add_argument("--level-rounds", type=int, default=0, metavar="N",
                    help="re-estimate the level field d from the whitened patches up to N "
                         "times (default: 0, keep standard MP-PCA's level)")
+    p.add_argument("--algorithm", choices=ALGORITHMS, default="cordero-grande",
+                   help="Marchenko-Pastur rule, for the noise model and the denoise "
+                        "(default: cordero-grande)")
     p.add_argument("--workers", type=int, default=None, metavar="N",
                    help="CPU processes to split the work over (default: one per "
                         "physical core; 1 runs in one process)")
@@ -84,12 +89,15 @@ def _parser():
     d.add_argument("--noise", metavar="PATH", help="write the sigma_hat map here")
     d.add_argument("--no-noise-field", action="store_true",
                    help="ignore the per-voxel level field d (whiten with the pattern only)")
-    d.add_argument("--aggregate", choices=("centre", "mean"), default="centre",
-                   help="write back each patch's centre voxel (default), or the mean of "
+    d.add_argument("--aggregate", choices=("center", "mean"), default="center",
+                   help="write back each patch's center voxel (default), or the mean of "
                         "the overlapping patch reconstructions")
     d.add_argument("--stride", type=int, default=1, metavar="N",
-                   help="with --aggregate mean, a patch centre every N voxels per axis "
+                   help="with --aggregate mean, a patch center every N voxels per axis "
                         "(default: 1)")
+    d.add_argument("--shrink", choices=tuple(RULES), default="hard",
+                   help="weight on the kept components: hard threshold (default), or "
+                        "gd or lr shrinkage")
     d.add_argument("--mask-only", action="store_true",
                    help="denoise only inside the mask and pass the rest through "
                         "(default: denoise every voxel)")
@@ -204,7 +212,8 @@ def main(argv=None):
     noise_field = not getattr(args, "no_noise_field", False)   # estimate has no such flag
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
                                  lowb=args.lowb, noise_field=noise_field,
-                                 level_rounds=args.level_rounds, workers=args.workers)
+                                 algorithm=args.algorithm, level_rounds=args.level_rounds,
+                                 workers=args.workers)
     # A patch one voxel wide in-plane gives lag 0: no x=1 entry to show.
     lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
     say(f"  noise model: patch {'x'.join(map(str, model.provenance['patch']))}, "
@@ -215,6 +224,7 @@ def main(argv=None):
         from .denoiser import denoise_with_noise_model
         result = denoise_with_noise_model(dwi, model, patch=patch,
                                           noise_field=noise_field, workers=args.workers,
+                                          algorithm=args.algorithm, shrink=args.shrink,
                                           aggregate=args.aggregate, stride=args.stride,
                                           mask_only=args.mask_only)
         io.save_like(args.output, result.denoised, affine, header,

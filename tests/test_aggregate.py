@@ -1,6 +1,6 @@
 """Patch averaging (aggregate="mean"), checked against the long way written out in float64.
 
-The reference rebuilds every patch centred in the mask, its box moved inward at the image
+The reference rebuilds every patch centered in the mask, its box moved inward at the image
 edge, accumulates only into mask voxels, and divides. For camppca it unwhitens with an explicit
 ``D C^(1/2)``, which also checks that the engine may skip that product.
 
@@ -16,7 +16,7 @@ import pytest
 
 from camppca import denoise_mppca
 from camppca.denoiser import camppca as engine
-from camppca.denoiser.aggregate import check_aggregate, patch_centres
+from camppca.denoiser.aggregate import check_aggregate, patch_centers
 from camppca.denoiser.camppca import denoise_whitened, sqrtm_psd
 from camppca.denoiser.spectrum import eigh_descending
 from camppca.patch import patch_offsets
@@ -46,7 +46,7 @@ def correlation(patch, ax=0.5, ay=0.3, az=0.15):
     return (ax ** np.abs(lags[0])) * (ay ** np.abs(lags[1])) * (az ** np.abs(lags[2]))
 
 
-def reference_mean(dwi, mask, centres, C=None, d=None):
+def reference_mean(dwi, mask, centers, C=None, d=None):
     """Brute force in float64. Returns (denoised, sigma_hat, rank) like the engine."""
     shape = np.array(SHAPE)
     off = patch_offsets(PATCH) - np.array(PATCH) // 2
@@ -61,7 +61,7 @@ def reference_mean(dwi, mask, centres, C=None, d=None):
     count = np.zeros(SHAPE)
     var = np.zeros(SHAPE)
     ranks = np.zeros(SHAPE)
-    for c in np.array(np.unravel_index(centres, SHAPE)).T:
+    for c in np.array(np.unravel_index(centers, SHAPE)).T:
         idx = tuple((np.clip(c, half, shape - 1 - half) + off).T)
         X = dwi[idx].astype(np.float64)
         levels = np.ones(n_vox) if d is None else d[idx].astype(np.float64)
@@ -97,7 +97,7 @@ def reference_mean(dwi, mask, centres, C=None, d=None):
 def test_mppca_mean_is_the_long_way(dataset, stride):
     dwi, mask, _ = dataset
     got = denoise_mppca(dwi, mask, patch=PATCH, aggregate="mean", stride=stride, workers=1)
-    want = reference_mean(dwi, mask, patch_centres(mask, PATCH, stride))
+    want = reference_mean(dwi, mask, patch_centers(mask, PATCH, stride))
 
     np.testing.assert_allclose(got.rank, want[2], atol=1e-6)
     np.testing.assert_allclose(got.denoised, want[0], rtol=1e-4, atol=2e-3)
@@ -111,7 +111,7 @@ def test_camppca_mean_is_the_long_way_with_explicit_unwhitening(dataset, stride)
     C = correlation(PATCH)
     got = denoise_whitened(dwi, mask, C, patch=PATCH, d_field=d, aggregate="mean",
                            stride=stride, workers=1)
-    want = reference_mean(dwi, mask, patch_centres(mask, PATCH, stride), C=C, d=d)
+    want = reference_mean(dwi, mask, patch_centers(mask, PATCH, stride), C=C, d=d)
 
     np.testing.assert_allclose(got[2], want[2], atol=1e-6)
     np.testing.assert_allclose(got[0], want[0], rtol=1e-4, atol=2e-3)
@@ -145,16 +145,16 @@ def test_a_stride_still_covers_every_mask_voxel_and_leaves_the_outside(dataset):
     assert np.all(got.rank[mask] > 0)
     np.testing.assert_array_equal(got.denoised[~mask], dwi[~mask])
     assert not got.sigma_hat[~mask].any() and not got.rank[~mask].any()
-    assert patch_centres(mask, PATCH, 3).size < mask.sum(), "the stride thins the centres"
+    assert patch_centers(mask, PATCH, 3).size < mask.sum(), "the stride thins the centers"
 
 
-def test_the_centre_default_is_untouched(dataset):
+def test_the_center_default_is_untouched(dataset):
     dwi, mask, _ = dataset
     default = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
-    explicit = denoise_mppca(dwi, mask, patch=PATCH, aggregate="centre", workers=1)
+    explicit = denoise_mppca(dwi, mask, patch=PATCH, aggregate="center", workers=1)
     np.testing.assert_array_equal(default.denoised, explicit.denoised)
     assert default.rank.dtype == np.int32
-    assert default.provenance["rule"].endswith("centre-voxel only")
+    assert default.provenance["rule"].endswith("center-voxel only")
 
 
 def test_bad_aggregate_settings_are_refused(dataset):

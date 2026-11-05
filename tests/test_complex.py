@@ -76,7 +76,7 @@ def test_a_global_phase_changes_nothing_but_the_phase():
     assert np.abs(b.denoised[mask] - a.denoised[mask] * turn).max() < 1e-4 * scale
 
 
-@pytest.mark.parametrize("aggregate", ["centre", "mean"])
+@pytest.mark.parametrize("aggregate", ["center", "mean"])
 def test_a_real_signal_in_circular_noise_comes_back_closer_to_the_truth(aggregate):
     rng = np.random.default_rng(3)
     signal = low_rank_volume(rng, rank=3)
@@ -91,7 +91,7 @@ def test_a_real_signal_in_circular_noise_comes_back_closer_to_the_truth(aggregat
     assert round(float(np.median(result.rank[mask]))) == 3   # "mean" averages the rank
 
 
-@pytest.mark.parametrize("aggregate, shrink", [("centre", "hard"), ("centre", "lr"),
+@pytest.mark.parametrize("aggregate, shrink", [("center", "hard"), ("center", "lr"),
                                                ("mean", "lr")])
 def test_an_identity_whitener_reproduces_standard_mppca(aggregate, shrink):
     rng = np.random.default_rng(4)

@@ -45,13 +45,13 @@ def _good_level(d, mask):
 def _effective_d(d, mask):
     """The level field as the engine uses it. The one place ``d`` is guarded.
 
-    ``d`` is defined up to scale: rows are divided by it and the centre voxel multiplied
+    ``d`` is defined up to scale: rows are divided by it and the center voxel multiplied
     back, so a constant cancels in the denoised image, the rank and ``sigma_hat`` in data
     units. Voxels that are non-finite, below :data:`LEVEL_FLOOR` times the median over the
     mask, or outside the mask get the level of the nearest good mask voxel. Edge patches include outside voxels, and by default they
     are denoised too, so a brain voxel the mask missed gets a local level.
 
-    The engine takes the field as given and rescales the denoised image by it at the centre
+    The engine takes the field as given and rescales the denoised image by it at the center
     voxel, but NOT ``sigma_hat``. Putting sigma_hat back into data units therefore means
     applying this same field, which is why it is computed here and passed down.
     """
@@ -64,7 +64,7 @@ def _effective_d(d, mask):
 
 def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
                              algorithm="cordero-grande", tile=TILE, shrink="hard", workers=None,
-                             aggregate="centre", stride=1, mask_only=False):
+                             aggregate="center", stride=1, mask_only=False):
     """Denoise in the whitened domain, given a noise model.
 
     ``model``        a :class:`~camppca.noise_model.NoiseModel`.  Raises if ``patch`` is
@@ -74,22 +74,22 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
                      (:func:`~camppca.patch.default_patch`).
     ``noise_field``  apply the model's relative level field ``d`` (Sigma = sigma^2 D C D).
                      Adds the WITHIN-patch heteroscedasticity, which widens the noise bulk
-                     the same way off-diagonal colour does.
+                     the same way off-diagonal color does.
     ``shrink``       weight on the kept components: "hard" (default), "gd" or "lr"; see
                      :mod:`camppca.denoiser.shrink`.
     ``workers``      CPU processes to split the voxels over, see
                      :mod:`camppca.pool`. The default is one per physical core. 1 runs in
                      this process.
-    ``aggregate``    "centre" (default) writes back each patch's centre voxel; "mean"
+    ``aggregate``    "center" (default) writes back each patch's center voxel; "mean"
                      averages the overlapping patch reconstructions, see
                      :mod:`camppca.denoiser.aggregate`.
-    ``stride``       with "mean", a patch centre every ``stride`` voxels per axis.
+    ``stride``       with "mean", a patch center every ``stride`` voxels per axis.
     ``mask_only``    denoise only inside the model's mask and pass the rest through.
                      By default every voxel is denoised. The mask only says where the
                      model was estimated, and a brain mask always misses some brain at
                      its edge. Outside it ``d`` takes the nearest mask voxel's level.
 
-    The rule -- Exp2 / Cordero-Grande, centre-voxel-only, hard threshold unless ``shrink``
+    The rule -- Exp2 / Cordero-Grande, center-voxel-only, hard threshold unless ``shrink``
     or ``aggregate`` say otherwise -- is the method.
     """
     shrink = check_shrink(shrink)
@@ -118,11 +118,11 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
         d_field=d_eff, shrink=shrink, workers=workers, aggregate=aggregate, stride=stride)
 
     if d_eff is not None:
-        # The engine rescales the IMAGE by d at the centre voxel but not sigma_hat.
+        # The engine rescales the IMAGE by d at the center voxel but not sigma_hat.
         # Do it here, or the scale of d leaks into the headline number.
         sigma_hat = sigma_hat * d_eff
 
-    where = "centre-voxel only" if aggregate == "centre" else \
+    where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"
     prov = dict(method="camppca", patch=tuple(int(v) for v in patch), algorithm=algorithm,
                 noise_field=bool(noise_field), shrink=shrink, aggregate=aggregate,
@@ -135,7 +135,7 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
 
 def denoise_camppca(dwi, bvals=None, mask=None, patch=None, noise_field=True,
                     algorithm="cordero-grande", tile=TILE, shrink="hard", workers=None,
-                    aggregate="centre", stride=1, mask_only=False, **estimate_kwargs):
+                    aggregate="center", stride=1, mask_only=False, **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
     Equivalent to ``estimate_noise_model`` followed by ``denoise_with_noise_model``; the

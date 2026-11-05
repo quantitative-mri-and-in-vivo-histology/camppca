@@ -1,18 +1,18 @@
 """Patch averaging: the mean of the overlapping patch reconstructions, as an option.
 
-The default writes back the centre voxel of each patch only. ``aggregate="mean"``
+The default writes back the center voxel of each patch only. ``aggregate="mean"``
 rebuilds every patch whole and averages, at each voxel, all the patches that cover it:
 
 - only the patches of mask voxels are used, and their contributions to voxels outside
   the mask are dropped, so those voxels pass through unchanged as in the default;
 - at the image edge several voxels share one box, moved inward, and it counts once;
-- ``stride`` keeps a patch centre every ``stride`` voxels per axis; mask voxels the grid
-  leaves uncovered, near a thin edge say, get their own centred patch;
+- ``stride`` keeps a patch center every ``stride`` voxels per axis; mask voxels the grid
+  leaves uncovered, near a thin edge say, get their own centered patch;
 - plain mean, no weights;
 - ``sigma_hat`` is the root of the mean ``sigma_hat^2`` over the covering patches, and
   ``rank`` the mean rank.
 
-Each chunk of patch centres sums its rebuilt patches over its box: the x-slices its
+Each chunk of patch centers sums its rebuilt patches over its box: the x-slices its
 patches reach, all of y and z. The boxes are added in chunk order, and the chunks do not
 depend on the number of workers, so the result does not either, bit for bit.
 """
@@ -22,14 +22,14 @@ from __future__ import annotations
 import numpy as np
 from scipy import ndimage
 
-from .gather import box_centres
+from .gather import box_centers
 
-__all__ = ["AGGREGATES", "MEAN_CHUNKS", "check_aggregate", "patch_centres", "BoxSum",
+__all__ = ["AGGREGATES", "MEAN_CHUNKS", "check_aggregate", "patch_centers", "BoxSum",
            "MeanAssembly"]
 
-AGGREGATES = ("centre", "mean")
+AGGREGATES = ("center", "mean")
 
-#: Chunks of patch centres in mean mode, fixed so the sums do not depend on the workers.
+#: Chunks of patch centers in mean mode, fixed so the sums do not depend on the workers.
 MEAN_CHUNKS = 32
 
 
@@ -40,18 +40,18 @@ def check_aggregate(aggregate: str, stride) -> tuple[str, int]:
     stride = int(stride)
     if stride < 1:
         raise ValueError(f"stride must be >= 1, got {stride}")
-    if stride > 1 and aggregate == "centre":
-        raise ValueError("stride > 1 needs aggregate='mean': with the centre voxel only, "
+    if stride > 1 and aggregate == "center":
+        raise ValueError("stride > 1 needs aggregate='mean': with the center voxel only, "
                          "every voxel needs its own patch")
     return aggregate, stride
 
 
-def patch_centres(mask: np.ndarray, patch, stride: int) -> np.ndarray:
-    """Flat indices (C order) of the patch centres for mean mode, each box once.
+def patch_centers(mask: np.ndarray, patch, stride: int) -> np.ndarray:
+    """Flat indices (C order) of the patch centers for mean mode, each box once.
 
     Mask voxels on the stride grid, plus mask voxels no grid patch covers. A box at the
-    image edge is moved inward, as the gather moves it, so the centres returned are box
-    centres. Voxels that share a box give it once.
+    image edge is moved inward, as the gather moves it, so the centers returned are box
+    centers. Voxels that share a box give it once.
     """
     mask = np.asarray(mask, bool)
     if stride == 1:
@@ -60,17 +60,17 @@ def patch_centres(mask: np.ndarray, patch, stride: int) -> np.ndarray:
     for axis, n in enumerate(mask.shape):
         on = (np.arange(n) % stride == 0).reshape([-1 if a == axis else 1 for a in range(3)])
         grid &= on
-    boxes = np.zeros(mask.shape, np.int32)       # grid patches counted at their box centres
-    np.add.at(boxes, box_centres(np.nonzero(grid), mask.shape, patch), 1)
+    boxes = np.zeros(mask.shape, np.int32)       # grid patches counted at their box centers
+    np.add.at(boxes, box_centers(np.nonzero(grid), mask.shape, patch), 1)
     cover = ndimage.convolve(boxes, np.ones(tuple(int(p) for p in patch), np.int32),
                              mode="constant")
     return _unique_boxes(grid | (mask & (cover == 0)), patch)
 
 
 def _unique_boxes(voxels, patch):
-    """Flat indices of the distinct box centres of the voxels in a boolean volume."""
-    centres = box_centres(np.nonzero(voxels), voxels.shape, patch)
-    return np.unique(np.ravel_multi_index(centres, voxels.shape))
+    """Flat indices of the distinct box centers of the voxels in a boolean volume."""
+    centers = box_centers(np.nonzero(voxels), voxels.shape, patch)
+    return np.unique(np.ravel_multi_index(centers, voxels.shape))
 
 
 class BoxSum:
@@ -80,10 +80,10 @@ class BoxSum:
     inside the mask receive anything.
     """
 
-    def __init__(self, shape, centres, patch, mask, dtype=np.float32):
+    def __init__(self, shape, centers, patch, mask, dtype=np.float32):
         X, Y, Z, n_vols = shape
         half = int(patch[0]) // 2
-        xs = box_centres((np.asarray(centres) // (Y * Z),), (X,), patch[:1])[0]
+        xs = box_centers((np.asarray(centers) // (Y * Z),), (X,), patch[:1])[0]
         lo, hi = int(xs.min()) - half, int(xs.max()) + half
         self.x = np.arange(lo, hi + 1)
         self.lo, self.dims, self.mask = lo, (X, Y, Z), mask

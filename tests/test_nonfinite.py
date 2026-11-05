@@ -27,7 +27,7 @@ def _same_except_nonfinite(got, want_finite, dirty):
     np.testing.assert_array_equal(got[bad], dirty[bad])
 
 
-@pytest.mark.parametrize("aggregate", ["centre", "mean"])
+@pytest.mark.parametrize("aggregate", ["center", "mean"])
 def test_mppca_fits_nonfinite_as_zero_and_puts_it_back(data, aggregate):
     dirty, zeroed = data
     with pytest.warns(RuntimeWarning, match="NaN or inf"):
@@ -38,7 +38,7 @@ def test_mppca_fits_nonfinite_as_zero_and_puts_it_back(data, aggregate):
     np.testing.assert_array_equal(got.sigma_hat, want.sigma_hat)
 
 
-@pytest.mark.parametrize("aggregate", ["centre", "mean"])
+@pytest.mark.parametrize("aggregate", ["center", "mean"])
 def test_camppca_fits_nonfinite_as_zero_and_puts_it_back(data, aggregate):
     dirty, zeroed = data
     mask = np.zeros(SHAPE, bool)

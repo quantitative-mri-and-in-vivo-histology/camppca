@@ -76,7 +76,7 @@ from . import _build_C
 
 __all__ = ["loop_kernel"]
 
-N_CENTRES = 3000        # sampled patches the bulk is pooled over
+N_CENTERS = 3000        # sampled patches the bulk is pooled over
 LOOP_TOL = 1e-3         # stop when U of C changes by less than this between rounds
 MAX_ROUNDS = 20
 FIT_TOL = 1e-5          # the fit stops at this gradient, relative to its start
@@ -98,7 +98,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
         rho_start: (2*lag+1, 2*lag+1, dzmax+1) table to start from.
         patch: the patch the kernel must serve, as a length-3 int array.
         lag: in-plane reach of ``rho_start``.
-        seed: seeds the choice of patch centres.
+        seed: seeds the choice of patch centers.
         algorithm: the MP rule the denoiser will cut with.
         noise_field: whether the denoiser will divide rows by ``d``.
         workers: CPU processes the sampled patches are split over each round, see
@@ -109,7 +109,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
         lag and ``rho_start``'s values at lags the patch never spans, and a dict with
         ``rounds``, ``converged``, ``u_kernel`` (U of the returned table's patch
-        correlation) and ``n_centres``.
+        correlation) and ``n_centers``.
 
     Raises:
         ValueError: if no mask voxel has its whole patch inside the mask, among the
@@ -119,22 +119,22 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
     dzmax = rho_start.shape[2] - 1
     workers = resolve_workers(workers)
     # Patches with a level below the floor hold near-constant data, which the fit cannot use.
-    centres = _sample_centres(_good_level(d, mask), patch, np.random.default_rng(seed))
+    centers = _sample_centers(_good_level(d, mask), patch, np.random.default_rng(seed))
     levels = _effective_d(d, mask) if noise_field else np.ones(mask.shape, np.float32)
 
     with ExitStack() as stack:
         if workers > 1:
             # One pool for every round: joblib maps the volume and the levels once.
             parallel = stack.enter_context(worker_pool(workers))
-            chunks = [tuple(c[part] for c in centres)
-                      for part in np.array_split(np.arange(centres[0].size), workers)]
+            chunks = [tuple(c[part] for c in centers)
+                      for part in np.array_split(np.arange(centers[0].size), workers)]
 
             def split(C):
                 return _assemble(C, parallel(
                     delayed(_split_task)(dwi, levels, chunk, patch, C, algorithm)
                     for chunk in chunks))
         else:
-            patches = _gather(dwi, levels, centres, patch)
+            patches = _gather(dwi, levels, centers, patch)
 
             def split(C):
                 return _split(patches, C, algorithm)
@@ -162,7 +162,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
     rho[unspanned] = rho_start[unspanned]
     info = dict(rounds=rounds, converged=converged,
                 u_kernel=_sphericity_excess(_build_C(rho, patch, lag)),
-                n_centres=int(centres[0].size))
+                n_centers=int(centers[0].size))
     return rho, info
 
 
@@ -171,25 +171,25 @@ def _sphericity_excess(C):
     return float((C ** 2).sum() / len(C) - 1.0)
 
 
-def _sample_centres(mask, patch, rng):
-    """Up to :data:`N_CENTRES` mask voxels whose whole patch lies inside the mask."""
+def _sample_centers(mask, patch, rng):
+    """Up to :data:`N_CENTERS` mask voxels whose whole patch lies inside the mask."""
     eligible = binary_erosion(mask, structure=np.ones(tuple(patch), bool), border_value=0)
     idx = np.flatnonzero(eligible)
     if idx.size == 0:
         raise ValueError(f"no mask voxel has its whole {tuple(int(v) for v in patch)} "
                          "patch inside the mask, so the loop has no patch to fit")
-    pick = np.sort(rng.choice(idx, size=min(N_CENTRES, idx.size), replace=False))
+    pick = np.sort(rng.choice(idx, size=min(N_CENTERS, idx.size), replace=False))
     return np.unravel_index(pick, mask.shape)
 
 
-def _gather(dwi, d_eff, centres, patch):
-    """(B, n_vox, N) float32 patches around ``centres``, rows divided by ``d_eff``.
+def _gather(dwi, d_eff, centers, patch):
+    """(B, n_vox, N) float32 patches around ``centers``, rows divided by ``d_eff``.
 
     Rows in :func:`~camppca.patch.patch_offsets` order. Every patch lies inside the
     volume, so no padding is needed.
     """
     offsets = patch_offsets(patch) - patch // 2
-    ix, iy, iz = (c[:, None] + offsets[None, :, k] for k, c in enumerate(centres))
+    ix, iy, iz = (c[:, None] + offsets[None, :, k] for k, c in enumerate(centers))
     patches = np.asarray(dwi[ix, iy, iz, :], np.float32)
     return patches / np.asarray(d_eff, np.float32)[ix, iy, iz][:, :, None]
 
@@ -272,9 +272,9 @@ def _split(patches, C, algorithm):
     return _assemble(C, [_split_chunk(patches, C, algorithm)])
 
 
-def _split_task(dwi, levels, centres, patch, C, algorithm):
+def _split_task(dwi, levels, centers, patch, C, algorithm):
     """One worker's share of a round: gather its patches and split them."""
-    return _split_chunk(_gather(dwi, levels, centres, patch), C, algorithm)
+    return _split_chunk(_gather(dwi, levels, centers, patch), C, algorithm)
 
 
 class _WhitenedBulk:

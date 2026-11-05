@@ -6,7 +6,7 @@ a correlation pattern that does not::
     Sigma = sigma^2 * D * C * D          D = diag(d)
 
 ``rho`` (the lag table) and ``d`` (the relative level field) are the model.  ``C``, the
-P x P patch correlation, is DERIVED from rho plus a patch shape -- a denoiser knob, not a
+n_vox x n_vox patch correlation, is DERIVED from rho plus a patch shape -- a denoiser knob, not a
 property of the noise -- so it is computed on demand by :meth:`NoiseModel.patch_correlation`
 and never stored.
 
@@ -176,7 +176,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     ``patch``  the patch this model must be able to serve; sets the lag rho covers.
                None picks dwidenoise's default, see :func:`~camppca.patch.default_patch`.
     ``lowb``   b-value at or below which a volume counts as a b0.
-    ``seed``   picks the loop's patch centres, so re-estimating gives an identical model.
+    ``seed``   picks the loop's patch centers, so re-estimating gives an identical model.
     ``pool``   box width, in voxels, the level field ``d`` is averaged over.  Averaged in
                variance, over mask voxels only; see :func:`_pool_level`.  1 disables it.
     ``algorithm``, ``noise_field``  the denoiser settings the model is fitted to: the MP rule,
@@ -282,7 +282,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
                 seed=int(seed), lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
-                u_kernel=info["u_kernel"], n_centres=info["n_centres"],
+                u_kernel=info["u_kernel"], n_centers=info["n_centers"],
                 loop_algorithm=algorithm, loop_noise_field=bool(noise_field),
                 level_rounds=level_rounds, level_rounds_run=rounds_run)
     if complex_input:

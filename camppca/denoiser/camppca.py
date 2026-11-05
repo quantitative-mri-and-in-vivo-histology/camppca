@@ -7,19 +7,19 @@ and unwhitens. Standard MP-PCA assumes the patch noise is i.i.d. across voxels; 
     Y[:, n] = signal + eps_n,   Cov(eps_n) = sigma^2 C
     Yw[:, n] = C^(-1/2) Y[:, n]        ->   Cov = sigma^2 I
 
-UNWHITENING THE CENTRE VOXEL. Whitening mixes voxels, so the centre voxel of the
+UNWHITENING THE CENTER VOXEL. Whitening mixes voxels, so the center voxel of the
 reconstruction is a dense combination of all ``n_vox`` whitened rows::
 
     xhat_c = (e_c^T C^(1/2)) Yw Pi
 
-Only the CENTRE ROW of ``C^(1/2)`` is ever needed, which is what keeps unwhitening cheap.
+Only the CENTER ROW of ``C^(1/2)`` is ever needed, which is what keeps unwhitening cheap.
 
 WHITENER FACTORIZATION. The paper applies ``W = (DCD)^(-1/2)`` in one symmetric step. This
 code divides rows by ``d`` and then applies ``C^(-1/2)``, i.e. ``W = C^(-1/2) D^(-1)``.
 ``W^T W = (DCD)^(-1)`` either way, so the Gram, the spectrum, the threshold, the retained
 subspace and the reconstruction are all identical. Do NOT "fix" one to match the other.
 
-STANDARD MP-PCA IS THE CASE C = None. The whitening multiply is skipped and the centre row
+STANDARD MP-PCA IS THE CASE C = None. The whitening multiply is skipped and the center row
 is the patch's own, so :func:`~camppca.denoiser.mppca.denoise_mppca` runs this same engine.
 
 WHERE C COMES FROM. :meth:`~camppca.noise_model.NoiseModel.patch_correlation` derives it,
@@ -35,7 +35,7 @@ import numpy as np
 
 from ..patch import patch_size, resolve_patch
 from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
-from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
+from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centers
 from .gather import TILE, as_data, patch_tiles, restore_nonfinite, zero_nonfinite
 from .mp_threshold import mp_threshold
 from .shrink import check_shrink, shrink_weight, signal_alignment
@@ -99,13 +99,13 @@ def _tile_patches(dwi, d_field, index):
 
 def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algorithm: str,
                   shrink: str, full: bool = False, levels=None, rows=None):
-    """Denoise a batch of whitened patches, returning the centre voxel of each, or with
+    """Denoise a batch of whitened patches, returning the center voxel of each, or with
     ``full`` each whole rebuilt patch.
 
     The whole patch unwhitens without ``C^(1/2)``: ``C^(1/2) (C^(-1/2) X) V diag(w) V^T``
     is ``X V diag(w) V^T``, because both roots come from one eigendecomposition in
     :func:`sqrtm_psd`. ``V`` are the whitened Gram's eigenvectors, ``w`` the kept and
-    shrink weights. The centre row is the same identity for one row.
+    shrink weights. The center row is the same identity for one row.
 
     Args:
         patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
@@ -117,14 +117,14 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
         n_large: the larger of them.
         algorithm: which Marchenko-Pastur variant to cut with.
         shrink: "hard", "gd" or "lr"; see :mod:`camppca.denoiser.shrink`.
-        full: rebuild the whole patch instead of the centre row.
+        full: rebuild the whole patch instead of the center row.
         levels: with ``full`` and "lr", (B, n_vox) the patch voxels' levels ``d``, so
             "lr" weighs the error over the whole patch in data units; None for ``D = I``.
         rows: (B,) the row of the voxel to return in each patch, from
-            :func:`~camppca.denoiser.gather.patch_tiles`. None is the centre row.
+            :func:`~camppca.denoiser.gather.patch_tiles`. None is the center row.
 
     Returns:
-        ``(signal, sigma_hat, rank)``: (B, n_vols) denoised centre spectra, or with
+        ``(signal, sigma_hat, rank)``: (B, n_vols) denoised center spectra, or with
         ``full`` (B, n_vox, n_vols) rebuilt patches, in the units of ``patches``, (B,)
         fitted noise level, (B,) retained component count.
     """
@@ -146,14 +146,14 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
 
     center = n_vox // 2
     if root is None:                                            # no whitening: Yw = Y
-        centre = whitened[:, center, :] if rows is None else \
+        voxel_row = whitened[:, center, :] if rows is None else \
             whitened[np.arange(len(rows)), rows, :]
     else:
-        centre = np.einsum("p,bpm->bm", root[center], whitened)  # e_c^T C^(1/2) Yw
+        voxel_row = np.einsum("p,bpm->bm", root[center], whitened)  # e_c^T C^(1/2) Yw
         edge = None if rows is None else np.flatnonzero(rows != center)
-        if edge is not None and edge.size:   # off centre near the image edge: its own row
-            centre[edge] = np.einsum("bp,bpm->bm", root[rows[edge]], whitened[edge])
-    coords = np.einsum("bm,bmk->bk", centre, evecs)
+        if edge is not None and edge.size:   # off center near the image edge: its own row
+            voxel_row[edge] = np.einsum("bp,bpm->bm", root[rows[edge]], whitened[edge])
+    coords = np.einsum("bm,bmk->bk", voxel_row, evecs)
     keep = np.arange(n_vols)[None, :] < rank[:, None]
     kept = np.where(keep, coords, 0.0)
     if shrink != "hard":
@@ -230,7 +230,7 @@ def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, root, C, patch, alg
                              tile, shrink):
     """The tile loop of :func:`denoise_whitened` for some voxels.
 
-    Each voxel row is divided by its level before whitening, and the centre row is
+    Each voxel row is divided by its level before whitening, and the center row is
     multiplied back on the way out.
 
     Returns:
@@ -253,9 +253,9 @@ def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, root, C, patch, alg
     return signal, sigma_hat, rank
 
 
-def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, root, C, patch,
+def _mean_whitened_voxels(dwi, d_field, mask, centers, whitener, root, C, patch,
                           algorithm, tile, shrink):
-    """Sum the rebuilt patches around ``centres`` over their box, for the mean.
+    """Sum the rebuilt patches around ``centers`` over their box, for the mean.
 
     Rows are divided by their level before whitening and multiplied back after. With
     "lr", the shrink weights see the whole patch's levels, since every voxel of it
@@ -267,8 +267,8 @@ def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, root, C, patch,
     n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
-    box = BoxSum(dwi.shape, centres, patch, mask, dwi.dtype)
-    for _, index, _ in patch_tiles(dwi.shape[:3], centres, patch, tile=tile):
+    box = BoxSum(dwi.shape, centers, patch, mask, dwi.dtype)
+    for _, index, _ in patch_tiles(dwi.shape[:3], centers, patch, tile=tile):
         patches, levels = _tile_patches(dwi, d_field, index)
         recon, sigma_hat, rank = _denoise_tile(patches, whitener, root, C, n_small,
                                                n_large, algorithm, shrink, full=True,
@@ -280,7 +280,7 @@ def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, root, C, patch,
 
 
 def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TILE,
-                     d_field=None, shrink="hard", workers=None, aggregate="centre",
+                     d_field=None, shrink="hard", workers=None, aggregate="center",
                      stride=1):
     """MP-PCA on the patch whitened by ``C^(-1/2)``.
 
@@ -296,15 +296,15 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) level field, ALREADY guarded by the caller
             (:func:`~camppca.denoiser._effective_d`). Each voxel row is divided by its own level before whitening, which
-            is exact for ``Sigma = sigma^2 D C D``, and the centre row is multiplied back
-            on the way out. What it adds over a per-patch sigma is the within-patch
+            is exact for ``Sigma = sigma^2 D C D``, and the center row is multiplied back
+            on the way out. What it adds over a per-patch level is the within-patch
             heteroscedasticity, which widens the noise bulk the same way off-diagonal
-            colour does.
+            color does.
         shrink: weight on the kept components; see :mod:`camppca.denoiser.shrink`.
         workers: CPU processes to split the voxels over, see :mod:`camppca.pool`.
-        aggregate: "centre" (default) or "mean" over the overlapping patches; see
+        aggregate: "center" (default) or "mean" over the overlapping patches; see
             :mod:`camppca.denoiser.aggregate`.
-        stride: with "mean", a patch centre every ``stride`` voxels per axis.
+        stride: with "mean", a patch center every ``stride`` voxels per axis.
 
     Returns:
         ``(denoised, sigma_hat, rank)``. ``sigma_hat`` is in d-normalized units; the
@@ -313,7 +313,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
     """
     dwi = as_data(dwi)
     mask = np.asarray(mask, bool)          # non-bool would make `& mask` an integer op
-    patch = resolve_patch(patch, dwi.shape)  # odd dims: centre = n_vox // 2 must BE the centre
+    patch = resolve_patch(patch, dwi.shape)  # odd dims: center = n_vox // 2 must BE the center
     dwi, bad, values = zero_nonfinite(dwi)
     aggregate, stride = check_aggregate(aggregate, stride)
     n_vox = patch_size(patch)
@@ -338,7 +338,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
         run_boxes(partial(_mean_whitened_voxels, whitener=whitener, root=root, C=C, patch=patch, algorithm=algorithm, tile=tile,
                           shrink=shrink),
                   (dwi, d_field, mask),
-                  voxel_chunks(patch_centres(mask, patch, stride), MEAN_CHUNKS, tile),
+                  voxel_chunks(patch_centers(mask, patch, stride), MEAN_CHUNKS, tile),
                   assembly.add, workers)
         denoised, sigma_hat, rank = assembly.finish()
         if np.iscomplexobj(dwi):
