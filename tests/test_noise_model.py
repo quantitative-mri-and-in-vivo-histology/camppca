@@ -240,6 +240,16 @@ def test_pooling_next_to_levels_near_zero_gives_no_nan():
     assert np.isfinite(pooled).all() and (pooled >= 0).all()
 
 
+def test_levels_near_zero_do_not_pull_down_their_neighbours_in_pooling():
+    """Pooled in, a zero slice took its neighbours to about 0.82 of their level."""
+    from camppca.noise_model import _level_field
+    level = np.full((12, 12, 12), 10.0)
+    level[:, :, 9:] = 1e-7
+    d = _level_field(level, np.ones(level.shape, bool), 3)
+    np.testing.assert_array_equal(d[:, :, :9], 10.0)
+    assert not d[:, :, 9:].any(), "left zero for _effective_d to fill"
+
+
 def test_levels_near_zero_take_their_neighbours_level():
     d = np.full((10, 10, 10), 5.0, np.float32)
     d[:, :, 8:] = 1e-7
