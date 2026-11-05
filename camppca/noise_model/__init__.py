@@ -202,6 +202,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     With ``noise_field=False``, ``d`` is 1 in the mask and only the loop runs.
     """
     # Imported here: the denoiser imports this package, so a top-level import is circular.
+    from .. import __version__  # the package sets it after importing this module
     from ..denoiser.gather import as_data, zero_nonfinite
     from ..denoiser.mp_threshold import check_algorithm
 
@@ -282,7 +283,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
         rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
                                 noise_field=noise_field, workers=workers, sample=sample)
 
-    prov = dict(patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
+    prov = dict(version=__version__,
+                patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
                 seed=int(seed), lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],

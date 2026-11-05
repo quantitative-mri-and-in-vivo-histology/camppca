@@ -17,6 +17,7 @@ import warnings
 import numpy as np
 from scipy import ndimage
 
+from .. import __version__
 from ..noise_model import estimate_noise_model
 from ..patch import resolve_patch
 from .aggregate import check_aggregate
@@ -126,7 +127,8 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
 
     where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"
-    prov = dict(method="camppca", patch=tuple(int(v) for v in patch), algorithm=algorithm,
+    prov = dict(method="camppca", version=__version__, patch=tuple(int(v) for v in patch),
+                algorithm=algorithm,
                 noise_field=bool(noise_field), shrink=shrink, aggregate=aggregate,
                 stride=stride, mask_only=bool(mask_only),
                 rule=f"Cordero-Grande/Exp2, {RULES[shrink]}, {where}",
