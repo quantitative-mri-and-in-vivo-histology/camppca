@@ -163,7 +163,7 @@ def _pool_level(level, mask, size):
 
 
 def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=0,
-                         pool=3, algo="cordero-grande", noise_field=True, level_rounds=0,
+                         pool=3, algorithm="cordero-grande", noise_field=True, level_rounds=0,
                          workers=None):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
@@ -179,7 +179,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     ``seed``   picks the loop's patch centres, so re-estimating gives an identical model.
     ``pool``   box width, in voxels, the level field ``d`` is averaged over.  Averaged in
                variance, over mask voxels only; see :func:`_pool_level`.  1 disables it.
-    ``algo``, ``noise_field``  the denoiser settings the model is fitted to: the MP rule,
+    ``algorithm``, ``noise_field``  the denoiser settings the model is fitted to: the MP rule,
                and whether rows are divided by ``d``.  Pass the ones you will denoise with.
     ``level_rounds``  how many times ``d`` is re-estimated from the whitened patches.
                0, the default, keeps standard MP-PCA's level.
@@ -215,8 +215,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     dzmax = int(patch[2]) - 1
     from ..denoiser.mp_threshold import ALGORITHMS  # here: denoiser imports this package
 
-    if algo not in ALGORITHMS:
-        raise ValueError(f"algo must be one of {ALGORITHMS}, got {algo!r}")
+    if algorithm not in ALGORITHMS:
+        raise ValueError(f"algorithm must be one of {ALGORITHMS}, got {algorithm!r}")
     pool = int(pool)
     if pool < 1:
         raise ValueError(f"pool must be >= 1 voxel, got {pool}")
@@ -254,17 +254,17 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     rho[lag, lag, 0] = 1.0
     if noise_field:
-        level = whitened_level(dwi, mask, None, patch, algo, workers=workers)
+        level = whitened_level(dwi, mask, None, patch, algorithm, workers=workers)
         d = _level_field(level, mask, pool)
     else:
         d = mask.astype(np.float32)
-    rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algo=algo,
+    rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
                             noise_field=noise_field, workers=workers)
 
     rounds_run, change, spread = 0, None, None
     for rounds_run in range(1, (level_rounds if noise_field else 0) + 1):  # noqa: B007
         d_eff = _effective_d(d, mask)
-        s = whitened_level(dwi, mask, _build_C(rho, patch, lag), patch, algo,
+        s = whitened_level(dwi, mask, _build_C(rho, patch, lag), patch, algorithm,
                            d_field=d_eff, workers=workers)
         q25, q50, q75 = np.percentile(s[mask], (25, 50, 75))
         spread = float((q75 - q25) / q50)
@@ -275,7 +275,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
         if change < LEVEL_TOL:
             break
         d = new
-        rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algo=algo,
+        rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
                                 noise_field=noise_field, workers=workers)
 
     prov = dict(patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
@@ -283,7 +283,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
                 u_kernel=info["u_kernel"], n_centres=info["n_centres"],
-                loop_algo=algo, loop_noise_field=bool(noise_field),
+                loop_algorithm=algorithm, loop_noise_field=bool(noise_field),
                 level_rounds=level_rounds, level_rounds_run=rounds_run)
     if complex_input:
         prov.update(data="complex, estimated on the real part")

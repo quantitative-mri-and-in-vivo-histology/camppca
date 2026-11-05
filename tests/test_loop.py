@@ -185,12 +185,12 @@ def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
 
 def test_the_loop_fits_to_the_denoisers_settings(dataset, model):
     dwi, bvals, mask = dataset
-    other = estimate_noise_model(dwi, bvals, mask, patch=PATCH, algo="veraart",
+    other = estimate_noise_model(dwi, bvals, mask, patch=PATCH, algorithm="veraart",
                                  noise_field=False)
 
-    assert (model.provenance["loop_algo"], model.provenance["loop_noise_field"]) == \
+    assert (model.provenance["loop_algorithm"], model.provenance["loop_noise_field"]) == \
         ("cordero-grande", True)
-    assert (other.provenance["loop_algo"], other.provenance["loop_noise_field"]) == \
+    assert (other.provenance["loop_algorithm"], other.provenance["loop_noise_field"]) == \
         ("veraart", False)
     assert not np.array_equal(other.rho, model.rho)
 
@@ -208,8 +208,8 @@ def test_denoising_with_other_settings_than_the_loop_fitted_warns(dataset, model
 
 def test_an_unknown_algo_is_refused_before_the_estimate(dataset):
     dwi, bvals, mask = dataset
-    with pytest.raises(ValueError, match="algo must be"):
-        estimate_noise_model(dwi, bvals, mask, patch=PATCH, algo="exp3")
+    with pytest.raises(ValueError, match="algorithm must be"):
+        estimate_noise_model(dwi, bvals, mask, patch=PATCH, algorithm="exp3")
 
 
 def test_the_fit_is_the_pinned_least_squares(dataset, model):

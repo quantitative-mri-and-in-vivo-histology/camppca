@@ -123,7 +123,7 @@ with `d` = standard MP-PCA's σ̂ pooled 3³, gave the same kernel and median σ
 
 `estimate_noise_model` starts `rho` from white noise (1 at lag 0) and refines it until it
 explains the MP-PCA bulk of 3000 sampled patches at once (`noise_model/loop.py`). It fits
-to the denoiser's own split: `algo` and `noise_field` are passed to
+to the denoiser's own split: `algorithm` and `noise_field` are passed to
 `estimate_noise_model`, recorded in provenance, and a mismatch at denoising warns.
 Every volume enters, b0s included, because the denoiser whitens them all. `bvals` only
 picks the b0s the default mask is drawn from.

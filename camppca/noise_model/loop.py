@@ -42,7 +42,7 @@ round is returned.
 
 Patch rows are divided by the guarded level field before whitening, exactly as the
 denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens. The
-MP rule (``algo``) and whether rows are divided by ``d`` (``noise_field``) are the
+MP rule (``algorithm``) and whether rows are divided by ``d`` (``noise_field``) are the
 denoiser's settings, passed in, so the kernel is fitted to the split it will serve.
 
 Lags the patch never spans, such as ``|dx| > 2`` for a 3 x 7 patch whose table reaches
@@ -87,7 +87,7 @@ PRODUCT_CHUNK = 64      # patches per thread task
 _product_pool = None
 
 
-def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande",
+def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande",
                 noise_field=True, workers=None):
     """Refine a kernel until it is consistent with the MP-PCA bulk of the patches.
 
@@ -99,7 +99,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
         patch: the patch the kernel must serve, as a length-3 int array.
         lag: in-plane reach of ``rho_start``.
         seed: seeds the choice of patch centres.
-        algo: the MP rule the denoiser will cut with.
+        algorithm: the MP rule the denoiser will cut with.
         noise_field: whether the denoiser will divide rows by ``d``.
         workers: CPU processes the sampled patches are split over each round, see
             :mod:`camppca.pool`. Each gathers and splits its own share. The fit stays
@@ -131,13 +131,13 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algo="cordero-grande"
 
             def split(C):
                 return _assemble(C, parallel(
-                    delayed(_split_task)(dwi, levels, chunk, patch, C, algo)
+                    delayed(_split_task)(dwi, levels, chunk, patch, C, algorithm)
                     for chunk in chunks))
         else:
             patches = _gather(dwi, levels, centres, patch)
 
             def split(C):
-                return _split(patches, C, algo)
+                return _split(patches, C, algorithm)
 
         rho = rho_start
         C = _build_C(rho, patch, lag)
@@ -220,7 +220,7 @@ class _Factors:
         self.U_cat = np.concatenate(cols, axis=1)                     # (n_vox, sum rank)
 
 
-def _split_chunk(patches, C, algo, tile=TILE):
+def _split_chunk(patches, C, algorithm, tile=TILE):
     """Whiten and split a batch of patches ``tile`` at a time, in float32.
 
     Each tile's bulk product is taken in float64 and summed in float64.
@@ -238,7 +238,7 @@ def _split_chunk(patches, C, algo, tile=TILE):
     for start in range(0, n_b, tile):
         whitened, evals, evecs, rank, sigma_hat = _whiten_split(
             np.asarray(patches[start:start + tile], np.float32), whitener, n_small, n_large,
-            algo)
+            algorithm)
         r = int(rank.max())
         V = evecs[:, :, :r]
         keep = (np.arange(r)[None, :] < rank[:, None])[:, None, :]
@@ -267,14 +267,14 @@ def _assemble(C, chunks):
     return root @ bulk @ root / rank.size, _Factors(parts, rank)
 
 
-def _split(patches, C, algo):
+def _split(patches, C, algorithm):
     """Whiten every patch by ``C``, split it, and pool the bulk. Returns ``(S, factors)``."""
-    return _assemble(C, [_split_chunk(patches, C, algo)])
+    return _assemble(C, [_split_chunk(patches, C, algorithm)])
 
 
-def _split_task(dwi, levels, centres, patch, C, algo):
+def _split_task(dwi, levels, centres, patch, C, algorithm):
     """One worker's share of a round: gather its patches and split them."""
-    return _split_chunk(_gather(dwi, levels, centres, patch), C, algo)
+    return _split_chunk(_gather(dwi, levels, centres, patch), C, algorithm)
 
 
 class _WhitenedBulk:
