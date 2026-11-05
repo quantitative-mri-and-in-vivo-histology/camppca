@@ -110,8 +110,8 @@ def _parser():
     s.add_argument("--fwhm", type=float, default=0.58,
                    help="tukey only: full width at half maximum as a fraction of k-space "
                         "(default: 0.58, as in EDDEN)")
-    s.add_argument("--no-mean-phase", action="store_true",
-                   help="skip removing the phase of the mean over all volumes first")
+    s.add_argument("--mean-phase", action="store_true",
+                   help="first remove the phase of the mean over all volumes, as in EDDEN")
     s.add_argument("--imag", metavar="PATH",
                    help="also write the imaginary part, which should hold noise only")
     s.add_argument("-q", "--quiet", action="store_true")
@@ -180,7 +180,7 @@ def _phase(args, say):
     say(f"  {Path(args.magnitude).name}  {magnitude.shape}, phase x {scale:.6g} to radians, "
         f"slices along axis {slice_axis}")
     out = stabilize_phase(magnitude, phase, filter=args.filter, fwhm=args.fwhm,
-                          mean_phase=not args.no_mean_phase, slice_axis=slice_axis,
+                          mean_phase=args.mean_phase, slice_axis=slice_axis,
                           imag=bool(args.imag))
     real, imag = out if args.imag else (out, None)
     del magnitude, phase

@@ -8,11 +8,14 @@ rank, and the magnitude carries a Rician noise floor. Removing a smooth estimate
 phase leaves the signal near the real axis. The real part then has Gaussian noise and no
 floor, and denoises like a magnitude image.
 
-In each slice, in plane, for every volume, as in the EDDEN preprocessing:
+In each slice, in plane, for every volume, as in NIFTI_NORDIC2:
 
-1. remove the phase of the complex mean over all volumes, the fixed part;
-2. estimate the smooth phase that is left with a filter;
-3. rotate by minus that phase and keep the real part.
+1. estimate the smooth phase with a filter;
+2. rotate by minus that phase and keep the real part.
+
+With ``mean_phase``, the phase of the complex mean over all volumes is removed first, as in
+the EDDEN preprocessing. That helps only where a fixed phase varies faster than the filter
+follows.
 
 The filters:
 
@@ -81,7 +84,7 @@ def phase_scale(phase) -> float:
     return 2 * np.pi / 2 ** np.ceil(np.log2(hi - lo) - 1e-3)   # 8190, 8192 -> 2^13
 
 
-def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=True,
+def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
                     slice_axis=2, imag=False):
     """Rotate complex 4D data onto the real axis and return the real part.
 
