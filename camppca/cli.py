@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from . import io
+from .denoiser.aggregate import check_aggregate
 from .denoiser.mp_threshold import ALGORITHMS
 from .denoiser.shrink import RULES
 from .noise_model import estimate_noise_model
@@ -136,18 +137,19 @@ def _load(args):
     return dwi, bvals, mask, affine, header
 
 
-def _write_qc(directory, model, affine, result=None):
+def _write_qc(directory, model, affine, header, result=None):
     """Free byproducts, as things to look at. Not a reload unit -- see the module docstring."""
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
     io.save_like(out / "rho.nii.gz", model.rho, np.eye(4))
-    io.save_like(out / "noise_field_d.nii.gz", model.d, affine)
-    io.save_like(out / "mask.nii.gz", model.mask.astype(np.uint8), affine, dtype=np.uint8)
+    io.save_like(out / "noise_field_d.nii.gz", model.d, affine, header)
+    io.save_like(out / "mask.nii.gz", model.mask.astype(np.uint8), affine, header,
+                 dtype=np.uint8)
 
     prov = dict(model=model.provenance)
     if result is not None:
-        io.save_like(out / "sigma_hat.nii.gz", result.sigma_hat, affine)
-        io.save_like(out / "rank.nii.gz", result.rank, affine)
+        io.save_like(out / "sigma_hat.nii.gz", result.sigma_hat, affine, header)
+        io.save_like(out / "rank.nii.gz", result.rank, affine, header)
         prov["denoise"] = result.provenance
     io.save_json(out / "provenance.json", prov)
 
@@ -205,6 +207,12 @@ def main(argv=None):
     say = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
     if args.command == "phase":
         return _phase(args, say)
+    if args.command == "estimate" and not args.qc:     # before the minutes of work
+        print("camppca estimate: nothing written. Pass --qc DIR to keep the estimate.",
+              file=sys.stderr)
+        return 1
+    if args.command == "denoise":
+        check_aggregate(args.aggregate, args.stride)    # before the estimate, too
     dwi, bvals, mask, affine, header = _load(args)
     patch = None if args.patch is None else tuple(args.patch)
 
@@ -232,22 +240,19 @@ def main(argv=None):
         say(f"  wrote {args.output}")
         if mask is None:
             mask_path = _mask_path(args.output)
-            io.save_like(mask_path, model.mask.astype(np.uint8), affine, dtype=np.uint8)
+            io.save_like(mask_path, model.mask.astype(np.uint8), affine, header,
+                         dtype=np.uint8)
             say(f"  wrote {mask_path}: no --mask given, so one was estimated from the "
                 "mean b0. Check it; supplying your own brain mask is recommended.")
         if args.noise:
-            io.save_like(args.noise, result.sigma_hat, affine)
+            io.save_like(args.noise, result.sigma_hat, affine, header)
             say(f"  wrote {args.noise}")
 
     if args.qc:
-        plotted = _write_qc(args.qc, model, affine, result)
+        plotted = _write_qc(args.qc, model, affine, header, result)
         say(f"  wrote QC to {args.qc}/")
         if not plotted:
             print("  note: rho.png skipped (matplotlib not installed)", file=sys.stderr)
-    elif args.command == "estimate":
-        print("camppca estimate: nothing written. Pass --qc DIR to keep the estimate.",
-              file=sys.stderr)
-        return 1
     return 0
 
 

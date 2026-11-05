@@ -203,3 +203,11 @@ def test_shrink_and_algorithm_reach_the_model_and_the_denoise(dataset):
     assert prov["denoise"]["shrink"] == "lr"
     assert prov["denoise"]["algorithm"] == "veraart"
     assert prov["model"]["loop_algorithm"] == "veraart"
+
+
+def test_bad_options_fail_before_the_data_is_read(tmp_path, capsys):
+    missing = str(tmp_path / "missing.nii.gz")
+    with pytest.raises(ValueError, match="stride > 1 needs"):
+        main(["denoise", missing, str(tmp_path / "out.nii.gz"), "--stride", "2"])
+    assert main(["estimate", missing]) == 1
+    assert "nothing written" in capsys.readouterr().err

@@ -61,3 +61,24 @@ def test_save_like_writes_floats_under_an_integer_header(tmp_path):
     saved = nib.load(tmp_path / "out.nii")
     assert saved.get_data_dtype() == np.float32
     np.testing.assert_array_equal(np.asanyarray(saved.dataobj), data)
+
+
+def test_a_3d_map_keeps_the_input_space_codes_and_units(tmp_path):
+    img = nib.Nifti1Image(np.zeros((4, 5, 3, 2), np.float32), np.diag([2.0, 2.0, 2.5, 1.0]))
+    img.header.set_qform(img.affine, 1)
+    img.header.set_sform(img.affine, 1)
+    img.header.set_xyzt_units("mm", "sec")
+    io.save_like(tmp_path / "map.nii", np.ones((4, 5, 3)), img.affine, img.header)
+
+    back = nib.load(tmp_path / "map.nii").header
+    assert (int(back["qform_code"]), int(back["sform_code"])) == (1, 1)
+    assert back.get_xyzt_units()[0] == "mm"
+    assert back.get_data_shape() == (4, 5, 3)
+
+
+def test_a_mask_with_a_trailing_dimension_of_one_loads_as_3d(tmp_path):
+    mask = np.zeros((4, 5, 3, 1), np.uint8)
+    mask[1, 2, 1, 0] = 1
+    nib.save(nib.Nifti1Image(mask, np.eye(4)), tmp_path / "mask.nii")
+    loaded = io.load_mask(tmp_path / "mask.nii")
+    assert loaded.shape == (4, 5, 3) and loaded.sum() == 1
