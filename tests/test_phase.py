@@ -27,11 +27,37 @@ def phases(rng, shape=SHAPE):
     return fixed[..., None] + smooth
 
 
-def test_phase_scale_reads_scanner_integers():
-    assert phase_scale(np.array([-4096.0, 0.0, 4094.0])) == pytest.approx(np.pi / 4096)
-    assert phase_scale(np.array([0.0, 4095.0])) == pytest.approx(2 * np.pi / 4096)
-    assert phase_scale(np.array([-4096.0, 4096.0])) == pytest.approx(np.pi / 4096)
+def test_phase_scale_takes_the_range_as_one_turn():
+    assert phase_scale(np.array([-4096.0, 0.0, 4094.0])) == pytest.approx(np.pi / 4096,
+                                                                           rel=1e-3)
+    assert phase_scale(np.array([0.0, 4095.0])) == pytest.approx(2 * np.pi / 4096, rel=1e-3)
+    assert phase_scale(np.array([-180.0, 179.0])) == pytest.approx(np.pi / 180, rel=1e-2)
+    assert phase_scale(np.array([-3142.0, 3141.0])) == pytest.approx(1e-3, rel=1e-3)
+    assert phase_scale(np.array([-4096.0, np.nan, 4094.0])) == pytest.approx(np.pi / 4096,
+                                                                             rel=1e-3)
+
+
+def test_phase_scale_refuses_a_constant_or_empty_phase():
+    with pytest.raises(ValueError, match="phase unit"):
+        phase_scale(np.full(4, 4000.0))
+    with pytest.raises(ValueError, match="phase unit"), pytest.warns(RuntimeWarning):
+        phase_scale(np.full(4, np.nan))
+
+
+def test_phase_scale_keeps_radians():
     assert phase_scale(np.array([-3.1, 3.14])) == 1.0
+    assert phase_scale(np.array([0.0, 6.28])) == 1.0
+    assert phase_scale(np.array([-0.5, 0.5])) == 1.0, "less than a turn is not stretched"
+
+
+def test_stabilize_phase_reads_degrees_like_radians():
+    rng = np.random.default_rng(4)
+    magnitude = blob()[..., None] * np.ones(SHAPE[3])
+    phase = np.angle(np.exp(1j * phases(rng)))
+    phase[0, 0, 0, 0], phase[0, 0, 0, 1] = -np.pi, np.pi      # the full turn, as noise gives
+    radians = stabilize_phase(magnitude, phase)
+    degrees = stabilize_phase(magnitude, np.degrees(phase))
+    np.testing.assert_allclose(degrees, radians, atol=1e-3 * magnitude.max())
 
 
 def test_the_tukey_window_has_its_half_maximum_at_fwhm():

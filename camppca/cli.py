@@ -102,7 +102,8 @@ def _parser():
     s = sub.add_parser("phase", help="rotate complex data onto the real axis; the real "
                                      "part then denoises like a magnitude image")
     s.add_argument("magnitude", help="4D magnitude image")
-    s.add_argument("phase", help="4D phase image, in radians or as the scanner stores it")
+    s.add_argument("phase", help="4D phase image, in radians or in any unit whose range is one full "
+                        "turn, as scanners store it")
     s.add_argument("output", help="4D real part")
     s.add_argument("--filter", choices=FILTERS, default="dk",
                    help="smooth phase estimate: dk, Sprenger et al.'s decorrelated kernel "
@@ -173,8 +174,7 @@ def _plot_rho(path, model):
 def _phase(args, say):
     magnitude, affine, header = io.load_dwi(args.magnitude)
     phase, _, _ = io.load_dwi(args.phase)
-    scale = phase_scale(phase)
-    phase *= scale
+    scale = phase_scale(phase)             # for the message: stabilize_phase applies it
     slice_axis = header.get_dim_info()[2]
     slice_axis = 2 if slice_axis is None else slice_axis
     say(f"  {Path(args.magnitude).name}  {magnitude.shape}, phase x {scale:.6g} to radians, "
