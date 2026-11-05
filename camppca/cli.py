@@ -124,6 +124,9 @@ def _parser():
                    help="first remove the phase of the mean over all volumes, as in EDDEN")
     s.add_argument("--imag", metavar="PATH",
                    help="also write the imaginary part, which should hold noise only")
+    s.add_argument("--workers", type=int, default=None, metavar="N",
+                   help="CPU processes to split the volumes over (default: one per "
+                        "physical core; 1 runs in one process)")
     s.add_argument("-q", "--quiet", action="store_true")
     return p
 
@@ -191,7 +194,7 @@ def _phase(args, say):
         f"slices along axis {slice_axis}")
     out = stabilize_phase(magnitude, phase, filter=args.filter, fwhm=args.fwhm,
                           mean_phase=args.mean_phase, slice_axis=slice_axis,
-                          imag=bool(args.imag))
+                          imag=bool(args.imag), workers=args.workers)
     real, imag = out if args.imag else (out, None)
     del magnitude, phase
     io.save_like(args.output, real, affine, header)

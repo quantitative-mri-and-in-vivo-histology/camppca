@@ -316,6 +316,10 @@ phase of the complex mean over volumes, then a smooth estimate, `"dk"` (default)
   (Fig. 3). They were read off it by color and sum to 1.006.
 - `"tukey"` at 58% reads EDDEN's "Tukey filter with an FWHM of 58%" as a Tukey window
   whose half maximum sits at 58% of k-space. EDDEN does not say more.
+- The volumes are stabilized in the worker pool, chunks of volumes per task, and the
+  result does not depend on the number of workers. On EDDEN 0.9 mm the step took about
+  125 s on one core before and 22 s on 16 workers after (2026-11-05), the phasor now
+  taken as `conj(s) / |s|` without `angle`.
 - The phase is removed with a smooth estimate, which leaves neighbours' noise correlation
   in the real part close to the complex one. The estimator measures it from the real
   part anyway.
