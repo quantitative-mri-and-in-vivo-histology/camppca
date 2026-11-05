@@ -1,6 +1,6 @@
 """Unwhitening is exact for ANY spectral profile, not just a hard threshold.
 
-The engine reconstructs the centre voxel as
+The engine reconstructs the center voxel as
 
     x_hat_c = e_c^T C^(1/2) ( Yw V diag(f) V^T )
             = ( e_c^T C^(1/2) ) Yw V diag(f) V^T          <- what the engine computes
@@ -58,9 +58,9 @@ def _profiles(rng, evals):
 
 
 @pytest.mark.parametrize("profile_idx", [0, 1, 2])
-def test_centre_row_shortcut_is_exact_for_any_profile(setup, profile_idx):
+def test_center_row_shortcut_is_exact_for_any_profile(setup, profile_idx):
     rng, C, d, Y, n_vox = setup
-    centre = n_vox // 2
+    center = n_vox // 2
     whitener, unwhitener = sqrtm_psd(C, -0.5), sqrtm_psd(C, 0.5)
 
     Yw = whitener @ (Y / d[:, None])
@@ -70,11 +70,11 @@ def test_centre_row_shortcut_is_exact_for_any_profile(setup, profile_idx):
 
     Xw = Yw @ (V * f) @ V.T
 
-    # LITERAL: unwhiten the whole n_vox x N patch, then take the centre row.
-    literal = (unwhitener @ Xw * d[:, None])[centre]
+    # LITERAL: unwhiten the whole n_vox x N patch, then take the center row.
+    literal = (unwhitener @ Xw * d[:, None])[center]
 
-    # FUSED: carry only the centre ROW of C^(1/2) -- what the engine does.
-    fused = ((unwhitener[centre] @ Yw) @ (V * f)) @ V.T * d[centre]
+    # FUSED: carry only the center ROW of C^(1/2) -- what the engine does.
+    fused = ((unwhitener[center] @ Yw) @ (V * f)) @ V.T * d[center]
 
     rel = np.abs(literal - fused).max() / np.abs(literal).max()
     assert rel < 1e-12, f"{name}: shortcut must be exact, got {rel:.2e}"

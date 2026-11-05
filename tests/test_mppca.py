@@ -13,7 +13,7 @@ from camppca import denoise_mppca
 SHAPE = (10, 10, 10)
 N_VOLS = 36
 PATCH = (5, 5, 5)
-CENTER_ROW = 125 // 2          # centre of a 5x5x5 box flattened in C order
+CENTER_ROW = 125 // 2          # center of a 5x5x5 box flattened in C order
 
 
 def interior_mask(shape=SHAPE, margin=2):
@@ -84,10 +84,10 @@ def test_denoising_moves_a_noisy_volume_closer_to_its_signal():
     assert after < 0.5 * before, f"rmse {before:.2f} -> {after:.2f}"
 
 
-def test_the_centre_voxel_matches_a_full_svd_of_its_own_patch():
+def test_the_center_voxel_matches_a_full_svd_of_its_own_patch():
     """The core eigendecomposes the Gram instead of taking the SVD of the patch.
 
-    For the centre row those are the same thing. Here the patch is pulled out with plain
+    For the center row those are the same thing. Here the patch is pulled out with plain
     slicing and reconstructed with numpy's SVD at the rank the denoiser reported.
     """
     rng = np.random.default_rng(3)
@@ -176,7 +176,7 @@ def test_the_result_describes_what_was_run():
     ((5, 5), "must be 3 ints"),
     ((5, 5, 0), "must be >= 1"),
 ])
-def test_a_patch_without_a_centre_voxel_is_rejected(patch, message):
+def test_a_patch_without_a_center_voxel_is_rejected(patch, message):
     dwi = np.zeros((6, 6, 6, 8), np.float32)
     with pytest.raises(ValueError, match=message):
         denoise_mppca(dwi, patch=patch)

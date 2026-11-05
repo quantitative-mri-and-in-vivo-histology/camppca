@@ -22,8 +22,8 @@ The filters:
 - ``"tukey"``: a low-pass in k-space, a Tukey window set by its full width at half
   maximum as a fraction of k-space. EDDEN used 58%.
 - ``"dk"``: the decorrelated kernel of Sprenger et al., their Opt5. A 5 x 5 smoother in
-  image space that gives almost no weight to the centre voxel and its direct neighbours,
-  whose noise is correlated with the centre's. The estimate then barely sees the voxel's
+  image space that gives almost no weight to the center voxel and its direct neighbours,
+  whose noise is correlated with the center's. The estimate then barely sees the voxel's
   own noise, so the real part stays unbiased.
 
 On complex white noise of unit level, the real part's mean over pure noise is 0.28 with
@@ -49,13 +49,13 @@ __all__ = ["FILTERS", "stabilize_phase", "phase_scale"]
 FILTERS = ("tukey", "dk")
 
 #: Sprenger et al.'s Opt5 weights by offset (|dx|, |dy|), sorted. The paper gives them
-#: only as a colour map (Fig. 3); these were read off it by colour and sum to 1.008.
+#: only as a color map (Fig. 3); these were read off it by color and sum to 1.006.
 _DK_WEIGHTS = {(0, 0): 0.002, (0, 1): 0.006, (1, 1): 0.075,
                (0, 2): 0.053, (1, 2): 0.045, (2, 2): 0.027}
 
 
-def _dk_kernel():
-    """The 5 x 5 decorrelated kernel, normalized to sum 1."""
+def _dk_weights():
+    """The 5 x 5 "dk" filter weights, normalized to sum 1."""
     k = np.array([[_DK_WEIGHTS[tuple(sorted((abs(dx), abs(dy))))] for dy in range(-2, 3)]
                   for dx in range(-2, 3)])
     return k / k.sum()
@@ -65,7 +65,7 @@ def _tukey(n, fwhm):
     """Tukey window over ``n`` k-space lines, in FFT order, with its half maximum at
     ``fwhm`` of the k-space width: flat out to ``2 fwhm - 1``, then a cosine taper to zero
     at the edge."""
-    r = 2 * np.abs(np.fft.fftfreq(n))                 # 0 at the centre, 1 at the edge
+    r = 2 * np.abs(np.fft.fftfreq(n))                 # 0 at the center, 1 at the edge
     flat, taper = 2 * fwhm - 1, 2 * (1 - fwhm)
     return 0.5 * (1 + np.cos(np.pi * np.clip(r - flat, 0, None) / taper))
 
@@ -135,7 +135,7 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
             window = window * _tukey(magnitude.shape[a], fwhm).reshape(
                 [-1 if b == a else 1 for b in range(3)]).astype(np.float32)
     else:
-        kernel = np.expand_dims(_dk_kernel(), slice_axis)
+        weights = np.expand_dims(_dk_weights(), slice_axis)
 
     real = np.empty(magnitude.shape, np.float32)
     im = np.empty(magnitude.shape, np.float32) if imag else None
@@ -144,8 +144,8 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
         if filter == "tukey":
             smooth = np.fft.ifftn(np.fft.fftn(z, axes=plane) * window, axes=plane)
         else:
-            smooth = (ndimage.convolve(z.real, kernel, mode="constant")
-                      + 1j * ndimage.convolve(z.imag, kernel, mode="constant"))
+            smooth = (ndimage.convolve(z.real, weights, mode="constant")
+                      + 1j * ndimage.convolve(z.imag, weights, mode="constant"))
         z = z * np.exp(-1j * np.angle(smooth)).astype(np.complex64)
         real[..., n] = z.real
         if imag:

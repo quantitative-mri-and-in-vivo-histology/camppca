@@ -191,3 +191,15 @@ def test_a_complex_input_gives_a_complex_output(dataset, tmp_path):
     img = nib.load(str(out))
     assert img.get_data_dtype() == np.complex64
     assert np.iscomplexobj(np.asanyarray(img.dataobj))
+
+
+def test_shrink_and_algorithm_reach_the_model_and_the_denoise(dataset):
+    qc = dataset / "qc_shrink"
+    rc = main(["denoise", str(dataset / "in.nii.gz"), str(dataset / "out_shrink.nii.gz"),
+               "--qc", str(qc), "--patch", "5", "5", "3", "--shrink", "lr",
+               "--algorithm", "veraart", "-q", *_grad(dataset)])
+    assert rc == 0
+    prov = json.loads((qc / "provenance.json").read_text())
+    assert prov["denoise"]["shrink"] == "lr"
+    assert prov["denoise"]["algorithm"] == "veraart"
+    assert prov["model"]["loop_algorithm"] == "veraart"

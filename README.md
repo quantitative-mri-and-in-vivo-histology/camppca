@@ -43,7 +43,8 @@ from the mean of every volume. Every volume enters the estimate either way.
 It is the smallest odd cube with at least as many voxels as there are volumes: `5 5 5` up
 to 125 volumes, `7 7 7` up to 343.
 `--level-rounds N` re-estimates the level field from the whitened patches up to N times
-(default 0).
+(default 0). `--shrink gd` or `lr` shrinks the kept components instead of keeping them
+whole. `--algorithm` picks the Marchenko-Pastur rule, `cordero-grande` by default.
 
 ### Complex data: phase stabilization
 
@@ -99,7 +100,7 @@ from camppca import estimate_noise_model, denoise_with_noise_model
 model = estimate_noise_model(dwi, bvals, mask)   # patch: dwidenoise's rule
 model.rho           # the correlation lag table — the pattern, no level
 model.d             # relative noise level per voxel
-model.patch_correlation(model.provenance["patch"])   # the P×P patch correlation, on demand
+model.patch_correlation(model.provenance["patch"])   # the n_vox × n_vox patch correlation, on demand
 
 result = denoise_with_noise_model(dwi, model)    # the patch the model was estimated for
 ```
@@ -116,7 +117,7 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
   runs everything in one process. The image reaches the workers as a memory-mapped file in
   the temp directory; set `TMPDIR` or `JOBLIB_TEMP_FOLDER` to move it, to local scratch on
   a cluster for example.
-- **Output is centre-voxel by default**, with no overlap averaging. Intentional — it
+- **Output is center-voxel by default**, with no overlap averaging. Intentional — it
   matches the MP theory the noise estimate rests on. `aggregate="mean"`
   (`--aggregate mean`) averages the overlapping patch reconstructions instead, and
   `stride` (`--stride N`) keeps a patch every N voxels per axis.

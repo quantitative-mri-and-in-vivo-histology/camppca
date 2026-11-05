@@ -64,7 +64,7 @@ def _read_volumes(img, dtype):
 def load_bvals(path):
     """Load a whitespace-separated FSL bval file as a flat float array."""
     bvals = np.loadtxt(str(path)).ravel().astype(float)
-    if bvals.ndim != 1 or bvals.size == 0:
+    if bvals.size == 0:
         raise ValueError(f"{path}: expected a 1-D list of b-values")
     return bvals
 

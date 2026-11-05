@@ -19,7 +19,7 @@ def patch_offsets(patch):
 
 
 def patch_size(patch):
-    """Number of voxels in the patch (paper M, code P)."""
+    """Number of voxels in the patch (paper M, code ``n_vox``)."""
     return int(np.prod(np.asarray(patch, int)))
 
 
@@ -40,7 +40,7 @@ def default_patch(shape):
     The smallest odd cube with at least N voxels, so the patch matrix is never wider than
     tall: 5 x 5 x 5 up to 125 volumes, 7 x 7 x 7 up to 343. Each side is clipped to the
     image. MRtrix 3.0.4 clips to the image size itself, which can be even. Here a side is
-    clipped to the largest odd size that fits, since the patch needs a centre voxel.
+    clipped to the largest odd size that fits, since the patch needs a center voxel.
     """
     side = 1
     while side ** 3 < shape[3]:
@@ -70,5 +70,5 @@ def check_patch(patch):
     if np.any(patch % 2 == 0):
         raise ValueError(
             f"patch dimensions must be odd, got {tuple(int(v) for v in patch)} -- an even "
-            "dimension has no centre voxel and the engine is centre-voxel-only")
+            "dimension has no center voxel and the engine is center-voxel-only")
     return patch

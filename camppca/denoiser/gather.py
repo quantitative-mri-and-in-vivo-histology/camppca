@@ -1,7 +1,7 @@
 """Patch extraction: the box of voxels around each requested voxel, a tile at a time.
 
 At the image edge the box moves inward until it fits, as in dwidenoise, so a voxel at the
-border still gets a full box of real neighbours. It then sits off centre in its box, and
+border still gets a full box of real neighbours. It then sits off center in its box, and
 the gather says in which row. Wrapping around to the opposite face instead would mix in
 voxels that are not neighbours, and ``C`` would treat them as if they were. The box is
 built by index arithmetic on the original volume, so no padded copy is ever made. Rows
@@ -23,7 +23,7 @@ import numpy as np
 
 from ..patch import check_patch, patch_offsets
 
-__all__ = ["TILE", "as_data", "box_centres", "patch_tiles", "restore_nonfinite",
+__all__ = ["TILE", "as_data", "box_centers", "patch_tiles", "restore_nonfinite",
            "zero_nonfinite"]
 
 #: Patches per tile.
@@ -66,8 +66,8 @@ def restore_nonfinite(denoised, bad, values):
         denoised[bad] = np.where(np.isfinite(values), denoised[bad], values)
 
 
-def box_centres(coords, shape, patch):
-    """The centre of each voxel's box, per axis: the voxel itself, moved inward at the
+def box_centers(coords, shape, patch):
+    """The center of each voxel's box, per axis: the voxel itself, moved inward at the
     image edge until the box fits. ``coords`` is a sequence of three index arrays."""
     half = np.asarray(patch, int) // 2
     return tuple(np.clip(c, h, int(n) - 1 - h) for c, h, n in zip(coords, half, shape,
@@ -89,17 +89,17 @@ def patch_tiles(shape, voxels: np.ndarray, patch, tile: int = TILE
         ``(sl, index, rows)``. ``sl`` slices ``voxels`` to this tile. ``index`` is three
         (B, n_vox) integer arrays, so ``volume[index]`` is the tile's (B, n_vox, ...)
         patches of any array with that spatial shape, rows in patch-offset order.
-        ``rows`` (B,) is the row of each requested voxel in its patch: the centre row,
+        ``rows`` (B,) is the row of each requested voxel in its patch: the center row,
         ``n_vox // 2``, except within half a patch of the image edge.
     """
     patch = check_patch(patch)
     shape = tuple(int(s) for s in shape)
     off = patch_offsets(patch) - patch // 2
     coords = np.unravel_index(np.asarray(voxels), shape)
-    centres = box_centres(coords, shape, patch)
-    shift = [c - b + h for c, b, h in zip(coords, centres, patch // 2, strict=True)]
+    centers = box_centers(coords, shape, patch)
+    shift = [c - b + h for c, b, h in zip(coords, centers, patch // 2, strict=True)]
     rows = (shift[0] * patch[1] + shift[1]) * patch[2] + shift[2]
     for start in range(0, coords[0].size, int(tile)):
         sl = slice(start, start + int(tile))
-        yield sl, tuple(b[sl, None] + off[None, :, k] for k, b in enumerate(centres)), \
+        yield sl, tuple(b[sl, None] + off[None, :, k] for k, b in enumerate(centers)), \
             rows[sl]

@@ -37,7 +37,7 @@ def _true_rho():
 
 @pytest.fixture(scope="module")
 def dataset():
-    """Coloured noise at a level rising 1x to 2x along x, on a rank-4 signal."""
+    """Colored noise at a level rising 1x to 2x along x, on a rank-4 signal."""
     rng = np.random.default_rng(0)
     shape, n_vols, rank = (40, 40, 12), 60, 4
     bvals = np.concatenate([np.zeros(6), np.full(n_vols - 6, 1000.0)])
@@ -124,8 +124,8 @@ def _patch_projectors(factors, C):
 
 def test_the_batched_split_is_the_per_patch_algebra(dataset, model):
     dwi, _, mask = dataset
-    centres = loop._sample_centres(mask, PATCH, np.random.default_rng(1))
-    patches = loop._gather(dwi, _effective_d(model.d, mask), centres, PATCH)[:40]
+    centers = loop._sample_centers(mask, PATCH, np.random.default_rng(1))
+    patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)[:40]
     C = model.patch_correlation(PATCH)
 
     S, factors = loop._split(patches, C, "cordero-grande")
@@ -141,7 +141,7 @@ def test_a_mask_too_thin_for_the_patch_is_refused():
     mask = np.zeros((20, 20, 6), bool)
     mask[3:17, 3:17, 2:4] = True               # two slices, the patch needs three
     with pytest.raises(ValueError, match="no mask voxel has its whole"):
-        loop._sample_centres(mask, PATCH, np.random.default_rng(0))
+        loop._sample_centers(mask, PATCH, np.random.default_rng(0))
 
 
 def test_lags_the_patch_never_spans_keep_the_white_start(dataset):
@@ -216,8 +216,8 @@ def test_the_fit_is_the_pinned_least_squares(dataset, model):
     """The float32 conjugate-gradient fit against a dense float64 least squares built one
     patch at a time, in whitened units, with the far-class mean held at zero."""
     dwi, _, mask = dataset
-    centres = loop._sample_centres(mask, PATCH, np.random.default_rng(2))
-    patches = loop._gather(dwi, _effective_d(model.d, mask), centres, PATCH)[:300]
+    centers = loop._sample_centers(mask, PATCH, np.random.default_rng(2))
+    patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)[:300]
     C = model.patch_correlation(PATCH)
     S, factors = loop._split(patches, C, "cordero-grande")
     table = loop._fit_table(S, factors, C, PATCH, LAG, PATCH[2] - 1, model.rho)

@@ -19,8 +19,9 @@ MASK_FRAC = 0.15      # threshold as a fraction of the mean-b0 99th percentile
 CLOSE = 2             # seal pores BEFORE eroding -- see the module docstring
 ERODE = 3
 
-# ⚠ `estimate_noise_model` calls `brain_mask(..., erode=0)`: the model's mask is also the
-# set of voxels the engine writes, so eroding it would leave a 3-voxel rim un-denoised.
+# ⚠ `estimate_noise_model` calls `brain_mask(..., erode=0)`: with `mask_only`, the model's
+# mask is also the set of voxels the engine writes, so eroding it would leave a 3-voxel
+# rim un-denoised.
 
 
 def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):

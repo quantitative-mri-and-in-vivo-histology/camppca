@@ -78,9 +78,9 @@ def test_whitening_collapses_the_patch_off_diagonals(model, dataset):
     noise = _colored_noise(rng, dwi.shape[:3], n_cols, SIGMA_TRUE)
     offs = patch_offsets(patch)
     kk = np.asarray(patch) // 2
-    centres = np.argwhere(mask)[rng.permutation(int(mask.sum()))[:60]]
+    centers = np.argwhere(mask)[rng.permutation(int(mask.sum()))[:60]]
     stack = np.stack([np.stack([noise[x - kk[0] + dx, y - kk[1] + dy, z - kk[2] + dz, :]
-                                for dx, dy, dz in offs]) for x, y, z in centres])
+                                for dx, dy, dz in offs]) for x, y, z in centers])
 
     def patch_corr(patches):
         """Empirical P x P correlation, pooled over patches and columns."""
@@ -108,7 +108,7 @@ def test_whitening_collapses_the_patch_off_diagonals(model, dataset):
 
 
 def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
-    """The paper's core claim: colour makes standard MP-PCA under-estimate sigma."""
+    """The paper's core claim: color makes standard MP-PCA under-estimate sigma."""
     dwi, bvals, mask = dataset
     patch = (5, 5, 3)
 
@@ -118,7 +118,7 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
     ours_med, white_med = np.median(ours[mask]), np.median(white[mask])
     # Measured: camppca ~10.0, white MP-PCA ~5.3 against a true 10.0.
     assert ours_med == pytest.approx(SIGMA_TRUE, rel=0.15)
-    assert white_med < 0.7 * SIGMA_TRUE, "white MP-PCA under-estimates on coloured noise"
+    assert white_med < 0.7 * SIGMA_TRUE, "white MP-PCA under-estimates on colored noise"
     assert abs(ours_med - SIGMA_TRUE) < abs(white_med - SIGMA_TRUE) / 3
 
 
@@ -148,7 +148,7 @@ def test_every_voxel_is_denoised_unless_mask_only(dataset, model):
 
 
 def test_the_scale_of_d_cancels(dataset, model):
-    """Rows are divided by d and the centre multiplied back, so a constant drops out.
+    """Rows are divided by d and the center multiplied back, so a constant drops out.
 
     A power of two scales every float exactly, so x0.25 must be bit-identical. A generic
     factor may flip a near-tied MP cut by float32 rounding, in a small share of voxels.

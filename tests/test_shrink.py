@@ -97,7 +97,7 @@ def _smooth_case(seed=4, n_patches=6):
     return C, root, whitened, np.maximum(evals[:, ::-1], 0.0), evecs[:, :, ::-1], rng
 
 
-def test_whole_patch_alignment_with_equal_levels_is_the_centre_one():
+def test_whole_patch_alignment_with_equal_levels_is_the_center_one():
     C, root, whitened, evals, evecs, _ = _smooth_case()
     levels = np.full(whitened.shape[:2], 2.5)
 

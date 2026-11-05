@@ -18,7 +18,7 @@ class DenoiseResult:
     ``sigma_hat`` is an OUTPUT. It is what the fit measured, in the input's units.
 
     Voxels outside the region denoised are passed through unchanged. Both denoisers write
-    back the centre voxel of each patch by default; ``aggregate="mean"`` averages the overlapping
+    back the center voxel of each patch by default; ``aggregate="mean"`` averages the overlapping
     patch reconstructions instead (:mod:`camppca.denoiser.aggregate`).
     """
 
