@@ -111,8 +111,8 @@ def _parser():
     s = sub.add_parser("phase", help="rotate complex data onto the real axis; the real "
                                      "part then denoises like a magnitude image")
     s.add_argument("magnitude", help="4D magnitude image")
-    s.add_argument("phase", help="4D phase image, in radians or in any unit whose range is one full "
-                        "turn, as scanners store it")
+    s.add_argument("phase", help="4D phase image, in radians or in any unit whose range "
+                                 "is one full turn, as scanners store it")
     s.add_argument("output", help="4D real part")
     s.add_argument("--filter", choices=FILTERS, default="dk",
                    help="smooth phase estimate: dk, Sprenger et al.'s decorrelated kernel "

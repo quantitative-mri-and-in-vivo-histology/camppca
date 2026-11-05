@@ -10,9 +10,11 @@ and unwhitens. Standard MP-PCA assumes the patch noise is i.i.d. across voxels; 
 UNWHITENING THE CENTER VOXEL. Whitening mixes voxels, so the center voxel of the
 reconstruction is a dense combination of all ``n_vox`` whitened rows::
 
-    xhat_c = (e_c^T C^(1/2)) Yw Pi
+    xhat_c = (e_c^T C^(1/2)) Yw Pi = (e_c^T X) Pi
 
-Only the CENTER ROW of ``C^(1/2)`` is ever needed, which is what keeps unwhitening cheap.
+since ``C^(1/2) C^(-1/2) = I``, both from one eigendecomposition in :func:`sqrtm_psd`. So
+the voxel's own row of the patch, projected, is its denoised signal, and unwhitening
+needs no product at all. ``Pi`` is the projection the whitened spectrum picks.
 
 WHITENER FACTORIZATION. The paper applies ``W = (DCD)^(-1/2)`` in one symmetric step. This
 code divides rows by ``d`` and then applies ``C^(-1/2)``, i.e. ``W = C^(-1/2) D^(-1)``.
@@ -105,13 +107,13 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
     The whole patch unwhitens without ``C^(1/2)``: ``C^(1/2) (C^(-1/2) X) V diag(w) V^T``
     is ``X V diag(w) V^T``, because both roots come from one eigendecomposition in
     :func:`sqrtm_psd`. ``V`` are the whitened Gram's eigenvectors, ``w`` the kept and
-    shrink weights. The center row is the same identity for one row.
+    shrink weights. The voxel's row is the same identity for one row.
 
     Args:
         patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
         whitener: (n_vox, n_vox) ``C^(-1/2)``, or None for white noise.
-        root: (n_vox, n_vox) ``C^(1/2)``, or None with no whitener. Unwhitening one voxel
-            needs only its row.
+        root: (n_vox, n_vox) ``C^(1/2)``, or None. Only ``full`` with "lr" and
+            ``levels`` reads it.
         C: (n_vox, n_vox) the patch correlation itself; only "lr" reads it.
         n_small: the smaller of ``n_vox`` and ``n_vols``.
         n_large: the larger of them.
@@ -137,27 +139,23 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
         r = int(rank.max())
         w = (np.arange(r)[None, :] < rank[:, None]).astype(patches.dtype)
         if shrink != "hard":
-            alignment = signal_alignment(whitened, evecs, evals, C, levels, root) \
+            alignment = signal_alignment(whitened, evecs, evals, C, levels, root, r) \
                 if shrink == "lr" else None
             w = w * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)[:, :r]
         V = evecs[:, :, :r]
         return np.matmul(np.matmul(patches, V) * w[:, None, :], V.conj().transpose(0, 2, 1)), \
             sigma_hat, rank
 
-    center = n_vox // 2
-    if root is None:                                            # no whitening: Yw = Y
-        voxel_row = whitened[:, center, :] if rows is None else \
-            whitened[np.arange(len(rows)), rows, :]
-    else:
-        voxel_row = np.einsum("p,bpm->bm", root[center], whitened)  # e_c^T C^(1/2) Yw
-        edge = None if rows is None else np.flatnonzero(rows != center)
-        if edge is not None and edge.size:   # off center near the image edge: its own row
-            voxel_row[edge] = np.einsum("bp,bpm->bm", root[rows[edge]], whitened[edge])
+    # e_c^T C^(1/2) Yw = e_c^T C^(1/2) C^(-1/2) X = e_c^T X: the voxel's own row, since
+    # both roots come from one eigendecomposition. No product with C^(1/2) is needed.
+    voxel_row = patches[:, n_vox // 2, :] if rows is None else \
+        patches[np.arange(len(rows)), rows, :]
     coords = np.einsum("bm,bmk->bk", voxel_row, evecs)
     keep = np.arange(n_vols)[None, :] < rank[:, None]
     kept = np.where(keep, coords, 0.0)
     if shrink != "hard":
-        alignment = signal_alignment(whitened, evecs, evals, C) if shrink == "lr" else None
+        alignment = signal_alignment(whitened, evecs, evals, C, r=int(rank.max())) \
+            if shrink == "lr" else None
         kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)
     signal = np.einsum("bk,bnk->bn", kept, evecs.conj())
     return signal, sigma_hat, rank
@@ -227,8 +225,8 @@ def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TI
     return level
 
 
-def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, root, C, patch, algorithm,
-                             tile, shrink):
+def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, C, patch, algorithm, tile,
+                             shrink):
     """The tile loop of :func:`denoise_whitened` for some voxels.
 
     Each voxel row is divided by its level before whitening, and the center row is
@@ -247,7 +245,7 @@ def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, root, C, patch, alg
     for sl, index, rows in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
         patches, levels = _tile_patches(dwi, d_field, index)
         tile_signal, sigma_hat[sl], rank[sl] = _denoise_tile(
-            patches, whitener, root, C, n_small, n_large, algorithm, shrink, rows=rows)
+            patches, whitener, None, C, n_small, n_large, algorithm, shrink, rows=rows)
         if levels is not None:
             tile_signal = tile_signal * levels[np.arange(len(rows)), rows, None]  # data units
         signal[sl] = tile_signal
@@ -296,9 +294,10 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
         algorithm: which Marchenko-Pastur variant to cut with.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) level field, ALREADY guarded by the caller
-            (:meth:`~camppca.noise_model.NoiseModel.effective_d`). Each voxel row is divided by its own level before whitening, which
-            is exact for ``Sigma = sigma^2 D C D``, and the center row is multiplied back
-            on the way out. What it adds over a per-patch level is the within-patch
+            (:meth:`~camppca.noise_model.NoiseModel.effective_d`). Each voxel row is
+            divided by its own level before whitening, which is exact for
+            ``Sigma = sigma^2 D C D``, and the voxel's row is multiplied back on the way
+            out. What it adds over a per-patch level is the within-patch
             heteroscedasticity, which widens the noise bulk the same way off-diagonal
             color does.
         shrink: weight on the kept components; see :mod:`camppca.denoiser.shrink`.
@@ -337,8 +336,8 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
 
     if aggregate == "mean":
         assembly = MeanAssembly(dwi, mask)
-        run_boxes(partial(_mean_whitened_voxels, whitener=whitener, root=root, C=C, patch=patch, algorithm=algorithm, tile=tile,
-                          shrink=shrink),
+        run_boxes(partial(_mean_whitened_voxels, whitener=whitener, root=root, C=C,
+                          patch=patch, algorithm=algorithm, tile=tile, shrink=shrink),
                   (dwi, d_field, mask),
                   voxel_chunks(patch_centers(mask, patch, stride), MEAN_CHUNKS, tile),
                   assembly.add, workers)
@@ -358,7 +357,8 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
         where = tuple(c[sl] for c in coords)
         denoised[where], sigma_hat[where], rank[where] = outputs
 
-    run_voxels(partial(_denoise_whitened_voxels, whitener=whitener, root=root, C=C, patch=patch, algorithm=algorithm, tile=tile, shrink=shrink),
+    run_voxels(partial(_denoise_whitened_voxels, whitener=whitener, C=C, patch=patch,
+                       algorithm=algorithm, tile=tile, shrink=shrink),
                (dwi, d_field), voxels, write, workers, tile)
     if np.iscomplexobj(dwi):
         sigma_hat /= np.sqrt(2.0)

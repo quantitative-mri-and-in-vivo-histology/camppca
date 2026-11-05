@@ -38,9 +38,9 @@ def _by_hand(dwi, voxel, C=None, d=None):
     n_vox = len(idx[0])
     r = int(mp_threshold(evals, min(n_vox, N_VOLS), max(n_vox, N_VOLS))[0][0])
     V = V[0, :, :r].astype(np.float64)
-    rebuilt = Y.astype(np.float64) @ V @ V.T
-    out = rebuilt[row] if C is None else sqrtm_psd(C, 0.5)[row] @ rebuilt
-    return out * levels[row]
+    # Unwhitened with C^(1/2) C^(-1/2) = I: the voxel's own row of X, projected. Through
+    # C^(1/2) times the float32 whitener the hand calculation itself was off by 0.5.
+    return (X[row].astype(np.float64) @ V @ V.T) * levels[row]
 
 
 EDGE_VOXELS = [(0, 0, 0), (0, 5, 4), (10, 9, 8), (1, 4, 0), (5, 0, 8)]
@@ -57,11 +57,10 @@ def test_an_edge_voxel_is_denoised_from_its_inward_box(dwi, voxel):
     white = denoise_mppca(dwi, mask, patch=PATCH, workers=1).denoised[voxel]
     whitened = denoise_whitened(dwi, mask, C, patch=PATCH, d_field=d, workers=1)[0][voxel]
 
-    # float32 in the engine: interior voxels are off by about 1e-4 of the scale when
-    # whitened, edge voxels by up to 3e-4. The wrapped box was off by 0.1 to 0.7.
+    # The wrapped box was off by 0.1 to 0.7 of the scale.
     scale = np.abs(dwi).max()
     assert np.abs(white - _by_hand(dwi, voxel)).max() < 1e-4 * scale
-    assert np.abs(whitened - _by_hand(dwi, voxel, C, d)).max() < 1e-3 * scale
+    assert np.abs(whitened - _by_hand(dwi, voxel, C, d)).max() < 1e-4 * scale
 
 
 def test_the_opposite_face_does_not_reach_an_edge_voxel(dwi):

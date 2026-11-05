@@ -240,7 +240,7 @@ Breaking any of these corrupts results without an error:
   Outside the mask `d` is the level of the nearest mask voxel.
 - **At the image edge the box moves inward** until it fits, as in dwidenoise
   (`gather.box_centers`), and the voxel's own row is written back. `C` depends only on
-  offsets within the box, so it is unchanged. Unwhitening uses that row of `C^(1/2)`,
+  offsets within the box, so it is unchanged. Unwhitening takes that row of the patch,
   and the center-voxel "lr" weight reads `C` alone, so it needs nothing. In mean mode
   each distinct box counts once. Until 2026-11-05 the box wrapped to the opposite face,
   which mixed in voxels that are not neighbours: on a test volume an edge voxel came out
@@ -258,7 +258,10 @@ Breaking any of these corrupts results without an error:
   only patches centered in the region denoised, nothing written outside it, `sigma_hat`
   the root of the mean `sigma_hat^2`, `rank` the mean rank (float32). The whole rebuilt patch is
   `X V diag(w) V^T` for both denoisers: camppca's `C^(1/2) C^(-1/2) = I`, so the
-  whole-patch unwhitening needs no `C^(1/2)` product.
+  whole-patch unwhitening needs no `C^(1/2)` product. The center voxel is the same
+  identity for one row: `e_c^T C^(1/2) Yw = e_c^T X`. Since 2026-11-05 the engine takes
+  the voxel's row of `X` directly. Through `C^(1/2)` in float32 it was off a float64
+  reference by 0.5 to 0.7 on values near 200, directly by 0.04 to 0.1.
 - **Hard threshold by default, shrinkage opt-in** (`shrink="hard" | "gd" | "lr"`,
   `denoiser/shrink.py`). ⚠ The default is NOT hard because shrinkage would break
   exactness — it would not. The unwhitening identity `eᶜᵀ C^(1/2) · (Yw V diag(f) Vᵀ)` is
