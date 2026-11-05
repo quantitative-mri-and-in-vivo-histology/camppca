@@ -171,7 +171,7 @@ def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
     """Lag-1 correlation 0.7 alone is indefinite on 5 voxels."""
     dwi, bvals, mask = dataset
 
-    def indefinite(S, factors, C, patch, lag, dzmax, start):
+    def indefinite(S, factors, C, patch, lag, dzmax, start, threads=1):
         rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
         rho[lag, lag, 0] = 1.0
         rho[lag - 1, lag, 0] = rho[lag + 1, lag, 0] = 0.7
