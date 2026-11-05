@@ -37,7 +37,7 @@ from ..patch import patch_size, resolve_patch
 from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centers
 from .gather import TILE, as_data, patch_tiles, restore_nonfinite, zero_nonfinite
-from .mp_threshold import mp_threshold
+from .mp_threshold import check_algorithm, mp_threshold
 from .shrink import check_shrink, shrink_weight, signal_alignment
 from .spectrum import eigh_descending, eigvalsh_descending
 
@@ -204,6 +204,7 @@ def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TI
     Returns:
         (X, Y, Z) ``sigma_hat`` in d-normalized units, zero outside ``mask``.
     """
+    check_algorithm(algorithm)
     dwi = as_data(dwi)
     mask = np.asarray(mask, bool)
     patch = resolve_patch(patch, dwi.shape)
@@ -319,6 +320,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
     n_vox = patch_size(patch)
 
     shrink = check_shrink(shrink)
+    check_algorithm(algorithm)
     if C is None:
         whitener = root = None
         shrink = "gd" if shrink == "lr" else shrink   # C = I: the correction is exactly 1

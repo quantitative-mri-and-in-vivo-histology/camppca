@@ -22,6 +22,7 @@ from ..patch import resolve_patch
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
 from .gather import TILE
+from .mp_threshold import check_algorithm
 from .mppca import denoise_mppca
 from .result import DenoiseResult
 from .shrink import RULES, check_shrink
@@ -93,6 +94,7 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
     or ``aggregate`` say otherwise -- is the method.
     """
     shrink = check_shrink(shrink)
+    check_algorithm(algorithm)
     aggregate, stride = check_aggregate(aggregate, stride)
     dwi = np.asarray(dwi)
     if dwi.ndim != 4:

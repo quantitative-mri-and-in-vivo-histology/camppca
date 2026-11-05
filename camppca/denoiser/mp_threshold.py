@@ -21,9 +21,16 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["ALGORITHMS", "mp_threshold"]
+__all__ = ["ALGORITHMS", "check_algorithm", "mp_threshold"]
 
 ALGORITHMS = ("veraart", "cordero-grande", "jespersen")
+
+
+def check_algorithm(algorithm: str) -> str:
+    """Validate ``algorithm`` up front, before any work goes to the workers."""
+    if algorithm not in ALGORITHMS:
+        raise ValueError(f"algorithm must be one of {ALGORITHMS}, got {algorithm!r}")
+    return algorithm
 
 
 def mp_threshold(eigenvalues: np.ndarray, n_small: int, n_large: int,

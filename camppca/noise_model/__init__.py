@@ -201,22 +201,22 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
 
     With ``noise_field=False``, ``d`` is 1 in the mask and only the loop runs.
     """
+    # Imported here: the denoiser imports this package, so a top-level import is circular.
+    from ..denoiser.gather import as_data, zero_nonfinite
+    from ..denoiser.mp_threshold import check_algorithm
+
+    check_algorithm(algorithm)
     dwi = np.asarray(dwi)
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
     complex_input = np.iscomplexobj(dwi)
     if complex_input:
         dwi = np.ascontiguousarray(dwi.real, np.float32)
-    from ..denoiser.gather import zero_nonfinite  # here: denoiser imports this package
-    dwi = zero_nonfinite(dwi)[0]
+    dwi = zero_nonfinite(as_data(dwi))[0]  # float32 once: every pass and map reuses it
     n_vols = dwi.shape[3]
     patch = resolve_patch(patch, dwi.shape)
     lag = required_lag(patch)
     dzmax = int(patch[2]) - 1
-    from ..denoiser.mp_threshold import ALGORITHMS  # here: denoiser imports this package
-
-    if algorithm not in ALGORITHMS:
-        raise ValueError(f"algorithm must be one of {ALGORITHMS}, got {algorithm!r}")
     pool = int(pool)
     if pool < 1:
         raise ValueError(f"pool must be >= 1 voxel, got {pool}")
