@@ -88,7 +88,7 @@ _product_pool = None
 
 
 def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande",
-                noise_field=True, workers=None):
+                noise_field=True, workers=None, sample=None):
     """Refine a kernel until it is consistent with the MP-PCA bulk of the patches.
 
     Args:
@@ -104,6 +104,9 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
         workers: CPU processes the sampled patches are split over each round, see
             :mod:`camppca.pool`. Each gathers and splits its own share. The fit stays
             in this process.
+        sample: (X, Y, Z) bool, the voxels patch centers are drawn from, or None for the
+            mask voxels whose level passes the floor of ``_effective_d``. The level rounds
+            pass the first one, so every round fits the same patches.
 
     Returns:
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
@@ -119,7 +122,9 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
     dzmax = rho_start.shape[2] - 1
     workers = resolve_workers(workers)
     # Patches with a level below the floor hold near-constant data, which the fit cannot use.
-    centers = _sample_centers(_good_level(d, mask), patch, np.random.default_rng(seed))
+    if sample is None:
+        sample = _good_level(d, mask)
+    centers = _sample_centers(sample, patch, np.random.default_rng(seed))
     levels = _effective_d(d, mask) if noise_field else np.ones(mask.shape, np.float32)
 
     with ExitStack() as stack:

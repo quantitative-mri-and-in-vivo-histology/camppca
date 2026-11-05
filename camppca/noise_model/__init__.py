@@ -247,7 +247,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
 
     # Imported here: these use denoiser internals, and the denoiser imports this package,
     # so a top-level import would be circular.
-    from ..denoiser import _effective_d
+    from ..denoiser import _effective_d, _good_level
     from ..denoiser.camppca import whitened_level
     from .loop import loop_kernel
 
@@ -258,8 +258,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
         d = _level_field(level, mask, pool)
     else:
         d = mask.astype(np.float32)
+    sample = _good_level(d, mask)          # the same patches in every level round
     rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
-                            noise_field=noise_field, workers=workers)
+                            noise_field=noise_field, workers=workers, sample=sample)
 
     rounds_run, change, spread = 0, None, None
     for rounds_run in range(1, (level_rounds if noise_field else 0) + 1):  # noqa: B007
@@ -276,7 +277,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
             break
         d = new
         rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
-                                noise_field=noise_field, workers=workers)
+                                noise_field=noise_field, workers=workers, sample=sample)
 
     prov = dict(patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
                 seed=int(seed), lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
