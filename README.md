@@ -121,6 +121,8 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
   `stride` (`--stride N`) keeps a patch every N voxels per axis.
 - **With `--mask-only`, voxels outside the mask pass through unchanged**, and `sigma_hat`
   is zero there. Apply the mask yourself if you want zeros.
+- **NaN or inf in the input enter the fit as zero** and stay NaN or inf in the output,
+  with a warning. Resampled images often carry NaN in the background.
 - **Keep ≳ 50 volumes in the pooled patch.** The noise-level estimator degenerates as the
   retained rank approaches `min(P, N)`.
 
