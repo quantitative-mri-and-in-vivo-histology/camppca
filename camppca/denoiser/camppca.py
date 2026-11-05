@@ -19,6 +19,9 @@ code divides rows by ``d`` and then applies ``C^(-1/2)``, i.e. ``W = C^(-1/2) D^
 ``W^T W = (DCD)^(-1)`` either way, so the Gram, the spectrum, the threshold, the retained
 subspace and the reconstruction are all identical. Do NOT "fix" one to match the other.
 
+STANDARD MP-PCA IS THE CASE C = None. The whitening multiply is skipped and the centre row
+is the patch's own, so :func:`~camppca.denoiser.mppca.denoise_mppca` runs this same engine.
+
 WHERE C COMES FROM. :meth:`~camppca.noise_model.NoiseModel.patch_correlation` derives it,
 because it belongs to the model.
 
@@ -35,7 +38,7 @@ from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
 from .gather import TILE, as_data, patch_tiles, restore_nonfinite, zero_nonfinite
 from .mp_threshold import mp_threshold
-from .shrink import shrink_weight, signal_alignment
+from .shrink import check_shrink, shrink_weight, signal_alignment
 from .spectrum import eigh_descending, eigvalsh_descending
 
 
@@ -47,18 +50,22 @@ def sqrtm_psd(A, p=0.5, floor=1e-10):
     return 0.5 * (B + B.T)
 
 
-def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str):
+def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str,
+                  values_only: bool = False):
     """Whiten a batch of patches and split each spectrum at the Marchenko-Pastur edge.
 
-    Shared with the loop kernel estimator, so both split a patch with the same code. It
-    runs in the dtype of ``patches``: float32 here, float64 in the loop.
+    The one place the split happens: both denoisers, the level pass and the loop kernel
+    estimator all call it. It runs in the dtype of ``patches``.
 
     Args:
         patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
-        whitener: (n_vox, n_vox) ``C^(-1/2)``.
+        whitener: (n_vox, n_vox) ``C^(-1/2)``, or None for white noise, which skips the
+            multiply.
         n_small: the smaller of ``n_vox`` and ``n_vols``.
         n_large: the larger of them.
         algo: which Marchenko-Pastur variant to cut with.
+        values_only: compute the eigenvalues only, for the level pass. ``evecs`` is then
+            None.
 
     Returns:
         ``(whitened, evals, evecs, rank, sigma_hat)``: (B, n_vox, n_vols) whitened
@@ -66,11 +73,28 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algo: str):
         eigenvectors as columns in the same order, (B,) retained component count, (B,)
         fitted noise level.
     """
-    whitened = np.matmul(whitener, patches)
+    whitened = patches if whitener is None else np.matmul(whitener, patches)
     gram = np.matmul(whitened.conj().transpose(0, 2, 1), whitened)
-    evals, evecs = eigh_descending(gram)
+    if values_only:
+        evals, evecs = eigvalsh_descending(gram), None
+    else:
+        evals, evecs = eigh_descending(gram)
     rank, sigma_hat = mp_threshold(evals, n_small, n_large, algo)
     return whitened, evals, evecs, rank, sigma_hat
+
+
+def _tile_patches(dwi, d_field, index):
+    """A tile's patches, rows divided by their level when there is a level field.
+
+    Returns:
+        ``(patches, levels)``: (B, n_vox, n_vols) in the dtype of ``dwi``, and (B, n_vox)
+        levels or None.
+    """
+    patches = np.asarray(dwi[index], dwi.dtype)
+    if d_field is None:
+        return patches, None
+    levels = d_field[index]
+    return patches / levels[:, :, None], levels                # D^(-1): homoscedastic rows
 
 
 def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, algo: str,
@@ -85,8 +109,9 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
 
     Args:
         patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
-        whitener: (n_vox, n_vox) ``C^(-1/2)``.
-        centre_row: (n_vox,) the centre row of ``C^(1/2)``, all that unwhitening needs.
+        whitener: (n_vox, n_vox) ``C^(-1/2)``, or None for white noise.
+        centre_row: (n_vox,) the centre row of ``C^(1/2)``, all that unwhitening needs,
+            or None with no whitener: the centre row is then the patch's own.
         C: (n_vox, n_vox) the patch correlation itself; only "lr" reads it.
         n_small: the smaller of ``n_vox`` and ``n_vols``.
         n_large: the larger of them.
@@ -118,7 +143,10 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
         return np.matmul(np.matmul(patches, V) * w[:, None, :], V.conj().transpose(0, 2, 1)), \
             sigma_hat, rank
 
-    centre = np.einsum("p,bpm->bm", centre_row, whitened)    # e_c^T C^(1/2) Yw
+    if centre_row is None:
+        centre = whitened[:, n_vox // 2, :]                     # no whitening: Yw = Y
+    else:
+        centre = np.einsum("p,bpm->bm", centre_row, whitened)    # e_c^T C^(1/2) Yw
     coords = np.einsum("bm,bmk->bk", centre, evecs)
     keep = np.arange(n_vols)[None, :] < rank[:, None]
     kept = np.where(keep, coords, 0.0)
@@ -140,13 +168,9 @@ def _level_voxels(dwi, d_field, voxels, whitener, patch, algo, tile):
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
     level = np.empty(voxels.size, np.float32)
     for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
-        patches = np.asarray(dwi[index], np.float32)
-        if d_field is not None:
-            patches = patches / d_field[index][:, :, None]
-        if whitener is not None:
-            patches = np.matmul(whitener, patches)
-        evals = eigvalsh_descending(np.matmul(patches.transpose(0, 2, 1), patches))
-        level[sl] = mp_threshold(evals, n_small, n_large, algo)[1]
+        patches, _ = _tile_patches(dwi, d_field, index)
+        level[sl] = _whiten_split(patches, whitener, n_small, n_large, algo,
+                                  values_only=True)[4]
     return (level,)
 
 
@@ -159,7 +183,8 @@ def whitened_level(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
     ``d_field`` this is standard MP-PCA's ``sigma_hat``.
 
     Args:
-        dwi: (X, Y, Z, N) data.
+        dwi: (X, Y, Z, N) data, real or complex. For complex data ``sigma_hat`` is one
+            channel's level, as in the denoisers.
         mask: (X, Y, Z) boolean.
         C: (n_vox, n_vox) patch correlation with unit diagonal, or None for white noise,
             which skips the whitening multiply.
@@ -173,7 +198,7 @@ def whitened_level(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
     Returns:
         (X, Y, Z) ``sigma_hat`` in d-normalized units, zero outside ``mask``.
     """
-    dwi = np.asarray(dwi, np.float32)
+    dwi = as_data(dwi)
     mask = np.asarray(mask, bool)
     patch = resolve_patch(patch, dwi.shape)
     whitener = None if C is None else sqrtm_psd(
@@ -189,6 +214,8 @@ def whitened_level(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
 
     run_voxels(partial(_level_voxels, whitener=whitener, patch=patch, algo=algo, tile=tile),
                (dwi, d_field), voxels, write, resolve_workers(workers), tile)
+    if np.iscomplexobj(dwi):
+        level /= np.sqrt(2.0)              # one channel's level, as in the denoisers
     return level
 
 
@@ -211,10 +238,7 @@ def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, centre_row, C, patc
     sigma_hat = np.empty(voxels.size, np.float32)
     rank = np.empty(voxels.size, np.int32)
     for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
-        patches = np.asarray(dwi[index], dwi.dtype)
-        levels = None if d_field is None else d_field[index]
-        if levels is not None:
-            patches = patches / levels[:, :, None]          # D^(-1): homoscedastic rows
+        patches, levels = _tile_patches(dwi, d_field, index)
         tile_signal, sigma_hat[sl], rank[sl] = _denoise_tile(
             patches, whitener, centre_row, C, n_small, n_large, algo, shrink)
         if levels is not None:
@@ -239,10 +263,7 @@ def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, centre_row, roo
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
     box = BoxSum(dwi.shape, centres, patch, mask, dwi.dtype)
     for _, index in patch_tiles(dwi.shape[:3], centres, patch, tile=tile):
-        patches = np.asarray(dwi[index], dwi.dtype)
-        levels = None if d_field is None else d_field[index]
-        if levels is not None:
-            patches = patches / levels[:, :, None]
+        patches, levels = _tile_patches(dwi, d_field, index)
         recon, sigma_hat, rank = _denoise_tile(patches, whitener, centre_row, C, n_small,
                                                n_large, algo, shrink, full=True,
                                                levels=levels, root=root)
@@ -261,7 +282,8 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
         dwi: (X, Y, Z, N) data, real or complex; see :mod:`camppca.denoiser.mppca` for
             complex data.
         mask: (X, Y, Z) boolean; only these voxels are denoised.
-        C: (n_vox, n_vox) patch correlation with unit diagonal.
+        C: (n_vox, n_vox) patch correlation with unit diagonal, or None for white noise:
+            standard MP-PCA, where "lr" is "gd".
         patch: box shape, three odd integers. None picks dwidenoise's default, see
             :func:`~camppca.patch.default_patch`.
         algo: which Marchenko-Pastur variant to cut with.
@@ -291,21 +313,26 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
     n_vox = patch_size(patch)
     center = n_vox // 2
 
-    C = np.asarray(C, np.float64)
-    if C.shape != (n_vox, n_vox):
-        raise ValueError(f"C must be ({n_vox}, {n_vox}) for patch "
-                         f"{tuple(int(v) for v in patch)}, got {C.shape}")
-
-    whitener = sqrtm_psd(C, -0.5).astype(np.float32)
-    centre_row = sqrtm_psd(C, 0.5)[center].astype(np.float32)
+    shrink = check_shrink(shrink)
+    if C is None:
+        whitener = centre_row = root = None
+        shrink = "gd" if shrink == "lr" else shrink   # C = I: the correction is exactly 1
+    else:
+        C = np.asarray(C, np.float64)
+        if C.shape != (n_vox, n_vox):
+            raise ValueError(f"C must be ({n_vox}, {n_vox}) for patch "
+                             f"{tuple(int(v) for v in patch)}, got {C.shape}")
+        whitener = sqrtm_psd(C, -0.5).astype(np.float32)
+        root = sqrtm_psd(C, 0.5).astype(np.float32)
+        centre_row = root[center]
+        C = C.astype(np.float32)
     d_field = None if d_field is None else np.asarray(d_field, np.float32)
     workers = resolve_workers(workers)
 
     if aggregate == "mean":
         assembly = MeanAssembly(dwi, mask)
         run_boxes(partial(_mean_whitened_voxels, whitener=whitener, centre_row=centre_row,
-                          root=sqrtm_psd(C, 0.5).astype(np.float32),
-                          C=C.astype(np.float32), patch=patch, algo=algo, tile=tile,
+                          root=root, C=C, patch=patch, algo=algo, tile=tile,
                           shrink=shrink),
                   (dwi, d_field, mask),
                   voxel_chunks(patch_centres(mask, patch, stride), MEAN_CHUNKS, tile),
@@ -327,8 +354,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
         denoised[where], sigma_hat[where], rank[where] = outputs
 
     run_voxels(partial(_denoise_whitened_voxels, whitener=whitener, centre_row=centre_row,
-                       C=C.astype(np.float32), patch=patch, algo=algo, tile=tile,
-                       shrink=shrink),
+                       C=C, patch=patch, algo=algo, tile=tile, shrink=shrink),
                (dwi, d_field), voxels, write, workers, tile)
     if np.iscomplexobj(dwi):
         sigma_hat /= np.sqrt(2.0)
