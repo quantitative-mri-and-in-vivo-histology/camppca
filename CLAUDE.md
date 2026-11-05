@@ -270,6 +270,9 @@ Breaking any of these corrupts results without an error:
   whitening would divide by it. The loop also skips patches holding such a voxel.
   ideas01 sub-103 hit this in its top two slices: pooling returned NaN, and sub-01
   finished with a suspect correction of 16.8%.
+- NaN and inf are zeroed for the fit and put back in the output (`gather.zero_nonfinite`),
+  in `denoise_mppca`, `denoise_whitened` and `estimate_noise_model`. One NaN would
+  otherwise poison every patch that holds it, and `eigh` runs with `check_finite=False`.
 - **Every voxel is denoised by default**, inside the mask or not. camppca's `mask` says
   where the noise model is estimated, and a brain mask always misses some brain at its
   edge. `mask_only=True` (`--mask-only`) denoises only inside it and passes the rest

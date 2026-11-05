@@ -33,7 +33,7 @@ import numpy as np
 from ..patch import patch_size, resolve_patch
 from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
-from .gather import TILE, as_data, patch_tiles
+from .gather import TILE, as_data, patch_tiles, restore_nonfinite, zero_nonfinite
 from .mp_threshold import mp_threshold
 from .shrink import shrink_weight, signal_alignment
 from .spectrum import eigh_descending, eigvalsh_descending
@@ -286,6 +286,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
     dwi = as_data(dwi)
     mask = np.asarray(mask, bool)          # non-bool would make `& mask` an integer op
     patch = resolve_patch(patch, dwi.shape)  # odd dims: centre = n_vox // 2 must BE the centre
+    dwi, bad, values = zero_nonfinite(dwi)
     aggregate, stride = check_aggregate(aggregate, stride)
     n_vox = patch_size(patch)
     center = n_vox // 2
@@ -312,6 +313,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
         denoised, sigma_hat, rank = assembly.finish()
         if np.iscomplexobj(dwi):
             sigma_hat /= np.sqrt(2.0)      # one channel's level, as for real data
+        restore_nonfinite(denoised, bad, values)
         return denoised, sigma_hat, rank
 
     voxels = np.flatnonzero(mask)
@@ -330,4 +332,5 @@ def denoise_whitened(dwi, mask, C, patch=None, algo="cordero-grande", tile=TILE,
                (dwi, d_field), voxels, write, workers, tile)
     if np.iscomplexobj(dwi):
         sigma_hat /= np.sqrt(2.0)
+    restore_nonfinite(denoised, bad, values)
     return denoised, sigma_hat, rank

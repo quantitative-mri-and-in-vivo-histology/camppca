@@ -37,7 +37,7 @@ import numpy as np
 from ..patch import patch_size, resolve_patch
 from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centres
-from .gather import TILE, as_data, patch_tiles
+from .gather import TILE, as_data, patch_tiles, restore_nonfinite, zero_nonfinite
 from .mp_threshold import mp_threshold
 from .result import DenoiseResult
 from .shrink import RULES, check_shrink, shrink_weight
@@ -171,6 +171,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X, Y, Z, N), got shape {dwi.shape}")
     patch = resolve_patch(patch, dwi.shape)
+    dwi, bad, values = zero_nonfinite(dwi)
     if mask is None:
         mask = np.ones(dwi.shape[:3], bool)
     else:
@@ -206,6 +207,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
         rule = f"{RULES[tile_shrink]}, centre-voxel only"
     if np.iscomplexobj(dwi):
         sigma_hat /= np.sqrt(2.0)      # one channel's level, as for real data
+    restore_nonfinite(denoised, bad, values)
 
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,

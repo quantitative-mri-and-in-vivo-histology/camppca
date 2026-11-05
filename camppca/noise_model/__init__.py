@@ -207,6 +207,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     complex_input = np.iscomplexobj(dwi)
     if complex_input:
         dwi = np.ascontiguousarray(dwi.real, np.float32)
+    from ..denoiser.gather import zero_nonfinite  # here: denoiser imports this package
+    dwi = zero_nonfinite(dwi)[0]
     n_vols = dwi.shape[3]
     patch = resolve_patch(patch, dwi.shape)
     if np.any(patch > np.asarray(dwi.shape[:3])):
