@@ -51,8 +51,7 @@ def default_patch(shape):
 def resolve_patch(patch, shape):
     """``patch`` validated, or :func:`default_patch` for ``shape`` when it is None.
 
-    Raises if the patch is larger than the image: the gather wraps at the image edge, so
-    the patch would hold one slice twice, and the MP fit reads the copy as signal.
+    Raises if the patch is larger than the image: no box of that size fits inside it.
     """
     patch = check_patch(default_patch(shape) if patch is None else patch)
     if np.any(patch > np.asarray(shape[:3])):

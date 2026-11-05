@@ -97,8 +97,8 @@ def _tile_patches(dwi, d_field, index):
     return patches / levels[:, :, None], levels                # D^(-1): homoscedastic rows
 
 
-def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, algorithm: str,
-                  shrink: str, full: bool = False, levels=None, root=None):
+def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algorithm: str,
+                  shrink: str, full: bool = False, levels=None, rows=None):
     """Denoise a batch of whitened patches, returning the centre voxel of each, or with
     ``full`` each whole rebuilt patch.
 
@@ -110,8 +110,8 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
     Args:
         patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
         whitener: (n_vox, n_vox) ``C^(-1/2)``, or None for white noise.
-        centre_row: (n_vox,) the centre row of ``C^(1/2)``, all that unwhitening needs,
-            or None with no whitener: the centre row is then the patch's own.
+        root: (n_vox, n_vox) ``C^(1/2)``, or None with no whitener. Unwhitening one voxel
+            needs only its row.
         C: (n_vox, n_vox) the patch correlation itself; only "lr" reads it.
         n_small: the smaller of ``n_vox`` and ``n_vols``.
         n_large: the larger of them.
@@ -120,7 +120,8 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
         full: rebuild the whole patch instead of the centre row.
         levels: with ``full`` and "lr", (B, n_vox) the patch voxels' levels ``d``, so
             "lr" weighs the error over the whole patch in data units; None for ``D = I``.
-        root: ``C^(1/2)``, needed with ``levels``.
+        rows: (B,) the row of the voxel to return in each patch, from
+            :func:`~camppca.denoiser.gather.patch_tiles`. None is the centre row.
 
     Returns:
         ``(signal, sigma_hat, rank)``: (B, n_vols) denoised centre spectra, or with
@@ -143,10 +144,15 @@ def _denoise_tile(patches, whitener, centre_row, C, n_small: int, n_large: int, 
         return np.matmul(np.matmul(patches, V) * w[:, None, :], V.conj().transpose(0, 2, 1)), \
             sigma_hat, rank
 
-    if centre_row is None:
-        centre = whitened[:, n_vox // 2, :]                     # no whitening: Yw = Y
+    center = n_vox // 2
+    if root is None:                                            # no whitening: Yw = Y
+        centre = whitened[:, center, :] if rows is None else \
+            whitened[np.arange(len(rows)), rows, :]
     else:
-        centre = np.einsum("p,bpm->bm", centre_row, whitened)    # e_c^T C^(1/2) Yw
+        centre = np.einsum("p,bpm->bm", root[center], whitened)  # e_c^T C^(1/2) Yw
+        edge = None if rows is None else np.flatnonzero(rows != center)
+        if edge is not None and edge.size:   # off centre near the image edge: its own row
+            centre[edge] = np.einsum("bp,bpm->bm", root[rows[edge]], whitened[edge])
     coords = np.einsum("bm,bmk->bk", centre, evecs)
     keep = np.arange(n_vols)[None, :] < rank[:, None]
     kept = np.where(keep, coords, 0.0)
@@ -167,7 +173,7 @@ def _level_voxels(dwi, d_field, voxels, whitener, patch, algorithm, tile):
     n_vox = patch_size(patch)
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
     level = np.empty(voxels.size, np.float32)
-    for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
+    for sl, index, _ in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
         patches, _ = _tile_patches(dwi, d_field, index)
         level[sl] = _whiten_split(patches, whitener, n_small, n_large, algorithm,
                                   values_only=True)[4]
@@ -220,7 +226,7 @@ def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TI
     return level
 
 
-def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, centre_row, C, patch, algorithm,
+def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, root, C, patch, algorithm,
                              tile, shrink):
     """The tile loop of :func:`denoise_whitened` for some voxels.
 
@@ -233,22 +239,21 @@ def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, centre_row, C, patc
     """
     n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
-    center = n_vox // 2
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
     signal = np.empty((voxels.size, n_vols), dwi.dtype)
     sigma_hat = np.empty(voxels.size, np.float32)
     rank = np.empty(voxels.size, np.int32)
-    for sl, index in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
+    for sl, index, rows in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
         patches, levels = _tile_patches(dwi, d_field, index)
         tile_signal, sigma_hat[sl], rank[sl] = _denoise_tile(
-            patches, whitener, centre_row, C, n_small, n_large, algorithm, shrink)
+            patches, whitener, root, C, n_small, n_large, algorithm, shrink, rows=rows)
         if levels is not None:
-            tile_signal = tile_signal * levels[:, center, None]   # data units at the centre
+            tile_signal = tile_signal * levels[np.arange(len(rows)), rows, None]  # data units
         signal[sl] = tile_signal
     return signal, sigma_hat, rank
 
 
-def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, centre_row, root, C, patch,
+def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, root, C, patch,
                           algorithm, tile, shrink):
     """Sum the rebuilt patches around ``centres`` over their box, for the mean.
 
@@ -263,11 +268,11 @@ def _mean_whitened_voxels(dwi, d_field, mask, centres, whitener, centre_row, roo
     n_vox = patch_size(patch)
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
     box = BoxSum(dwi.shape, centres, patch, mask, dwi.dtype)
-    for _, index in patch_tiles(dwi.shape[:3], centres, patch, tile=tile):
+    for _, index, _ in patch_tiles(dwi.shape[:3], centres, patch, tile=tile):
         patches, levels = _tile_patches(dwi, d_field, index)
-        recon, sigma_hat, rank = _denoise_tile(patches, whitener, centre_row, C, n_small,
+        recon, sigma_hat, rank = _denoise_tile(patches, whitener, root, C, n_small,
                                                n_large, algorithm, shrink, full=True,
-                                               levels=levels, root=root)
+                                               levels=levels)
         if levels is not None:
             recon = recon * levels[:, :, None]
         box.add(index, recon, sigma_hat, rank)
@@ -312,11 +317,10 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
     dwi, bad, values = zero_nonfinite(dwi)
     aggregate, stride = check_aggregate(aggregate, stride)
     n_vox = patch_size(patch)
-    center = n_vox // 2
 
     shrink = check_shrink(shrink)
     if C is None:
-        whitener = centre_row = root = None
+        whitener = root = None
         shrink = "gd" if shrink == "lr" else shrink   # C = I: the correction is exactly 1
     else:
         C = np.asarray(C, np.float64)
@@ -325,15 +329,13 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
                              f"{tuple(int(v) for v in patch)}, got {C.shape}")
         whitener = sqrtm_psd(C, -0.5).astype(np.float32)
         root = sqrtm_psd(C, 0.5).astype(np.float32)
-        centre_row = root[center]
         C = C.astype(np.float32)
     d_field = None if d_field is None else np.asarray(d_field, np.float32)
     workers = resolve_workers(workers)
 
     if aggregate == "mean":
         assembly = MeanAssembly(dwi, mask)
-        run_boxes(partial(_mean_whitened_voxels, whitener=whitener, centre_row=centre_row,
-                          root=root, C=C, patch=patch, algorithm=algorithm, tile=tile,
+        run_boxes(partial(_mean_whitened_voxels, whitener=whitener, root=root, C=C, patch=patch, algorithm=algorithm, tile=tile,
                           shrink=shrink),
                   (dwi, d_field, mask),
                   voxel_chunks(patch_centres(mask, patch, stride), MEAN_CHUNKS, tile),
@@ -354,8 +356,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
         where = tuple(c[sl] for c in coords)
         denoised[where], sigma_hat[where], rank[where] = outputs
 
-    run_voxels(partial(_denoise_whitened_voxels, whitener=whitener, centre_row=centre_row,
-                       C=C, patch=patch, algorithm=algorithm, tile=tile, shrink=shrink),
+    run_voxels(partial(_denoise_whitened_voxels, whitener=whitener, root=root, C=C, patch=patch, algorithm=algorithm, tile=tile, shrink=shrink),
                (dwi, d_field), voxels, write, workers, tile)
     if np.iscomplexobj(dwi):
         sigma_hat /= np.sqrt(2.0)

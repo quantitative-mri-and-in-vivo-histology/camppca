@@ -1,10 +1,12 @@
 """Patch extraction: the box of voxels around each requested voxel, a tile at a time.
 
-The box wraps around the volume's edges, so a voxel at the border still gets a full box.
-The wrap is done by index arithmetic on the original volume, so no padded copy is ever
-made: neither of the whole volume nor of a worker's share. Rows come out in
-:func:`camppca.patch.patch_offsets` order, C order with z fastest, which is the order
-``rho`` is indexed in. The two must agree.
+At the image edge the box moves inward until it fits, as in dwidenoise, so a voxel at the
+border still gets a full box of real neighbours. It then sits off centre in its box, and
+the gather says in which row. Wrapping around to the opposite face instead would mix in
+voxels that are not neighbours, and ``C`` would treat them as if they were. The box is
+built by index arithmetic on the original volume, so no padded copy is ever made. Rows
+come out in :func:`camppca.patch.patch_offsets` order, C order with z fastest, which is
+the order ``rho`` is indexed in. The two must agree.
 
 Tiles are small on purpose. A 256-patch tile at 297 volumes is about 100 MB, and 16 pool
 workers streaming such tiles fought over memory bandwidth: a whitened voxel cost 6.8 ms
@@ -21,7 +23,8 @@ import numpy as np
 
 from ..patch import check_patch, patch_offsets
 
-__all__ = ["TILE", "as_data", "patch_tiles", "restore_nonfinite", "zero_nonfinite"]
+__all__ = ["TILE", "as_data", "box_centres", "patch_tiles", "restore_nonfinite",
+           "zero_nonfinite"]
 
 #: Patches per tile.
 TILE = 8
@@ -63,27 +66,40 @@ def restore_nonfinite(denoised, bad, values):
         denoised[bad] = np.where(np.isfinite(values), denoised[bad], values)
 
 
+def box_centres(coords, shape, patch):
+    """The centre of each voxel's box, per axis: the voxel itself, moved inward at the
+    image edge until the box fits. ``coords`` is a sequence of three index arrays."""
+    half = np.asarray(patch, int) // 2
+    return tuple(np.clip(c, h, int(n) - 1 - h) for c, h, n in zip(coords, half, shape,
+                                                                 strict=True))
+
+
 def patch_tiles(shape, voxels: np.ndarray, patch, tile: int = TILE
-                ) -> Iterator[tuple[slice, tuple[np.ndarray, np.ndarray, np.ndarray]]]:
+                ) -> Iterator[tuple[slice, tuple[np.ndarray, np.ndarray, np.ndarray],
+                                    np.ndarray]]:
     """Yield, a tile at a time, the indices of the requested voxels' patches.
 
     Args:
-        shape: the volume's spatial shape (X, Y, Z).
+        shape: the volume's spatial shape (X, Y, Z). No side smaller than ``patch``.
         voxels: flat voxel indices, C order, into that shape.
         patch: length-3 odd box shape.
         tile: voxels per yielded tile.
 
     Yields:
-        ``(sl, index)``. ``sl`` slices ``voxels`` to this tile. ``index`` is three (B, n_vox)
-        integer arrays, so ``volume[index]`` is the tile's (B, n_vox, ...) patches of any
-        array with that spatial shape, rows in patch-offset order.
+        ``(sl, index, rows)``. ``sl`` slices ``voxels`` to this tile. ``index`` is three
+        (B, n_vox) integer arrays, so ``volume[index]`` is the tile's (B, n_vox, ...)
+        patches of any array with that spatial shape, rows in patch-offset order.
+        ``rows`` (B,) is the row of each requested voxel in its patch: the centre row,
+        ``n_vox // 2``, except within half a patch of the image edge.
     """
     patch = check_patch(patch)
     shape = tuple(int(s) for s in shape)
     off = patch_offsets(patch) - patch // 2
-    ix, iy, iz = np.unravel_index(np.asarray(voxels), shape)
-    for start in range(0, ix.size, int(tile)):
+    coords = np.unravel_index(np.asarray(voxels), shape)
+    centres = box_centres(coords, shape, patch)
+    shift = [c - b + h for c, b, h in zip(coords, centres, patch // 2, strict=True)]
+    rows = (shift[0] * patch[1] + shift[1]) * patch[2] + shift[2]
+    for start in range(0, coords[0].size, int(tile)):
         sl = slice(start, start + int(tile))
-        yield sl, ((ix[sl, None] + off[None, :, 0]) % shape[0],
-                   (iy[sl, None] + off[None, :, 1]) % shape[1],
-                   (iz[sl, None] + off[None, :, 2]) % shape[2])
+        yield sl, tuple(b[sl, None] + off[None, :, k] for k, b in enumerate(centres)), \
+            rows[sl]

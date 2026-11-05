@@ -1,7 +1,7 @@
 """The worker pool: chunks cover the voxels once, and pooling changes nothing.
 
 A pooled pass is the serial pass, bit for bit: chunks hold whole tiles, and every patch
-is gathered from the whole volume with the same wrap at its edges.
+is gathered from the whole volume, its box moved inward at the image edge.
 """
 
 import subprocess

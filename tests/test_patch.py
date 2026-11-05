@@ -60,8 +60,8 @@ def test_denoising_with_a_model_defaults_to_the_model_patch():
 
 
 def test_a_patch_larger_than_the_image_is_refused_by_both_denoisers():
-    """The gather wraps, so a 5-deep patch on 3 slices holds slices twice. MP-PCA then
-    gave sigma_hat 1.3 against a true 5, with no error."""
+    """No 5-deep box fits in 3 slices. When the gather still wrapped, MP-PCA held slices
+    twice and gave sigma_hat 1.3 against a true 5, with no error."""
     dwi = np.random.default_rng(0).standard_normal((16, 16, 3, 60)).astype(np.float32)
     with pytest.raises(ValueError, match="larger than the image"):
         denoise_mppca(dwi, patch=(5, 5, 5), workers=1)
