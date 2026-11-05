@@ -269,8 +269,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
         q25, q50, q75 = np.percentile(s[mask], (25, 50, 75))
         spread = float((q75 - q25) / q50)
         new = _level_field(d_eff * s, mask, pool)
-        change = float(np.median(np.abs((new[mask] / np.median(new[mask]))
-                                        / (d[mask] / np.median(d[mask])) - 1)))
+        both = (new > 0) & (d > 0)         # _level_field leaves voxels below the floor zero
+        change = float(np.median(np.abs((new[both] / np.median(new[both]))
+                                        / (d[both] / np.median(d[both])) - 1)))
         if change < LEVEL_TOL:
             break
         d = new
@@ -300,9 +301,16 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
 
 
 def _level_field(level, mask, pool):
-    """A per-voxel level pooled ``pool``^3 into a level field, zero outside ``mask``."""
-    pooled = _pool_level(np.where(mask, level, 0.0).astype(np.float64), mask, pool)
-    return np.where(mask, pooled, 0.0).astype(np.float32)
+    """A per-voxel level pooled ``pool``^3 into a level field, zero outside ``mask``.
+
+    Levels below the floor of ``_effective_d`` are left out of the pooling and come out
+    zero, for ``_effective_d`` to fill. Pooled in, zero-filled slices would pull their
+    neighbours' level down: by about a fifth next to a zero slice at 3^3.
+    """
+    from ..denoiser import _good_level  # here: the denoiser imports this package
+    good = _good_level(level, mask)
+    pooled = _pool_level(np.where(good, level, 0.0).astype(np.float64), good, pool)
+    return np.where(good, pooled, 0.0).astype(np.float32)
 
 
 def _bvals_hash(bvals):
