@@ -69,6 +69,7 @@ addopts = [
     "-v",
     "--tb=short",
     "-ra",  # Show extra test summary for all except passed
+    "-n", "auto",  # tests run one worker each, see tests/conftest.py: 22 s against 85 s
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

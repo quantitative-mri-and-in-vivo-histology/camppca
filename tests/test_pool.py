@@ -129,5 +129,14 @@ def test_a_script_without_a_main_guard_runs(tmp_path):
 
 def test_the_default_worker_count_respects_a_cpu_quota(monkeypatch):
     from camppca import pool
+    monkeypatch.delenv("CAMPPCA_WORKERS", raising=False)
     monkeypatch.setattr(pool.joblib, "cpu_count", lambda: 3)
     assert pool.default_workers() == min(3, pool._physical_cores())
+
+
+def test_an_environment_variable_sets_the_default_worker_count(monkeypatch):
+    from camppca import pool
+    monkeypatch.setenv("CAMPPCA_WORKERS", "5")
+    assert pool.default_workers() == 5
+    monkeypatch.delenv("CAMPPCA_WORKERS")
+    assert pool.default_workers() == min(pool._physical_cores(), pool.joblib.cpu_count())

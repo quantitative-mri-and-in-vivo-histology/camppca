@@ -114,7 +114,8 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
 
 - **The work runs in a pool of CPU processes**, one per physical core, through joblib.
   On a 16-core machine that was faster than an RTX 4060 Ti. `workers=1` (`--workers 1`)
-  runs everything in one process. The image reaches the workers as a memory-mapped file in
+  runs everything in one process. `CAMPPCA_WORKERS` sets the default, and a container's
+  CPU quota caps it. The image reaches the workers as a memory-mapped file in
   the temp directory; set `TMPDIR` or `JOBLIB_TEMP_FOLDER` to move it, to local scratch on
   a cluster for example.
 - **Output is center-voxel by default**, with no overlap averaging. Intentional — it

@@ -365,6 +365,12 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
     cores. Held to 16 threads, a bulk map took 24 ms against 49 ms and the estimate
     18 s against 21 s, before the split moved to float32. Not set in the code yet.
 
+- **Tests run one worker and one BLAS thread each**, set in `tests/conftest.py`, and
+  pytest runs them side by side (`-n auto` in `pyproject.toml`): 22 s against 85 s with a
+  pool per test. Serial with one BLAS thread the suite takes 103 s on one core. A serial
+  test with OpenBLAS at its default took 158 s, from a thread per hardware thread on
+  small matrices. `test_pool.py` tests the pool with explicit worker counts.
+
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a
   true 5%). Keep ≳ 50 volumes in the pooled patch. `estimate_noise_model` warns below 50
