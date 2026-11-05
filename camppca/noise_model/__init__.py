@@ -211,6 +211,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
     complex_input = np.iscomplexobj(dwi)
     if complex_input:
+        imag = dwi.imag                    # a view, for the phase check below
         dwi = np.ascontiguousarray(dwi.real, np.float32)
     dwi = zero_nonfinite(as_data(dwi))[0]  # float32 once: every pass and map reuses it
     n_vols = dwi.shape[3]
@@ -255,6 +256,8 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     rho[lag, lag, 0] = 1.0
     if noise_field:
         level = whitened_level(dwi, mask, None, patch, algorithm, workers=workers)
+        if complex_input:
+            _check_phase_stabilized(imag, mask, level, seed)
         d = _level_field(level, mask, pool)
     else:
         d = mask.astype(np.float32)
@@ -299,6 +302,31 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     except ValueError as err:
         raise ValueError(f"the loop kernel is not usable: {err}") from err
     return model
+
+
+#: The imaginary part's rms over the real part's noise level above which complex data look
+#: phase unstabilized. Stabilized EDDEN 2 mm gave 1.5, the imaginary part holding a little
+#: structure. Unstabilized, it carries the signal.
+PHASE_RATIO = 3.0
+
+
+def _check_phase_stabilized(imag, mask, level, seed):
+    """Warn when the imaginary part carries far more than noise.
+
+    The estimator works on the real part, which holds the signal only once the phase is
+    stabilized. Otherwise the real part is a random projection of the signal, and the
+    model fits that. 10000 mask voxels are enough and need no copy of the volume.
+    """
+    voxels = np.flatnonzero(mask)
+    pick = np.random.default_rng(seed).choice(voxels, min(10000, voxels.size), replace=False)
+    where = np.unravel_index(np.sort(pick), mask.shape)
+    ratio = float(np.sqrt(np.mean(np.square(imag[where], dtype=np.float64)))
+                  / np.median(level[mask]))
+    if ratio > PHASE_RATIO:
+        warnings.warn(f"the imaginary part is {ratio:.1f} times the real part's noise level "
+                      "inside the mask. The noise model is estimated on the real part, "
+                      "which holds the signal only once the phase is stabilized: run "
+                      "`camppca phase` first.", RuntimeWarning, stacklevel=3)
 
 
 def _level_field(level, mask, pool):
