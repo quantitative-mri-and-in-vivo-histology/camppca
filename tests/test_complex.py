@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from camppca import denoise_camppca, denoise_mppca
-from camppca.denoiser.camppca import denoise_whitened
+from camppca.denoiser.camppca import denoise_whitened, whitened_level
 
 SHAPE = (10, 10, 10)
 N_VOLS = 60
@@ -125,3 +125,12 @@ def test_camppca_denoises_complex_data_with_a_model_from_the_real_part():
     before = np.abs(dwi[mask] - signal[mask]).mean()
     after = np.abs(result.denoised[mask] - signal[mask]).mean()
     assert after < 0.5 * before
+
+
+def test_the_level_pass_reads_one_channel_of_complex_data():
+    dwi = circular_noise(np.random.default_rng(6), 7.0)
+    mask = interior_mask()
+
+    level = whitened_level(dwi, mask, None, PATCH, workers=1)
+
+    assert abs(np.median(level[mask]) - 7.0) < 0.05 * 7.0

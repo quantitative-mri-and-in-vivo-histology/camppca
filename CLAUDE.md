@@ -104,6 +104,12 @@ The two halves meet at **the noise model** (`rho` + `d`). A follow-up paper esti
 `rho` from the alignment/interpolation operator and feeds the same engine, so the engine
 must never assume how `rho` was estimated.
 
+There is one engine. `denoise_mppca` calls `denoise_whitened` with `C=None` and no level
+field, which skips the whitening multiply and takes the centre row from the patch. Its
+output was bit for bit the same as the old separate copy in 228 cases (2026-11-05). Every
+split goes through `_whiten_split`: both denoisers, the level pass (eigenvalues only) and
+the loop.
+
 Both halves are numpy and scipy, CPU only. JAX was removed 2026-11-03: per-patch
 eigendecompositions over a pool of CPU processes beat the GPU on a 16-core host. The
 estimator reuses the engine's own split.
@@ -172,8 +178,8 @@ reconstruction are all identical. **Do not "fix" one to match the other.**
         loop.py            the loop kernel, refines rho from white
       denoiser/
         __init__.py        denoise_camppca(), denoise_with_noise_model()
-        camppca.py         covariance-aware MP-PCA — the method
-        mppca.py           standard white-noise MP-PCA
+        camppca.py         covariance-aware MP-PCA — the method, and the one engine
+        mppca.py           standard white-noise MP-PCA: the engine with C = None
         mp_threshold.py    mp_threshold() — the Marchenko-Pastur cutoff rule
         gather.py          patch extraction, a tile at a time
         aggregate.py       patch averaging, the opt-in aggregate="mean"

@@ -16,7 +16,6 @@ import pytest
 
 from camppca import denoise_mppca
 from camppca.denoiser import camppca as engine
-from camppca.denoiser import mppca
 from camppca.denoiser.aggregate import check_aggregate, patch_centres
 from camppca.denoiser.camppca import denoise_whitened, sqrtm_psd
 from camppca.denoiser.spectrum import eigh_descending
@@ -71,12 +70,9 @@ def reference_mean(dwi, mask, centres, C=None, d=None):
         patch32 = (X / levels[:, None]).astype(np.float32)[None]
         Y32 = patch32[0] if W32 is None else W32 @ patch32[0]
         V = eigh_descending((Y32.T @ Y32)[None])[1][0].astype(np.float64)
-        if C is None:
-            _, s, r = mppca._denoise_tile(patch32, n_vox // 2, n_small, n_large,
-                                          "cordero-grande", "hard")
-        else:
-            _, s, r = engine._denoise_tile(patch32, W32, crow, C.astype(np.float32),
-                                           n_small, n_large, "cordero-grande", "hard")
+        C32 = None if C is None else C.astype(np.float32)
+        _, s, r = engine._denoise_tile(patch32, W32, crow, C32, n_small, n_large,
+                                       "cordero-grande", "hard")
         r, s = int(r[0]), float(s[0])
         rebuilt = Y @ V[:, :r] @ V[:, :r].T
         if root is not None:
