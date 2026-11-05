@@ -51,7 +51,7 @@ def dataset():
 @pytest.fixture(scope="module")
 def model(dataset):
     dwi, bvals, mask = dataset
-    return estimate_noise_model(dwi, bvals, mask, patch=(5, 5, 3))
+    return estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
 
 
 def test_estimator_recovers_the_injected_correlation(model):
@@ -114,7 +114,7 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
     dwi, bvals, mask = dataset
     patch = (5, 5, 3)
 
-    ours = denoise_camppca(dwi, bvals, mask, patch=patch).sigma_hat
+    ours = denoise_camppca(dwi, mask, bvals=bvals, patch=patch).sigma_hat
     white = denoise_mppca(dwi, mask, patch=patch).sigma_hat
 
     ours_med, white_med = np.median(ours[mask]), np.median(white[mask])
@@ -126,7 +126,7 @@ def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
 
 def test_denoise_reduces_variance_and_keeps_shape(dataset):
     dwi, bvals, mask = dataset
-    result = denoise_camppca(dwi, bvals, mask, patch=(5, 5, 3))
+    result = denoise_camppca(dwi, mask, bvals=bvals, patch=(5, 5, 3))
 
     assert result.denoised.shape == dwi.shape
     assert result.sigma_hat.shape == dwi.shape[:3]
@@ -192,13 +192,13 @@ def test_a_bad_algorithm_is_refused_before_any_work(dataset, model):
     with pytest.raises(ValueError, match="algorithm must be one of"):
         denoise_mppca(dwi, mask, algorithm="exp2")
     with pytest.raises(ValueError, match="algorithm must be one of"):
-        estimate_noise_model(dwi, bvals, mask, algorithm="exp2")
+        estimate_noise_model(dwi, mask, bvals=bvals, algorithm="exp2")
 
 
 def test_float64_input_gives_the_float32_model(dataset, model):
     """nibabel's get_fdata() gives float64. The estimator converts it once."""
     dwi, bvals, mask = dataset
     assert dwi.dtype == np.float64
-    narrow = estimate_noise_model(dwi.astype(np.float32), bvals, mask, patch=(5, 5, 3))
+    narrow = estimate_noise_model(dwi.astype(np.float32), mask, bvals=bvals, patch=(5, 5, 3))
     np.testing.assert_array_equal(narrow.rho, model.rho)
     np.testing.assert_array_equal(narrow.d, model.d)

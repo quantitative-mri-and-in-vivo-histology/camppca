@@ -39,17 +39,17 @@ from .. import __version__
 from ..patch import resolve_patch
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
-from .gather import TILE, as_data
+from .gather import as_data
 from .result import DenoiseResult
 from .shrink import RULES, check_shrink
 
 __all__ = ["denoise_mppca"]
 
 
-def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
-                  algorithm: str = "cordero-grande", tile: int = TILE,
-                  shrink: str = "hard", workers: int | None = None,
-                  aggregate: str = "center", stride: int = 1) -> DenoiseResult:
+def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, *, patch=None,
+                  algorithm: str = "cordero-grande", shrink: str = "hard",
+                  workers: int | None = None, aggregate: str = "center",
+                  stride: int = 1) -> DenoiseResult:
     """Denoise a 4D volume with standard MP-PCA.
 
     Args:
@@ -62,7 +62,6 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
             :func:`~camppca.patch.default_patch`.
         algorithm: which Marchenko-Pastur variant to cut with, see
             :data:`~camppca.denoiser.mp_threshold.ALGORITHMS`.
-        tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         shrink: weight on the kept components, "hard" (default), "gd" or "lr"; see
             :mod:`camppca.denoiser.shrink`. With white noise "lr" is "gd".
         workers: CPU processes to split the voxels over, see
@@ -97,7 +96,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
                 f"mask shape {mask.shape} does not match dwi spatial shape {dwi.shape[:3]}")
 
     denoised, sigma_hat, rank = denoise_whitened(
-        dwi, mask, None, patch=patch, algorithm=algorithm, tile=tile, shrink=tile_shrink,
+        dwi, mask, None, patch=patch, algorithm=algorithm, shrink=tile_shrink,
         workers=workers, aggregate=aggregate, stride=stride)
     where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"

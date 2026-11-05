@@ -22,7 +22,6 @@ from ..noise_model import estimate_noise_model
 from ..patch import resolve_patch
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
-from .gather import TILE
 from .mp_threshold import check_algorithm
 from .mppca import denoise_mppca
 from .result import DenoiseResult
@@ -31,8 +30,8 @@ from .shrink import RULES, check_shrink
 __all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",
            "denoise_with_noise_model"]
 
-def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
-                             algorithm="cordero-grande", tile=TILE, shrink="hard", workers=None,
+def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
+                             algorithm="cordero-grande", shrink="hard", workers=None,
                              aggregate="center", stride=1, mask_only=False):
     """Denoise in the whitened domain, given a noise model.
 
@@ -84,7 +83,7 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
 
     region = model.mask if mask_only else np.ones(model.mask.shape, bool)
     denoised, sigma_hat, rank = denoise_whitened(
-        dwi, region, C, patch=tuple(int(v) for v in patch), algorithm=algorithm, tile=tile,
+        dwi, region, C, patch=tuple(int(v) for v in patch), algorithm=algorithm,
         d_field=d_eff, shrink=shrink, workers=workers, aggregate=aggregate, stride=stride)
 
     if d_eff is not None:
@@ -104,8 +103,8 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
                          provenance=prov)
 
 
-def denoise_camppca(dwi, bvals=None, mask=None, patch=None, noise_field=True,
-                    algorithm="cordero-grande", tile=TILE, shrink="hard", workers=None,
+def denoise_camppca(dwi, mask=None, *, bvals=None, patch=None, noise_field=True,
+                    algorithm="cordero-grande", shrink="hard", workers=None,
                     aggregate="center", stride=1, mask_only=False, **estimate_kwargs):
     """Estimate the noise model from the data, then denoise with it.
 
@@ -120,6 +119,6 @@ def denoise_camppca(dwi, bvals=None, mask=None, patch=None, noise_field=True,
                                  noise_field=noise_field, workers=workers,
                                  **estimate_kwargs)
     return denoise_with_noise_model(dwi, model, patch=patch, noise_field=noise_field,
-                                    algorithm=algorithm, tile=tile, shrink=shrink, workers=workers,
+                                    algorithm=algorithm, shrink=shrink, workers=workers,
                                     aggregate=aggregate, stride=stride,
                                     mask_only=mask_only)

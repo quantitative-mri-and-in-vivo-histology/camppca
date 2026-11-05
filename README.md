@@ -81,7 +81,7 @@ the real part alone usually gives the lower error. On EDDEN's 2 mm data it did.
 ```python
 from camppca import denoise_camppca
 
-result = denoise_camppca(dwi, bvals, mask)  # mask is optional
+result = denoise_camppca(dwi, mask, bvals=bvals)  # mask is optional
 result.denoised     # (X, Y, Z, N)
 result.sigma_hat    # (X, Y, Z) MP-PCA's noise estimate, in data units
 result.rank         # (X, Y, Z) retained rank
@@ -97,7 +97,7 @@ supplied from elsewhere:
 ```python
 from camppca import estimate_noise_model, denoise_with_noise_model
 
-model = estimate_noise_model(dwi, bvals, mask)   # patch: dwidenoise's rule
+model = estimate_noise_model(dwi, mask, bvals=bvals)   # patch: dwidenoise's rule
 model.rho           # the correlation lag table — the pattern, no level
 model.d             # relative noise level per voxel
 model.patch_correlation(model.fitted_to["patch"])   # the n_vox × n_vox patch correlation, on demand

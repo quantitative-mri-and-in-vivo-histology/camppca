@@ -208,7 +208,7 @@ def _pool_level(level, mask, size):
     return pooled
 
 
-def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=0,
+def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, seed=0,
                          pool=3, algorithm="cordero-grande", noise_field=True, level_rounds=0,
                          workers=None):
     """Estimate the noise model from the data itself. No noise-only scan required.
