@@ -100,7 +100,7 @@ from camppca import estimate_noise_model, denoise_with_noise_model
 model = estimate_noise_model(dwi, bvals, mask)   # patch: dwidenoise's rule
 model.rho           # the correlation lag table — the pattern, no level
 model.d             # relative noise level per voxel
-model.patch_correlation(model.provenance["patch"])   # the n_vox × n_vox patch correlation, on demand
+model.patch_correlation(model.fitted_to["patch"])   # the n_vox × n_vox patch correlation, on demand
 
 result = denoise_with_noise_model(dwi, model)    # the patch the model was estimated for
 ```

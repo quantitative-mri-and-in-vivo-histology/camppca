@@ -296,7 +296,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
         algorithm: which Marchenko-Pastur variant to cut with.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) level field, ALREADY guarded by the caller
-            (:func:`~camppca.denoiser._effective_d`). Each voxel row is divided by its own level before whitening, which
+            (:meth:`~camppca.noise_model.NoiseModel.effective_d`). Each voxel row is divided by its own level before whitening, which
             is exact for ``Sigma = sigma^2 D C D``, and the center row is multiplied back
             on the way out. What it adds over a per-patch level is the within-patch
             heteroscedasticity, which widens the noise bulk the same way off-diagonal

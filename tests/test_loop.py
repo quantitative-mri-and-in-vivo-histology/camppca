@@ -12,9 +12,8 @@ import pytest
 from scipy.ndimage import distance_transform_cdt
 
 from camppca import estimate_noise_model
-from camppca.denoiser import _effective_d
 from camppca.denoiser.camppca import sqrtm_psd
-from camppca.noise_model import loop
+from camppca.noise_model import _effective_d, loop
 
 HX = np.array([0.3, 1.0, 0.3])          # in-plane correlation along x
 HY = np.array([0.15, 1.0, 0.15])        # and along y; z left uncorrelated

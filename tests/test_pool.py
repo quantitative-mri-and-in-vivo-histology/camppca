@@ -12,9 +12,8 @@ import numpy as np
 import pytest
 
 from camppca import NoiseModel, denoise_mppca, denoise_with_noise_model
-from camppca.denoiser import _effective_d
 from camppca.denoiser.camppca import whitened_level
-from camppca.noise_model import _build_C, loop
+from camppca.noise_model import _build_C, _effective_d, loop
 from camppca.pool import default_workers, resolve_workers, voxel_chunks
 
 SHAPE = (24, 20, 12)

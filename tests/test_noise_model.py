@@ -4,8 +4,7 @@ import numpy as np
 import pytest
 
 from camppca import denoise_mppca, denoise_with_noise_model
-from camppca.denoiser import _effective_d
-from camppca.noise_model import NoiseModel, _pool_level, estimate_noise_model
+from camppca.noise_model import NoiseModel, _effective_d, _pool_level, estimate_noise_model
 from camppca.patch import patch_offsets
 
 

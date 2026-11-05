@@ -22,6 +22,7 @@ import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy import ndimage
 from scipy.ndimage import uniform_filter
 
 from ..patch import check_patch, patch_offsets, required_lag, resolve_patch
@@ -45,6 +46,42 @@ LEVEL_TOL = 5e-3
 MIN_EIGENVALUE = 1e-3
 
 
+#: Levels below this fraction of the median over the mask count as bad. Whitening divides
+#: by ``d``, so a patch of near-constant data, whose MP level is near zero, would blow up.
+LEVEL_FLOOR = 1e-2
+
+
+def _good_level(d, mask):
+    """Mask voxels whose level is finite and at least :data:`LEVEL_FLOOR` of the median."""
+    d = np.asarray(d, np.float32)
+    good = np.isfinite(d) & (d > 0) & np.asarray(mask, bool)
+    if not good.any():
+        raise ValueError("noise field d is empty or non-positive everywhere in the mask")
+    return good & (d >= LEVEL_FLOOR * np.median(d[good]))
+
+
+def _effective_d(d, mask):
+    """The level field as the engine uses it. The one place ``d`` is guarded.
+
+    ``d`` is defined up to scale: rows are divided by it and the center voxel multiplied
+    back, so a constant cancels in the denoised image, the rank and ``sigma_hat`` in data
+    units. Voxels that are non-finite, below :data:`LEVEL_FLOOR` times the median over the
+    mask, or outside the mask get the level of the nearest good mask voxel. Edge patches
+    include outside voxels, and by default they are denoised too, so a brain voxel the
+    mask missed gets a local level.
+
+    The engine takes the field as given and rescales the denoised image by it at the center
+    voxel, but NOT ``sigma_hat``. Putting sigma_hat back into data units therefore means
+    applying this same field, which is why the denoiser takes it from
+    :meth:`NoiseModel.effective_d` and passes it down.
+    """
+    d = np.asarray(d, np.float32)
+    good = _good_level(d, mask)
+    nearest = ndimage.distance_transform_edt(~good, return_distances=False,
+                                             return_indices=True)
+    return d[tuple(nearest)].astype(np.float32)
+
+
 @dataclass
 class NoiseModel:
     """Spatial noise model: correlation pattern ``rho`` plus level field ``d``.
@@ -57,6 +94,10 @@ class NoiseModel:
     ``mask``       (X, Y, Z) bool, the voxels the model was estimated on.
     ``lag``        max in-plane lag ``rho`` covers; with ``rho.shape[2] - 1``, the
                    through-slice one, it bounds the patch this model can serve.
+    ``fitted_to``  the denoiser settings ``rho`` was fitted to, which the denoiser reads:
+                   ``patch``, ``algorithm`` and ``noise_field``. Any key may be missing,
+                   for a model whose ``rho`` came from elsewhere.
+    ``provenance`` the record of how the model was made. The denoiser never reads it.
     """
 
     rho: np.ndarray
@@ -64,12 +105,17 @@ class NoiseModel:
     mask: np.ndarray
     lag: int
     provenance: dict = field(default_factory=dict)
+    fitted_to: dict = field(default_factory=dict)
 
     def __post_init__(self):
         # A uint8 mask (what `nib.load(...).get_fdata().astype(...)` hands you) would turn
         # `... & mask` into integer fancy indexing downstream, silently mis-normalizing d.
         self.mask = np.asarray(self.mask, bool)
         self.rho = np.asarray(self.rho, float)
+
+    def effective_d(self):
+        """``d`` as the denoiser uses it, guarded: see :func:`_effective_d`."""
+        return _effective_d(self.d, self.mask)
 
     def patch_correlation(self, patch):
         """Derive ``C`` (P, P), the unit-diagonal patch correlation.
@@ -249,7 +295,6 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
 
     # Imported here: these use denoiser internals, and the denoiser imports this package,
     # so a top-level import would be circular.
-    from ..denoiser import _effective_d, _good_level
     from ..denoiser.camppca import whitened_level
     from .loop import loop_kernel
 
@@ -297,7 +342,9 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
         prov.update(level_converged=change < LEVEL_TOL, level_change=change,
                     s_spread=spread)
 
-    model = NoiseModel(rho=rho, d=d, mask=mask, lag=lag, provenance=prov)
+    model = NoiseModel(rho=rho, d=d, mask=mask, lag=lag, provenance=prov,
+                       fitted_to=dict(patch=prov["patch"], algorithm=algorithm,
+                                      noise_field=bool(noise_field)))
     # Fail here, not at denoising after the estimate is spent.
     try:
         model.patch_correlation(patch)
@@ -338,7 +385,6 @@ def _level_field(level, mask, pool):
     zero, for ``_effective_d`` to fill. Pooled in, zero-filled slices would pull their
     neighbours' level down: by about a fifth next to a zero slice at 3^3.
     """
-    from ..denoiser import _good_level  # here: the denoiser imports this package
     good = _good_level(level, mask)
     pooled = _pool_level(np.where(good, level, 0.0).astype(np.float64), good, pool)
     return np.where(good, pooled, 0.0).astype(np.float32)

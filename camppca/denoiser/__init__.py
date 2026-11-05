@@ -6,8 +6,9 @@ alignment-based estimator feeds the same code.
 
 ``camppca.py`` is the covariance-aware method, ``mppca.py`` the standard white-noise one.
 What they share lives in ``mp_threshold.py``, ``gather.py`` and ``result.py``, next to
-them. The loop kernel estimator in ``noise_model/loop.py`` reuses the split,
-``sqrtm_psd`` and ``_effective_d`` from here.
+them. The loop kernel estimator in ``noise_model/loop.py`` reuses the split and
+``sqrtm_psd`` from here. The level guard belongs to the noise model:
+:meth:`~camppca.noise_model.NoiseModel.effective_d`.
 
 Every public name here is re-exported from ``camppca`` itself.
 """
@@ -15,7 +16,6 @@ Every public name here is re-exported from ``camppca`` itself.
 import warnings
 
 import numpy as np
-from scipy import ndimage
 
 from .. import __version__
 from ..noise_model import estimate_noise_model
@@ -30,39 +30,6 @@ from .shrink import RULES, check_shrink
 
 __all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",
            "denoise_with_noise_model"]
-
-#: Levels below this fraction of the median over the mask count as bad. Whitening divides
-#: by ``d``, so a patch of near-constant data, whose MP level is near zero, would blow up.
-LEVEL_FLOOR = 1e-2
-
-def _good_level(d, mask):
-    """Mask voxels whose level is finite and at least :data:`LEVEL_FLOOR` of the median."""
-    d = np.asarray(d, np.float32)
-    good = np.isfinite(d) & (d > 0) & np.asarray(mask, bool)
-    if not good.any():
-        raise ValueError("noise field d is empty or non-positive everywhere in the mask")
-    return good & (d >= LEVEL_FLOOR * np.median(d[good]))
-
-
-def _effective_d(d, mask):
-    """The level field as the engine uses it. The one place ``d`` is guarded.
-
-    ``d`` is defined up to scale: rows are divided by it and the center voxel multiplied
-    back, so a constant cancels in the denoised image, the rank and ``sigma_hat`` in data
-    units. Voxels that are non-finite, below :data:`LEVEL_FLOOR` times the median over the
-    mask, or outside the mask get the level of the nearest good mask voxel. Edge patches include outside voxels, and by default they
-    are denoised too, so a brain voxel the mask missed gets a local level.
-
-    The engine takes the field as given and rescales the denoised image by it at the center
-    voxel, but NOT ``sigma_hat``. Putting sigma_hat back into data units therefore means
-    applying this same field, which is why it is computed here and passed down.
-    """
-    d = np.asarray(d, np.float32)
-    good = _good_level(d, mask)
-    nearest = ndimage.distance_transform_edt(~good, return_distances=False,
-                                             return_indices=True)
-    return d[tuple(nearest)].astype(np.float32)
-
 
 def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
                              algorithm="cordero-grande", tile=TILE, shrink="hard", workers=None,
@@ -100,20 +67,20 @@ def denoise_with_noise_model(dwi, model, patch=None, noise_field=True,
     dwi = np.asarray(dwi)
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
-    patch = resolve_patch(model.provenance.get("patch") if patch is None else patch,
+    patch = resolve_patch(model.fitted_to.get("patch") if patch is None else patch,
                           dwi.shape)
     if dwi.shape[:3] != model.mask.shape:
         raise ValueError(f"dwi spatial shape {dwi.shape[:3]} != model mask "
                          f"{model.mask.shape}")
 
-    fitted = (model.provenance.get("loop_algorithm"), model.provenance.get("loop_noise_field"))
-    if "loop_algorithm" in model.provenance and fitted != (algorithm, bool(noise_field)):
+    fitted = (model.fitted_to.get("algorithm"), model.fitted_to.get("noise_field"))
+    if "algorithm" in model.fitted_to and fitted != (algorithm, bool(noise_field)):
         warnings.warn(f"the loop kernel was fitted with algorithm={fitted[0]!r}, "
                       f"noise_field={fitted[1]}, but this denoise uses algorithm={algorithm!r}, "
                       f"noise_field={bool(noise_field)}. Re-estimate with the same settings.",
                       RuntimeWarning, stacklevel=2)
     C = model.patch_correlation(patch)
-    d_eff = _effective_d(model.d, model.mask) if noise_field else None
+    d_eff = model.effective_d() if noise_field else None
 
     region = model.mask if mask_only else np.ones(model.mask.shape, bool)
     denoised, sigma_hat, rank = denoise_whitened(

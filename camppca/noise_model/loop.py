@@ -67,12 +67,11 @@ from joblib import delayed
 from scipy.linalg import cho_factor, cho_solve, null_space
 from scipy.ndimage import binary_erosion
 
-from ..denoiser import _effective_d, _good_level
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
 from ..patch import patch_offsets
 from ..pool import resolve_workers, worker_pool
-from . import _build_C
+from . import _build_C, _effective_d, _good_level
 
 __all__ = ["loop_kernel"]
 

@@ -124,7 +124,9 @@ with `d` = standard MP-PCA's σ̂ pooled 3³, gave the same kernel and median σ
 `estimate_noise_model` starts `rho` from white noise (1 at lag 0) and refines it until it
 explains the MP-PCA bulk of 3000 sampled patches at once (`noise_model/loop.py`). It fits
 to the denoiser's own split: `algorithm` and `noise_field` are passed to
-`estimate_noise_model`, recorded in provenance, and a mismatch at denoising warns.
+`estimate_noise_model`, stored with the patch in `NoiseModel.fitted_to`, and a mismatch
+at denoising warns. The denoiser reads `fitted_to`, never `provenance`, which is only a
+record: a second estimator sets `fitted_to` or leaves keys out.
 Every volume enters, b0s included, because the denoiser whitens them all. `bvals` only
 picks the b0s the default mask is drawn from.
 
@@ -212,6 +214,8 @@ or `camppca.noise_model.` prefix.
   function, or the import is circular.
 - `NoiseModel` lives in `noise_model/__init__.py`, not with the estimation math: a future
   alignment-based estimator builds the same object and must not import the loop to get it.
+  The level guard lives there too, as `NoiseModel.effective_d()`, since it belongs to the
+  model. The estimator uses the same `_effective_d` and `_good_level`.
 - Flat, with `noise_model_loop.py`-style prefixes, is the same structure with the noun
   repeated in every filename. Do not "simplify" back to it.
 
@@ -276,7 +280,7 @@ Breaking any of these corrupts results without an error:
   `d` at the center voxel but *not* `sigma_hat`, so the API must apply that multiply by
   default. σ̂ is the headline metric — the scale of `d` must not leak into the reported
   number.
-- `_effective_d` in `denoiser/__init__.py` is the **only** place `d` is guarded (bad or
+- `_effective_d` in `noise_model/__init__.py` is the **only** place `d` is guarded (bad or
   outside-mask voxels get the nearest good mask voxel's level). The engine takes the
   field as given. Bad includes a level below 1% of the median (`LEVEL_FLOOR`): a patch of
   near-constant data, such as zero-filled slices, has an MP level near zero, and
