@@ -70,21 +70,30 @@ def load_bvals(path):
 
 
 def load_mask(path):
-    """Load a mask image as a boolean array."""
-    return np.asanyarray(nib.load(str(path)).dataobj) > 0.5
+    """Load a mask image as a boolean array. A trailing dimension of 1 is dropped, as
+    some tools write masks with shape (X, Y, Z, 1)."""
+    data = np.asanyarray(nib.load(str(path)).dataobj)
+    if data.ndim == 4 and data.shape[3] == 1:
+        data = data[..., 0]
+    return data > 0.5
 
 
 def save_like(path, data, affine, header=None, dtype=np.float32):
     """Write ``data`` as a NIfTI carrying the input's geometry.
 
     The header is only reused when the array still has the input's shape -- a 3-D map
-    written with a 4-D header would carry a stale dim[4]. The file is written as
-    ``dtype``. A reused header otherwise keeps the input's type, and nibabel packed a
-    float image from a uint16 input back into scaled 16-bit integers.
+    written with a 4-D header would carry a stale dim[4]. A 3-D map still takes the
+    input's qform and sform codes and units, so tools read it in the same space. The file
+    is written as ``dtype``. A reused header otherwise keeps the input's type, and nibabel
+    packed a float image from a uint16 input back into scaled 16-bit integers.
     """
     arr = np.asarray(data, dtype)
     use_header = header if (header is not None and arr.ndim == 4) else None
     img = nib.Nifti1Image(arr, affine, use_header)
+    if header is not None and use_header is None:
+        img.set_qform(affine, int(header["qform_code"]))
+        img.set_sform(affine, int(header["sform_code"]))
+        img.header.set_xyzt_units(xyz=header.get_xyzt_units()[0])
     img.set_data_dtype(arr.dtype)
     nib.save(img, str(path))
 

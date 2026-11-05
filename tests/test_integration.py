@@ -6,6 +6,8 @@ toward the i.i.d. floor, and the MP fit lands on the true level -- where standar
 white-noise MP-PCA does not.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -179,3 +181,24 @@ def test_denoise_refuses_a_mismatched_spatial_shape(dataset, model):
     dwi, _, _ = dataset
     with pytest.raises(ValueError, match="model mask"):
         denoise_with_noise_model(dwi[:-1], model, patch=(5, 5, 3))
+
+
+def test_a_bad_algorithm_is_refused_before_any_work(dataset, model):
+    dwi, bvals, mask = dataset
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")       # no fit-mismatch warning first
+        with pytest.raises(ValueError, match="algorithm must be one of"):
+            denoise_with_noise_model(dwi, model, algorithm="exp2")
+    with pytest.raises(ValueError, match="algorithm must be one of"):
+        denoise_mppca(dwi, mask, algorithm="exp2")
+    with pytest.raises(ValueError, match="algorithm must be one of"):
+        estimate_noise_model(dwi, bvals, mask, algorithm="exp2")
+
+
+def test_float64_input_gives_the_float32_model(dataset, model):
+    """nibabel's get_fdata() gives float64. The estimator converts it once."""
+    dwi, bvals, mask = dataset
+    assert dwi.dtype == np.float64
+    narrow = estimate_noise_model(dwi.astype(np.float32), bvals, mask, patch=(5, 5, 3))
+    np.testing.assert_array_equal(narrow.rho, model.rho)
+    np.testing.assert_array_equal(narrow.d, model.d)

@@ -246,6 +246,21 @@ def _relative_error(d, mask):
     return np.abs((d / np.median(d[mask])) / (level / np.median(level[mask])) - 1)
 
 
+def test_every_level_round_fits_the_same_patches(dataset, monkeypatch):
+    """The centers came from the current d, so a voxel crossing the level floor between
+    rounds drew a different set of 3000 patches."""
+    dwi, bvals, mask = dataset
+    drawn = []
+    original = loop._sample_centers
+    monkeypatch.setattr(loop, "_sample_centers",
+                        lambda *a: drawn.append(original(*a)) or drawn[-1])
+    estimate_noise_model(dwi, bvals, mask, patch=PATCH, level_rounds=2, workers=1)
+    assert len(drawn) >= 2
+    for later in drawn[1:]:
+        for a, b in zip(drawn[0], later, strict=True):
+            np.testing.assert_array_equal(a, b)
+
+
 def test_level_rounds_recover_the_injected_level_and_flatten_s(dataset, model):
     """Away from the mask edge. Edge patches reach outside the mask, where d is only the
     nearest mask voxel's level, so the rim is less exact."""

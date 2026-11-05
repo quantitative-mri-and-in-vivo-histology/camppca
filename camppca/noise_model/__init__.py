@@ -201,22 +201,24 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
 
     With ``noise_field=False``, ``d`` is 1 in the mask and only the loop runs.
     """
+    # Imported here: the denoiser imports this package, so a top-level import is circular.
+    from .. import __version__  # the package sets it after importing this module
+    from ..denoiser.gather import as_data, zero_nonfinite
+    from ..denoiser.mp_threshold import check_algorithm
+
+    check_algorithm(algorithm)
     dwi = np.asarray(dwi)
     if dwi.ndim != 4:
         raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
     complex_input = np.iscomplexobj(dwi)
     if complex_input:
+        imag = dwi.imag                    # a view, for the phase check below
         dwi = np.ascontiguousarray(dwi.real, np.float32)
-    from ..denoiser.gather import zero_nonfinite  # here: denoiser imports this package
-    dwi = zero_nonfinite(dwi)[0]
+    dwi = zero_nonfinite(as_data(dwi))[0]  # float32 once: every pass and map reuses it
     n_vols = dwi.shape[3]
     patch = resolve_patch(patch, dwi.shape)
     lag = required_lag(patch)
     dzmax = int(patch[2]) - 1
-    from ..denoiser.mp_threshold import ALGORITHMS  # here: denoiser imports this package
-
-    if algorithm not in ALGORITHMS:
-        raise ValueError(f"algorithm must be one of {ALGORITHMS}, got {algorithm!r}")
     pool = int(pool)
     if pool < 1:
         raise ValueError(f"pool must be >= 1 voxel, got {pool}")
@@ -247,7 +249,7 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
 
     # Imported here: these use denoiser internals, and the denoiser imports this package,
     # so a top-level import would be circular.
-    from ..denoiser import _effective_d
+    from ..denoiser import _effective_d, _good_level
     from ..denoiser.camppca import whitened_level
     from .loop import loop_kernel
 
@@ -255,11 +257,14 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     rho[lag, lag, 0] = 1.0
     if noise_field:
         level = whitened_level(dwi, mask, None, patch, algorithm, workers=workers)
+        if complex_input:
+            _check_phase_stabilized(imag, mask, level, seed)
         d = _level_field(level, mask, pool)
     else:
         d = mask.astype(np.float32)
+    sample = _good_level(d, mask)          # the same patches in every level round
     rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
-                            noise_field=noise_field, workers=workers)
+                            noise_field=noise_field, workers=workers, sample=sample)
 
     rounds_run, change, spread = 0, None, None
     for rounds_run in range(1, (level_rounds if noise_field else 0) + 1):  # noqa: B007
@@ -276,9 +281,10 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
             break
         d = new
         rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
-                                noise_field=noise_field, workers=workers)
+                                noise_field=noise_field, workers=workers, sample=sample)
 
-    prov = dict(patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
+    prov = dict(version=__version__,
+                patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
                 seed=int(seed), lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
@@ -298,6 +304,31 @@ def estimate_noise_model(dwi, bvals=None, mask=None, patch=None, lowb=100, seed=
     except ValueError as err:
         raise ValueError(f"the loop kernel is not usable: {err}") from err
     return model
+
+
+#: The imaginary part's rms over the real part's noise level above which complex data look
+#: phase unstabilized. Stabilized EDDEN 2 mm gave 1.5, the imaginary part holding a little
+#: structure. Unstabilized, it carries the signal.
+PHASE_RATIO = 3.0
+
+
+def _check_phase_stabilized(imag, mask, level, seed):
+    """Warn when the imaginary part carries far more than noise.
+
+    The estimator works on the real part, which holds the signal only once the phase is
+    stabilized. Otherwise the real part is a random projection of the signal, and the
+    model fits that. 10000 mask voxels are enough and need no copy of the volume.
+    """
+    voxels = np.flatnonzero(mask)
+    pick = np.random.default_rng(seed).choice(voxels, min(10000, voxels.size), replace=False)
+    where = np.unravel_index(np.sort(pick), mask.shape)
+    ratio = float(np.sqrt(np.mean(np.square(imag[where], dtype=np.float64)))
+                  / np.median(level[mask]))
+    if ratio > PHASE_RATIO:
+        warnings.warn(f"the imaginary part is {ratio:.1f} times the real part's noise level "
+                      "inside the mask. The noise model is estimated on the real part, "
+                      "which holds the signal only once the phase is stabilized: run "
+                      "`camppca phase` first.", RuntimeWarning, stacklevel=3)
 
 
 def _level_field(level, mask, pool):

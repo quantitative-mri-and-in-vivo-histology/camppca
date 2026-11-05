@@ -4,10 +4,12 @@ After phase stabilization the signal sits on the real axis and the noise is circ
 same in both channels. Each test states a property the complex path must have.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
-from camppca import denoise_camppca, denoise_mppca
+from camppca import denoise_camppca, denoise_mppca, estimate_noise_model
 from camppca.denoiser.camppca import denoise_whitened, whitened_level
 
 SHAPE = (10, 10, 10)
@@ -134,3 +136,19 @@ def test_the_level_pass_reads_one_channel_of_complex_data():
     level = whitened_level(dwi, mask, None, PATCH, workers=1)
 
     assert abs(np.median(level[mask]) - 7.0) < 0.05 * 7.0
+
+
+def test_complex_data_without_a_stabilized_phase_is_flagged():
+    rng = np.random.default_rng(7)
+    shape = (16, 16, 12)
+    stable = low_rank_volume(rng, rank=3, shape=shape) + 500 + circular_noise(rng, 20.0,
+                                                                              shape=shape)
+    mask = interior_mask(shape)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        estimate_noise_model(stable, mask=mask, patch=PATCH, workers=1)
+
+    # Unstabilized: a phase that changes from volume to volume, as motion gives.
+    turned = (stable * np.exp(2j * np.pi * rng.random(N_VOLS))).astype(np.complex64)
+    with pytest.warns(RuntimeWarning, match="phase is stabilized"):
+        estimate_noise_model(turned, mask=mask, patch=PATCH, workers=1)

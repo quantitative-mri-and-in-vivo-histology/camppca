@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .. import __version__
 from ..patch import resolve_patch
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
@@ -102,6 +103,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, patch=None,
         f"mean over overlapping patches, stride {stride}"
     return DenoiseResult(
         denoised=denoised, sigma_hat=sigma_hat, rank=rank,
-        provenance=dict(method="mppca", patch=tuple(int(v) for v in patch),
+        provenance=dict(method="mppca", version=__version__,
+                        patch=tuple(int(v) for v in patch),
                         algorithm=algorithm, shrink=shrink, aggregate=aggregate,
                         stride=stride, rule=f"{RULES[tile_shrink]}, {where}"))

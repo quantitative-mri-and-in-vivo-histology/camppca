@@ -96,18 +96,19 @@ def test_pooled_level_pass_is_the_serial_pass(dataset, model, white):
     np.testing.assert_array_equal(pooled, serial)
 
 
-def test_the_pooled_loop_lands_on_the_serial_kernel(dataset, model):
-    """Not bit for bit: the split's matmuls round differently on one thread, and a
-    near-tied patch rank can flip, which moves the kernel by about 1e-4."""
+def test_the_pooled_loop_is_the_serial_loop(dataset, model):
+    """Bit for bit: the sampled patches go in fixed chunks, pooled in chunk order. When
+    the chunks followed the worker count, a near-tied rank moved the kernel by 1e-4."""
     dwi, mask = dataset
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
     serial, _ = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
                                  workers=1)
-    pooled, info = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
-                                    workers=3)
+    for workers in (2, 3):
+        pooled, info = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
+                                        workers=workers)
+        np.testing.assert_array_equal(pooled, serial)
     assert info["converged"]
-    np.testing.assert_allclose(pooled, serial, atol=1e-3)
     assert np.linalg.eigvalsh(_build_C(pooled, np.array(PATCH), LAG))[0] > 1e-3
 
 
@@ -125,3 +126,9 @@ def test_a_script_without_a_main_guard_runs(tmp_path):
                          timeout=300)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.split()[-2:] == ["done", "1"]
+
+
+def test_the_default_worker_count_respects_a_cpu_quota(monkeypatch):
+    from camppca import pool
+    monkeypatch.setattr(pool.joblib, "cpu_count", lambda: 3)
+    assert pool.default_workers() == min(3, pool._physical_cores())

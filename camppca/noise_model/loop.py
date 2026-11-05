@@ -79,6 +79,7 @@ __all__ = ["loop_kernel"]
 N_CENTERS = 3000        # sampled patches the bulk is pooled over
 LOOP_TOL = 1e-3         # stop when U of C changes by less than this between rounds
 MAX_ROUNDS = 20
+LOOP_CHUNKS = 32        # fixed chunks of sampled patches, so workers cannot change the sums
 FIT_TOL = 1e-5          # the fit stops at this gradient, relative to its start
 MAX_FIT_STEPS = 300
 PRODUCT_THREADS = 8     # threads for the bulk map's per-patch products
@@ -88,7 +89,7 @@ _product_pool = None
 
 
 def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande",
-                noise_field=True, workers=None):
+                noise_field=True, workers=None, sample=None):
     """Refine a kernel until it is consistent with the MP-PCA bulk of the patches.
 
     Args:
@@ -104,6 +105,9 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
         workers: CPU processes the sampled patches are split over each round, see
             :mod:`camppca.pool`. Each gathers and splits its own share. The fit stays
             in this process.
+        sample: (X, Y, Z) bool, the voxels patch centers are drawn from, or None for the
+            mask voxels whose level passes the floor of ``_effective_d``. The level rounds
+            pass the first one, so every round fits the same patches.
 
     Returns:
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
@@ -119,15 +123,18 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
     dzmax = rho_start.shape[2] - 1
     workers = resolve_workers(workers)
     # Patches with a level below the floor hold near-constant data, which the fit cannot use.
-    centers = _sample_centers(_good_level(d, mask), patch, np.random.default_rng(seed))
+    if sample is None:
+        sample = _good_level(d, mask)
+    centers = _sample_centers(sample, patch, np.random.default_rng(seed))
     levels = _effective_d(d, mask) if noise_field else np.ones(mask.shape, np.float32)
 
+    # Fixed chunks, pooled in chunk order, so the model does not depend on ``workers``.
+    parts = np.array_split(np.arange(centers[0].size), min(LOOP_CHUNKS, centers[0].size))
     with ExitStack() as stack:
         if workers > 1:
             # One pool for every round: joblib maps the volume and the levels once.
             parallel = stack.enter_context(worker_pool(workers))
-            chunks = [tuple(c[part] for c in centers)
-                      for part in np.array_split(np.arange(centers[0].size), workers)]
+            chunks = [tuple(c[part] for c in centers) for part in parts]
 
             def split(C):
                 return _assemble(C, parallel(
@@ -137,7 +144,8 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
             patches = _gather(dwi, levels, centers, patch)
 
             def split(C):
-                return _split(patches, C, algorithm)
+                return _assemble(C, [_split_chunk(patches[part], C, algorithm)
+                                     for part in parts])
 
         rho = rho_start
         C = _build_C(rho, patch, lag)

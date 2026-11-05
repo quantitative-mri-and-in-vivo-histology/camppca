@@ -346,8 +346,9 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
     so no padded copy exists. In mean mode a task returns its sums over its
     box (the x-slices its patches reach) and the main process adds them in chunk order,
     over a fixed 32 chunks, so the result does not depend on the number of workers.
-  - A pooled pass is the serial pass bit for bit. The loop is not: its split rounds
-    differently on one thread, and a near-tied rank moves `rho` by about 1e-4.
+  - A pooled pass is the serial pass bit for bit. So is the loop: its sampled patches go
+    in 32 fixed chunks (`LOOP_CHUNKS`), pooled in chunk order. When the chunks followed
+    the worker count, a near-tied rank moved `rho` by about 1e-4.
   - EDDEN 0.9 mm (228 x 228 x 132, 199 volumes, 2.0M brain voxels, 7³), whole camppca
     pipeline: 298 s (estimate 103 s, of which the level pass 90 s; denoise 195 s).
     Peak system RAM above idle, image included: loading 5.5 GB, estimate 8.4 GB, denoise
