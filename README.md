@@ -61,7 +61,7 @@ first removes the phase of the mean over all volumes, as in the EDDEN preprocess
 `--filter dk`, the default, estimates the phase with the decorrelated kernel of Sprenger et
 al. (2017). `--filter tukey --fwhm 0.58` uses a k-space low-pass, as
 in the EDDEN preprocessing (Manzano-Patrón et al. 2024). The phase is read in radians or
-as the scanner stores it, -4096 to 4094 on Siemens. `--imag` writes the imaginary part,
+in any unit whose range is one full turn, such as -4096 to 4094 on Siemens. `--imag` writes the imaginary part,
 which should hold noise only.
 
 On complex white noise the real part's mean over pure noise is 0.28σ with `dk` and 0.91σ

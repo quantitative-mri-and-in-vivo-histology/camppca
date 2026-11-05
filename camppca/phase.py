@@ -73,15 +73,18 @@ def _tukey(n, fwhm):
 def phase_scale(phase) -> float:
     """The factor that turns a stored phase image into radians.
 
-    1 when every value lies within [-pi, pi]. Otherwise the image is taken as integers
-    spread over a power-of-two range for one full turn, as scanners store it: Siemens
-    writes -4096 to 4094 or 0 to 4095. A constant offset is harmless, since the
-    stabilization removes it with the rest of the phase.
+    1 when the values fit in one turn of radians, within [-pi, 2pi]. Otherwise the range
+    from the smallest to the largest value is taken as one full turn. That fits any
+    unit: Siemens integers from -4096 to 4094, degrees, milliradians. A real phase image
+    covers a full turn, since its noisy background does. A constant offset is harmless,
+    since the stabilization removes it with the rest of the phase. NaN is ignored.
     """
-    lo, hi = float(np.min(phase)), float(np.max(phase))
-    if lo >= -np.pi - 1e-3 and hi <= np.pi + 1e-3:
+    lo, hi = float(np.nanmin(phase)), float(np.nanmax(phase))
+    if lo >= -np.pi - 1e-3 and hi <= 2 * np.pi + 1e-3 and hi - lo <= 2 * np.pi + 1e-3:
         return 1.0
-    return 2 * np.pi / 2 ** np.ceil(np.log2(hi - lo) - 1e-3)   # 8190, 8192 -> 2^13
+    if not np.isfinite(hi - lo) or hi == lo:
+        raise ValueError(f"cannot read the phase unit: its values run from {lo} to {hi}")
+    return 2 * np.pi / (hi - lo)
 
 
 def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
@@ -90,7 +93,8 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
 
     Args:
         magnitude: (X, Y, Z, N) magnitude.
-        phase: (X, Y, Z, N) phase in radians, see :func:`phase_scale`.
+        phase: (X, Y, Z, N) phase, in radians or in any unit whose range is one full
+            turn, as scanners store it. See :func:`phase_scale`.
         filter: "tukey" or "dk", the estimate of the smooth phase; see the module.
         fwhm: "tukey" only, the window's full width at half maximum as a fraction of
             k-space, from 0.5 to below 1. Smaller is smoother.
@@ -113,9 +117,10 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
                          f"and {phase.shape}")
     plane = tuple(a for a in range(3) if a != slice_axis)
     n_vols = magnitude.shape[3]
+    scale = phase_scale(phase)             # per volume below: no scaled copy of the phase
 
     def volume(n):
-        return (magnitude[..., n] * np.exp(1j * phase[..., n])).astype(np.complex64)
+        return (magnitude[..., n] * np.exp(1j * scale * phase[..., n])).astype(np.complex64)
 
     fixed = np.ones(magnitude.shape[:3], np.complex64)
     if mean_phase:
