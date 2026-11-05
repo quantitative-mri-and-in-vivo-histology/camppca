@@ -27,6 +27,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+import joblib
 import numpy as np
 from joblib import Parallel, delayed, parallel_config
 
@@ -50,8 +51,13 @@ def _physical_cores():
 
 
 def default_workers() -> int:
-    """Physical cores this process may run on. 32 workers on 16 cores were 4% faster."""
-    return _physical_cores()
+    """Physical cores this process may run on, at most its CPU quota. 32 workers on 16
+    cores were 4% faster.
+
+    joblib's count reads the container's CPU quota, so a job limited to 4 CPUs on a
+    32-core host starts 4 workers, not 16 throttled ones.
+    """
+    return max(1, min(_physical_cores(), joblib.cpu_count()))
 
 
 def resolve_workers(workers) -> int:

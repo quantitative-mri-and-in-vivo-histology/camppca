@@ -125,3 +125,9 @@ def test_a_script_without_a_main_guard_runs(tmp_path):
                          timeout=300)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.split()[-2:] == ["done", "1"]
+
+
+def test_the_default_worker_count_respects_a_cpu_quota(monkeypatch):
+    from camppca import pool
+    monkeypatch.setattr(pool.joblib, "cpu_count", lambda: 3)
+    assert pool.default_workers() == min(3, pool._physical_cores())
