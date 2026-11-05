@@ -71,7 +71,15 @@ from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
 from ..patch import patch_offsets
 from ..pool import resolve_workers, worker_pool
-from . import _build_C, _effective_d, _good_level
+from . import (
+    FALLBACK_REASON,
+    MIN_EIGENVALUE,
+    _build_C,
+    _effective_d,
+    _good_level,
+    _table_C,
+    _white_rho,
+)
 
 __all__ = ["loop_kernel"]
 
@@ -112,7 +120,8 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
         lag and ``rho_start``'s values at lags the patch never spans, and a dict with
         ``rounds``, ``converged``, ``u_kernel`` (U of the returned table's patch
-        correlation) and ``n_centers``.
+        correlation), ``n_centers`` and ``fallback``: None, or why the table fell back
+        to white noise because a round's fit was not a valid correlation.
 
     Raises:
         ValueError: if no mask voxel has its whole patch inside the mask, among the
@@ -149,11 +158,20 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
         rho = rho_start
         C = _build_C(rho, patch, lag)
         u_prev = _sphericity_excess(C)
-        converged = False
+        converged, fallback = False, None
         for rounds in range(1, MAX_ROUNDS + 1):  # noqa: B007 - read after the loop
             S, factors = split(C)
             rho = _fit_table(S, factors, C, patch, lag, dzmax, rho,
                              threads=min(PRODUCT_THREADS, workers))
+            # Check before projecting: whitening by a near-singular C overflowed float32.
+            smallest = float(np.linalg.eigvalsh(_table_C(rho, patch, lag))[0])
+            if smallest < MIN_EIGENVALUE:
+                fallback = (f"the loop kernel is not a valid correlation after round "
+                            f"{rounds}: the smallest eigenvalue of C is {smallest:.1e}, "
+                            f"below {MIN_EIGENVALUE:g}. {FALLBACK_REASON}")
+                warnings.warn(fallback, RuntimeWarning, stacklevel=3)
+                rho = _white_rho(rho.shape)
+                break
             C = _build_C(rho, patch, lag)
             u = _sphericity_excess(C)
             change = abs(u - u_prev)
@@ -161,14 +179,14 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
                 converged = True
                 break
             u_prev = u
-        if not converged:
+        if not converged and fallback is None:
             warnings.warn(f"loop kernel did not converge in {MAX_ROUNDS} rounds; U changed "
                           f"by {change:.4f} in the last one, against a tolerance "
                           f"of {LOOP_TOL}", RuntimeWarning, stacklevel=3)
     rho = rho.copy()
     unspanned = ~_spanned(patch, lag, dzmax)
     rho[unspanned] = rho_start[unspanned]
-    info = dict(rounds=rounds, converged=converged,
+    info = dict(rounds=rounds, converged=converged, fallback=fallback,
                 u_kernel=_sphericity_excess(_build_C(rho, patch, lag)),
                 n_centers=int(centers[0].size))
     return rho, info
