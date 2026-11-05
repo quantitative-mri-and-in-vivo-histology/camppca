@@ -149,13 +149,9 @@ class NoiseModel:
         return C
 
 
-def _build_C(rho, patch, lag):
-    """Patch correlation from a lag table ``rho[dx+lag, dy+lag, |dz|]``; no wraparound.
-
-    Projected to the nearest PSD matrix with unit diagonal if the measured table is
-    indefinite.  The bounds check that guards it lives in
-    :meth:`NoiseModel.patch_correlation`.
-    """
+def _table_C(rho, patch, lag):
+    """The patch correlation a lag table spells out, symmetric with unit diagonal, NOT
+    projected: its smallest eigenvalue says whether the table is a valid correlation."""
     o = patch_offsets(patch)
     dx = o[:, 0][:, None] - o[:, 0][None, :]
     dy = o[:, 1][:, None] - o[:, 1][None, :]
@@ -163,6 +159,32 @@ def _build_C(rho, patch, lag):
     R = rho[dx + lag, dy + lag, np.minimum(dz, rho.shape[2] - 1)]
     R = 0.5 * (R + R.T)
     np.fill_diagonal(R, 1.0)
+    return R
+
+
+def _white_rho(shape):
+    """A lag table of white noise: 1 at zero lag, 0 elsewhere."""
+    rho = np.zeros(shape)
+    rho[shape[0] // 2, shape[1] // 2, 0] = 1.0
+    return rho
+
+
+#: Why a loop kernel fell back to white noise. Signal below the MP edge is smooth and
+#: alike in every patch, so pooled it reads as strong correlation that no stationary
+#: table explains. An unstabilized phase leaves such signal in the real part.
+FALLBACK_REASON = ("the noise bulk most likely holds signal, as an unstabilized phase "
+                   "leaves in the real part. The noise model falls back to white noise: "
+                   "camppca then denoises like MP-PCA with the level field.")
+
+
+def _build_C(rho, patch, lag):
+    """Patch correlation from a lag table ``rho[dx+lag, dy+lag, |dz|]``; no wraparound.
+
+    Projected to the nearest PSD matrix with unit diagonal if the measured table is
+    indefinite.  The bounds check that guards it lives in
+    :meth:`NoiseModel.patch_correlation`.
+    """
+    R = _table_C(rho, patch, lag)
     w, V = np.linalg.eigh(R)
     if w.min() < 1e-9:
         R = (V * np.maximum(w, 1e-9)) @ V.T
@@ -312,7 +334,9 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
                             noise_field=noise_field, workers=workers, sample=sample)
 
     rounds_run, change, spread = 0, None, None
-    for rounds_run in range(1, (level_rounds if noise_field else 0) + 1):  # noqa: B007
+    # A fallback leaves no correlation to refine the level with: no rounds then.
+    n_rounds = level_rounds if noise_field and not info["fallback"] else 0
+    for rounds_run in range(1, n_rounds + 1):  # noqa: B007
         d_eff = _effective_d(d, mask)
         s = whitened_level(dwi, mask, _build_C(rho, patch, lag), patch, algorithm,
                            d_field=d_eff, workers=workers)
@@ -327,6 +351,8 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
         d = new
         rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
                                 noise_field=noise_field, workers=workers, sample=sample)
+        if info["fallback"]:
+            break
 
     prov = dict(version=__version__,
                 patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
@@ -335,7 +361,8 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
                 u_kernel=info["u_kernel"], n_centers=info["n_centers"],
                 loop_algorithm=algorithm, loop_noise_field=bool(noise_field),
-                level_rounds=level_rounds, level_rounds_run=rounds_run)
+                level_rounds=level_rounds, level_rounds_run=rounds_run,
+                fallback=info["fallback"])
     if complex_input:
         prov.update(data="complex, estimated on the real part")
     if rounds_run:
@@ -345,11 +372,15 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     model = NoiseModel(rho=rho, d=d, mask=mask, lag=lag, provenance=prov,
                        fitted_to=dict(patch=prov["patch"], algorithm=algorithm,
                                       noise_field=bool(noise_field)))
-    # Fail here, not at denoising after the estimate is spent.
+    # Check here, not at denoising after the estimate is spent. The loop checks every
+    # round, so this is the backstop: the same fallback, never a crash.
     try:
         model.patch_correlation(patch)
     except ValueError as err:
-        raise ValueError(f"the loop kernel is not usable: {err}") from err
+        reason = f"the loop kernel is not usable: {err} {FALLBACK_REASON}"
+        warnings.warn(reason, RuntimeWarning, stacklevel=2)
+        model.rho = _white_rho(rho.shape)
+        model.provenance.update(fallback=reason, u_kernel=0.0)
     return model
 
 

@@ -167,8 +167,9 @@ def test_the_convergence_warning_reports_the_last_change(dataset, model, monkeyp
     assert "by 0.0000" not in str(caught[0].message)
 
 
-def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
-    """Lag-1 correlation 0.7 alone is indefinite on 5 voxels."""
+def test_an_unusable_loop_kernel_falls_back_to_white_noise(dataset, monkeypatch):
+    """Lag-1 correlation 0.7 alone is indefinite on 5 voxels. Whitening by its projection
+    overflowed float32; the loop now stops at the first such round."""
     dwi, bvals, mask = dataset
 
     def indefinite(S, factors, C, patch, lag, dzmax, start, threads=1):
@@ -178,8 +179,15 @@ def test_an_unusable_loop_kernel_is_refused_at_estimation(dataset, monkeypatch):
         return rho
 
     monkeypatch.setattr(loop, "_fit_table", indefinite)
-    with pytest.raises(ValueError, match="loop kernel is not usable"):
-        estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
+    with pytest.warns(RuntimeWarning, match="not a valid correlation after round 1"):
+        model = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, level_rounds=2)
+
+    white = np.zeros_like(model.rho)
+    white[LAG, LAG, 0] = 1.0
+    np.testing.assert_array_equal(model.rho, white)
+    assert "unstabilized phase" in model.provenance["fallback"]
+    assert model.provenance["level_rounds_run"] == 0
+    assert model.provenance["u_kernel"] == 0.0
 
 
 def test_the_loop_fits_to_the_denoisers_settings(dataset, model):

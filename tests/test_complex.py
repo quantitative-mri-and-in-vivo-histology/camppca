@@ -9,7 +9,12 @@ import warnings
 import numpy as np
 import pytest
 
-from camppca import denoise_camppca, denoise_mppca, estimate_noise_model
+from camppca import (
+    denoise_camppca,
+    denoise_mppca,
+    denoise_with_noise_model,
+    estimate_noise_model,
+)
 from camppca.denoiser.camppca import denoise_whitened, whitened_level
 
 SHAPE = (10, 10, 10)
@@ -152,3 +157,24 @@ def test_complex_data_without_a_stabilized_phase_is_flagged():
     turned = (stable * np.exp(2j * np.pi * rng.random(N_VOLS))).astype(np.complex64)
     with pytest.warns(RuntimeWarning, match="phase is stabilized"):
         estimate_noise_model(turned, mask=mask, patch=PATCH, workers=1)
+
+
+def test_an_unstabilized_real_part_falls_back_instead_of_crashing():
+    """A phase ramp that changes from volume to volume puts signal below the MP edge. The
+    loop fitted it as correlation, whitened by a near-singular C, and float32 overflowed.
+    """
+    rng = np.random.default_rng(7)
+    shape = (16, 16, 12)
+    stable = low_rank_volume(rng, rank=3, shape=shape) + 500 + circular_noise(rng, 20.0,
+                                                                              shape=shape)
+    x = np.linspace(0, 1, shape[0])[:, None, None, None]
+    phase = 2 * np.pi * (rng.random(N_VOLS) + 0.3 * x * rng.random(N_VOLS))
+    real = (stable * np.exp(1j * phase)).real.astype(np.float32)
+    mask = interior_mask(shape)
+
+    with pytest.warns(RuntimeWarning, match="unstabilized phase"):
+        model = estimate_noise_model(real, mask, patch=PATCH, workers=1)
+    assert model.provenance["fallback"]
+    out = denoise_with_noise_model(real, model, workers=1)
+    assert np.isfinite(out.denoised).all()
+    assert abs(np.median(out.sigma_hat[mask]) - 20.0) < 0.1 * 20.0, "MP-PCA's level"

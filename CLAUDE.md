@@ -226,6 +226,14 @@ Breaking any of these corrupts results without an error:
 - `LAG = max(patch[0], patch[1]) - 1` in-plane, and `dzmax = patch[2] - 1`. Smaller, and
   lag lookup wraps around. `dzmax` used to equal `LAG`, which crashed a one-slice patch
   on a thin volume.
+- **The loop falls back to white noise** when a round's fitted table is not a valid
+  correlation, smallest eigenvalue of its `C` below `MIN_EIGENVALUE`, checked before
+  projecting. It warns, and provenance records `fallback`. Cause seen: in the real part
+  of data whose phase was never stabilized, the signal is higher rank, part of it falls
+  below the MP edge, and pooled over 3000 patches that smooth signal reads as strong
+  correlation no table explains. `_build_C` then projected to a C with eigenvalue 1e-9,
+  the next round whitened by up to 3e4, and float32 overflowed (EDDEN 2 mm raw real
+  part, 2026-11-05). camppca with a white model is MP-PCA with the level field.
 - `C` must have smallest eigenvalue ≥ 1e-3 (`MIN_EIGENVALUE`). A table valid for one
   patch can be indefinite for a larger one, and whitening by a near-singular `C` sends
   σ̂ to ~1e-7. `patch_correlation` raises. `_build_C` still projects silently, because
