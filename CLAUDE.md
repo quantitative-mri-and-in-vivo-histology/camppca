@@ -312,18 +312,29 @@ Breaking any of these corrupts results without an error:
 
 `phase.py`, `camppca phase`: complex data rotated onto the real axis, and the real part
 denoised like a magnitude image. A separate step before `estimate`/`denoise`, so the
-noise model is estimated on exactly the data that is denoised. Per slice and volume: the
-phase of the complex mean over volumes, then a smooth estimate, `"dk"` (default) or
-`"tukey"`.
+noise model is estimated on exactly the data that is denoised. One recipe, no options:
+EDDEN's preprocessing with Sprenger's `"dk"` kernel in place of their k-space low-pass.
+The raw phase of a reference volume, the first within 95% of the brightest mean, is
+removed from every volume. Then per slice and volume the phase of the dk smooth is removed.
+
+- Scope: the paper is about magnitude data, complex is a supplement example. The recipe
+  had to be a published one, so it is EDDEN's. Do not grow phase options again.
+- EDDEN's own filter (`NIFTI_COMP_to_REAL.m`, a Hann window cubed, their "Tukey, FWHM
+  58%") leaves the real part's mean over pure noise at 0.54σ, dk at 0.01σ. The reference
+  step costs nothing on noise and removes a rough fixed phase dk alone does not follow:
+  signal loss 0.19 down to 0.015 at a b0 SNR of 20 (2026-11-06). The reference volume
+  itself ends up as its magnitude.
+- The removed `mean_phase` option, the phase of the mean over all volumes, biased the
+  real part by about σ/√N, since the mean carries each voxel's own noise. One reference
+  volume does not: its noise is independent of the other volumes'.
 
 - ⚠ **Do not copy or translate NORDIC code** (NORDIC_Raw, NIFTI_NORDIC, NORDIC-python).
   It is University of Minnesota copyright, research use only, no redistribution, and
-  NORDIC is patented (US 10,768,260). The filters here come from the papers: Sprenger et
-  al. 2017 for `"dk"`, EDDEN's description for `"tukey"`.
+  NORDIC is patented (US 10,768,260). EDDEN's `NIFTI_COMP_to_REAL.m` is NORDIC-derived,
+  by Steen Moeller, with no license. Treat it the same. The recipe here comes from the
+  EDDEN paper's description, the kernel from Sprenger et al. 2017.
 - The `"dk"` weights are Sprenger's Opt5, which the paper gives only as a color map
   (Fig. 3). They were read off it by color and sum to 1.006.
-- `"tukey"` at 58% reads EDDEN's "Tukey filter with an FWHM of 58%" as a Tukey window
-  whose half maximum sits at 58% of k-space. EDDEN does not say more.
 - The volumes are stabilized in the worker pool, chunks of volumes per task, and the
   result does not depend on the number of workers. On EDDEN 0.9 mm the step took about
   125 s on one core before and 22 s on 16 workers after (2026-11-05), the phasor now

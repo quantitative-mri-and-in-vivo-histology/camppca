@@ -8,27 +8,25 @@ rank, and the magnitude carries a Rician noise floor. Removing a smooth estimate
 phase leaves the signal near the real axis. The real part then has Gaussian noise and no
 floor, and denoises like a magnitude image.
 
-In each slice, in plane, for every volume, as in NIFTI_NORDIC2:
+The recipe is EDDEN's preprocessing, with a different filter:
 
-1. estimate the smooth phase with a filter;
-2. rotate by minus that phase and keep the real part.
+1. remove the raw phase of one reference volume from every volume: the first volume whose
+   mean magnitude is within 95% of the largest, in practice a b0. That takes out the fixed
+   phase from k-space sampling and the coil combination, which can vary faster than any
+   smooth estimate follows;
+2. in each slice, in plane, for every volume, estimate the remaining smooth phase with the
+   decorrelated kernel of Sprenger et al., their Opt5;
+3. rotate by minus that phase and keep the real part.
 
-With ``mean_phase``, the phase of the complex mean over all volumes is removed first, as in
-the EDDEN preprocessing. That helps only where a fixed phase varies faster than the filter
-follows.
+The kernel is a 5 x 5 smoother in image space that gives almost no weight to the center
+voxel and its direct neighbours, whose noise is correlated with the center's. The estimate
+then barely sees the voxel's own noise, so the real part stays unbiased. EDDEN used a Hann
+window cubed in k-space, which they describe as a Tukey filter with an FWHM of 58%. On
+complex white noise of unit level it leaves the real part's mean at 0.54, against 0.01
+with the kernel and 1.25 for the magnitude.
 
-The filters:
-
-- ``"tukey"``: a low-pass in k-space, a Tukey window set by its full width at half
-  maximum as a fraction of k-space. EDDEN used 58%.
-- ``"dk"``: the decorrelated kernel of Sprenger et al., their Opt5. A 5 x 5 smoother in
-  image space that gives almost no weight to the center voxel and its direct neighbours,
-  whose noise is correlated with the center's. The estimate then barely sees the voxel's
-  own noise, so the real part stays unbiased.
-
-On complex white noise of unit level, the real part's mean over pure noise is 0.28 with
-"dk" and 0.91 with "tukey" at 58%, against 1.25 for the magnitude. At a signal of 1 it is
-1.02, 1.27 and 1.55. Hence "dk" is the default.
+The reference volume itself ends up as its magnitude, noise floor included. It is a bright
+b0, where the floor is small.
 
 References:
     Eichner C et al. Real diffusion-weighted MRI enabling true signal averaging and
@@ -49,9 +47,7 @@ from scipy import ndimage
 
 from .pool import resolve_workers, worker_pool
 
-__all__ = ["FILTERS", "stabilize_phase", "phase_scale"]
-
-FILTERS = ("tukey", "dk")
+__all__ = ["stabilize_phase", "phase_scale"]
 
 #: Sprenger et al.'s Opt5 weights by offset (|dx|, |dy|), sorted. The paper gives them
 #: only as a color map (Fig. 3); these were read off it by color and sum to 1.006.
@@ -64,15 +60,6 @@ def _dk_weights():
     k = np.array([[_DK_WEIGHTS[tuple(sorted((abs(dx), abs(dy))))] for dy in range(-2, 3)]
                   for dx in range(-2, 3)])
     return k / k.sum()
-
-
-def _tukey(n, fwhm):
-    """Tukey window over ``n`` k-space lines, in FFT order, with its half maximum at
-    ``fwhm`` of the k-space width: flat out to ``2 fwhm - 1``, then a cosine taper to zero
-    at the edge."""
-    r = 2 * np.abs(np.fft.fftfreq(n))                 # 0 at the center, 1 at the edge
-    flat, taper = 2 * fwhm - 1, 2 * (1 - fwhm)
-    return 0.5 * (1 + np.cos(np.pi * np.clip(r - flat, 0, None) / taper))
 
 
 def phase_scale(phase) -> float:
@@ -92,19 +79,14 @@ def phase_scale(phase) -> float:
     return 2 * np.pi / (hi - lo)
 
 
-def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
-                    slice_axis=2, imag=False, workers=None):
+def stabilize_phase(magnitude, phase, slice_axis=2, imag=False, workers=None):
     """Rotate complex 4D data onto the real axis and return the real part.
 
     Args:
         magnitude: (X, Y, Z, N) magnitude.
         phase: (X, Y, Z, N) phase, in radians or in any unit whose range is one full
             turn, as scanners store it. See :func:`phase_scale`.
-        filter: "tukey" or "dk", the estimate of the smooth phase; see the module.
-        fwhm: "tukey" only, the window's full width at half maximum as a fraction of
-            k-space, from 0.5 to below 1. Smaller is smoother.
-        mean_phase: first remove the phase of the complex mean over all volumes.
-        slice_axis: the spatial axis across slices. The filters work in the other two.
+        slice_axis: the spatial axis across slices. The kernel works in the other two.
         imag: also return the imaginary part, which should hold noise only.
         workers: CPU processes the volumes are split over, see :mod:`camppca.pool`. The
             volumes are independent, so the result does not depend on it.
@@ -112,10 +94,6 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
     Returns:
         (X, Y, Z, N) float32 real part, or ``(real, imag)``.
     """
-    if filter not in FILTERS:
-        raise ValueError(f"filter must be one of {FILTERS}, got {filter!r}")
-    if filter == "tukey" and not 0.5 <= fwhm < 1:
-        raise ValueError(f"fwhm must be in [0.5, 1), got {fwhm}")
     if slice_axis not in (0, 1, 2):
         raise ValueError(f"slice_axis must be 0, 1 or 2, got {slice_axis}")
     magnitude, phase = np.asarray(magnitude), np.asarray(phase)
@@ -126,12 +104,8 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
     scale = phase_scale(phase)             # per volume: no scaled copy of the phase
     workers = resolve_workers(workers)
 
-    fixed = None
-    if mean_phase:
-        total = np.zeros(magnitude.shape[:3], np.complex128)
-        for n in range(n_vols):
-            total += _volume(magnitude, phase, n, scale)
-        fixed = np.exp(-1j * np.angle(total)).astype(np.complex64)
+    reference = reference_volume(magnitude)
+    fixed = np.exp(-1j * scale * phase[..., reference]).astype(np.complex64)
 
     real = np.empty(magnitude.shape, np.float32)
     im = np.empty(magnitude.shape, np.float32) if imag else None
@@ -141,8 +115,7 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
         if imag:
             im[..., chunk] = out[1]
 
-    task = partial(_rotate_volumes, scale=scale, filter=filter, fwhm=fwhm,
-                   slice_axis=slice_axis, imag=imag)
+    task = partial(_rotate_volumes, scale=scale, slice_axis=slice_axis, imag=imag)
     chunks = np.array_split(np.arange(n_vols), min(n_vols, 4 * workers))
     if workers == 1:
         for chunk in chunks:
@@ -155,6 +128,13 @@ def stabilize_phase(magnitude, phase, filter="dk", fwhm=0.58, mean_phase=False,
     return (real, im) if imag else real
 
 
+def reference_volume(magnitude) -> int:
+    """The first volume whose mean magnitude is within 95% of the largest. NaN is
+    ignored."""
+    means = np.array([np.nanmean(magnitude[..., n]) for n in range(magnitude.shape[3])])
+    return int(np.flatnonzero(means >= 0.95 * means.max())[0])
+
+
 def _volume(magnitude, phase, n, scale):
     """Volume ``n`` as complex64."""
     return (magnitude[..., n] * np.exp(1j * scale * phase[..., n])).astype(np.complex64)
@@ -164,30 +144,17 @@ def _chunk_task(task, chunk, magnitude, phase, fixed):
     return chunk, task(magnitude, phase, fixed, chunk)
 
 
-def _rotate_volumes(magnitude, phase, fixed, volumes, scale, filter, fwhm, slice_axis,
-                    imag):
+def _rotate_volumes(magnitude, phase, fixed, volumes, scale, slice_axis, imag):
     """Stabilize the phase of some volumes. Returns their real and imaginary parts,
     (X, Y, Z, len(volumes)) each, the imaginary part None unless ``imag``."""
-    plane = tuple(a for a in range(3) if a != slice_axis)
     shape = magnitude.shape[:3]
-    if filter == "tukey":
-        window = np.ones(shape, np.float32)
-        for a in plane:
-            window = window * _tukey(shape[a], fwhm).reshape(
-                [-1 if b == a else 1 for b in range(3)]).astype(np.float32)
-    else:
-        weights = np.expand_dims(_dk_weights(), slice_axis)
+    weights = np.expand_dims(_dk_weights(), slice_axis)
     real = np.empty(shape + (len(volumes),), np.float32)
     im = np.empty_like(real) if imag else None
     for k, n in enumerate(volumes):
-        z = _volume(magnitude, phase, n, scale)
-        if fixed is not None:
-            z *= fixed
-        if filter == "tukey":
-            smooth = np.fft.ifftn(np.fft.fftn(z, axes=plane) * window, axes=plane)
-        else:
-            smooth = (ndimage.convolve(z.real, weights, mode="constant")
-                      + 1j * ndimage.convolve(z.imag, weights, mode="constant"))
+        z = _volume(magnitude, phase, n, scale) * fixed
+        smooth = (ndimage.convolve(z.real, weights, mode="constant")
+                  + 1j * ndimage.convolve(z.imag, weights, mode="constant"))
         size = np.abs(smooth)
         # The unit phasor of the smooth phase, conjugated: exp(-i angle) without the
         # angle. Where the estimate is zero, outside the head, nothing is turned.
