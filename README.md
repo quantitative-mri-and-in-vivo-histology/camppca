@@ -56,14 +56,13 @@ camppca phase   mag.nii.gz phase.nii.gz real.nii.gz --imag imag.nii.gz
 camppca denoise real.nii.gz out.nii.gz --mask brain.nii.gz -fslgrad in.bvec in.bval
 ```
 
-The real part keeps Gaussian noise, so it has no Rician noise floor. In each slice and
-volume a smooth estimate of the phase is removed, as in NIFTI_NORDIC2. `--mean-phase`
-first removes the phase of the mean over all volumes, as in the EDDEN preprocessing.
-`--filter dk`, the default, estimates the phase with the decorrelated kernel of Sprenger et
-al. (2017). `--filter tukey --fwhm 0.58` uses a k-space low-pass, as
-in the EDDEN preprocessing (Manzano-Patrón et al. 2024). The phase is read in radians or
-in any unit whose range is one full turn, such as -4096 to 4094 on Siemens. `--imag`
-writes the imaginary part, which should hold noise only.
+The real part keeps Gaussian noise, so it has no Rician noise floor. The recipe is the
+EDDEN preprocessing (Manzano-Patrón et al. 2024) with a different filter. The raw phase of
+one bright reference volume, in practice a b0, is removed from every volume. Then in each
+slice and volume a smooth estimate of the phase is removed. It comes from the decorrelated
+kernel of Sprenger et al. (2017), where EDDEN used a k-space low-pass. The phase is read in
+radians or in any unit whose range is one full turn, such as -4096 to 4094 on Siemens.
+`--imag` writes the imaginary part, which should hold noise only.
 
 ### Complex data: denoising both channels
 

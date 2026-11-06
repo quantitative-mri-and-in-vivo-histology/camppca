@@ -6,7 +6,7 @@ import pytest
 
 from camppca import stabilize_phase as public
 from camppca.cli import main
-from camppca.phase import FILTERS, _dk_weights, _tukey, phase_scale, stabilize_phase
+from camppca.phase import _dk_weights, phase_scale, reference_volume, stabilize_phase
 
 SHAPE = (48, 40, 3, 8)
 
@@ -60,14 +60,6 @@ def test_stabilize_phase_reads_degrees_like_radians():
     np.testing.assert_allclose(degrees, radians, atol=1e-3 * magnitude.max())
 
 
-def test_the_tukey_window_has_its_half_maximum_at_fwhm():
-    n, fwhm = 200, 0.58
-    r, w = 2 * np.abs(np.fft.fftfreq(n)), _tukey(n, fwhm)
-    assert w[0] == 1.0 and w[r == 1].item() == pytest.approx(0, abs=1e-12)
-    order = np.argsort(r)
-    assert np.interp(fwhm, r[order], w[order]) == pytest.approx(0.5, abs=1e-3)
-
-
 def test_the_dk_filter_is_symmetric_and_avoids_the_center():
     k = _dk_weights()
     assert k.sum() == pytest.approx(1)
@@ -76,32 +68,33 @@ def test_the_dk_filter_is_symmetric_and_avoids_the_center():
     assert k[2, 2] < 0.01 and k[1, 2] < 0.01 and k[1, 1] == k.max()
 
 
-@pytest.mark.parametrize("filt", ["dk", "tukey"])
-def test_without_noise_the_real_part_is_the_magnitude(filt):
+def test_without_noise_the_real_part_is_the_magnitude():
+    """The rough fixed phase goes with the reference volume's phase."""
     rng = np.random.default_rng(0)
     magnitude = blob()[..., None] * np.ones(SHAPE[3])
-    real, imag = stabilize_phase(magnitude, phases(rng), filter=filt, mean_phase=True, imag=True)
+    real, imag = stabilize_phase(magnitude, phases(rng), imag=True)
     inside = magnitude > 20
     np.testing.assert_allclose(real[inside], magnitude[inside], rtol=2e-3)
     assert np.abs(imag[inside] / magnitude[inside]).max() < 0.1   # under 0.1 rad off
 
 
-def test_the_rough_fixed_phase_needs_the_mean_phase_step():
-    rng = np.random.default_rng(0)
-    magnitude = blob()[..., None] * np.ones(SHAPE[3])
-    real = stabilize_phase(magnitude, phases(rng), mean_phase=False)
-    inside = magnitude > 20
-    assert np.median(np.abs(real[inside] - magnitude[inside]) / magnitude[inside]) > 0.1
+def test_the_reference_is_the_first_bright_volume():
+    magnitude = np.ones((4, 4, 2, 5)) * np.array([50, 60, 100, 97, 100.0])
+    assert reference_volume(magnitude) == 2
+    magnitude[0, 0, 0, 1] = np.nan
+    assert reference_volume(magnitude) == 2
 
 
 def test_the_real_part_carries_no_noise_floor():
-    """Pure complex noise: the magnitude sits at 1.25 sigma, the real part near 0 with
-    the decorrelated kernel."""
+    """Pure complex noise: the magnitude sits at 1.25 sigma, the real part near 0. The
+    reference volume keeps its magnitude."""
     rng = np.random.default_rng(1)
     z = rng.standard_normal((64, 64, 4, 12)) + 1j * rng.standard_normal((64, 64, 4, 12))
     real = stabilize_phase(np.abs(z), np.angle(z))
+    ref = reference_volume(np.abs(z))
     assert np.abs(z).mean() == pytest.approx(1.25, abs=0.02)
-    assert real.mean() < 0.35
+    np.testing.assert_allclose(real[..., ref], np.abs(z[..., ref]), rtol=1e-4, atol=1e-5)
+    assert abs(np.delete(real, ref, axis=3).mean()) < 0.03
 
 
 def test_the_slice_axis_picks_the_plane():
@@ -117,10 +110,6 @@ def test_the_slice_axis_picks_the_plane():
 def test_bad_settings_are_refused():
     assert public is stabilize_phase
     m = np.ones(SHAPE)
-    with pytest.raises(ValueError, match="filter must be"):
-        stabilize_phase(m, m, filter="hann")
-    with pytest.raises(ValueError, match="fwhm must be"):
-        stabilize_phase(m, m, filter="tukey", fwhm=0.4)
     with pytest.raises(ValueError, match="alike"):
         stabilize_phase(m, m[..., :2])
 
@@ -137,7 +126,7 @@ def test_cli_writes_real_and_imaginary_parts(tmp_path):
     nib.save(nib.Nifti1Image(magnitude.astype(np.float32), np.eye(4)), tmp_path / "mag.nii.gz")
 
     rc = main(["phase", str(tmp_path / "mag.nii.gz"), str(tmp_path / "phase.nii.gz"),
-               str(tmp_path / "real.nii.gz"), "--imag", str(tmp_path / "imag.nii.gz"), "--mean-phase", "-q"])
+               str(tmp_path / "real.nii.gz"), "--imag", str(tmp_path / "imag.nii.gz"), "-q"])
     assert rc == 0
     real = np.asanyarray(nib.load(tmp_path / "real.nii.gz").dataobj)
     assert real.shape == SHAPE and real.dtype == np.float32
@@ -146,15 +135,11 @@ def test_cli_writes_real_and_imaginary_parts(tmp_path):
     assert (tmp_path / "imag.nii.gz").exists()
 
 
-@pytest.mark.parametrize("filt", FILTERS)
-@pytest.mark.parametrize("mean_phase", [False, True])
-def test_the_pooled_result_is_the_serial_one(filt, mean_phase):
+def test_the_pooled_result_is_the_serial_one():
     rng = np.random.default_rng(5)
     magnitude = blob()[..., None] * np.ones(SHAPE[3]) + rng.random(SHAPE)
     phase = phases(rng)
-    serial = stabilize_phase(magnitude, phase, filter=filt, mean_phase=mean_phase,
-                             imag=True, workers=1)
-    pooled = stabilize_phase(magnitude, phase, filter=filt, mean_phase=mean_phase,
-                             imag=True, workers=3)
+    serial = stabilize_phase(magnitude, phase, imag=True, workers=1)
+    pooled = stabilize_phase(magnitude, phase, imag=True, workers=3)
     for a, b in zip(serial, pooled, strict=True):
         np.testing.assert_array_equal(a, b)

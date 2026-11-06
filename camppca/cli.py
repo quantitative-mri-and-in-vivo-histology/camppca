@@ -2,7 +2,7 @@
 
     camppca denoise  in.nii out.nii [--noise n.nii] [--qc DIR] -fslgrad in.bvec in.bval
     camppca estimate in.nii --qc DIR                           -fslgrad in.bvec in.bval
-    camppca phase    mag.nii phase.nii real.nii [--filter dk|tukey] [--imag PATH]
+    camppca phase    mag.nii phase.nii real.nii [--imag PATH]
 
 Outputs split by AUDIENCE, not by kind:
 
@@ -37,7 +37,7 @@ from .denoiser.aggregate import check_aggregate
 from .denoiser.mp_threshold import ALGORITHMS
 from .denoiser.shrink import RULES
 from .noise_model import estimate_noise_model
-from .phase import FILTERS, phase_scale, stabilize_phase
+from .phase import phase_scale, stabilize_phase
 
 __all__ = ["main"]
 
@@ -114,14 +114,6 @@ def _parser():
     s.add_argument("phase", help="4D phase image, in radians or in any unit whose range "
                                  "is one full turn, as scanners store it")
     s.add_argument("output", help="4D real part")
-    s.add_argument("--filter", choices=FILTERS, default="dk",
-                   help="smooth phase estimate: dk, Sprenger et al.'s decorrelated kernel "
-                        "(default), or tukey, a k-space low-pass")
-    s.add_argument("--fwhm", type=float, default=0.58,
-                   help="tukey only: full width at half maximum as a fraction of k-space "
-                        "(default: 0.58, as in EDDEN)")
-    s.add_argument("--mean-phase", action="store_true",
-                   help="first remove the phase of the mean over all volumes, as in EDDEN")
     s.add_argument("--imag", metavar="PATH",
                    help="also write the imaginary part, which should hold noise only")
     s.add_argument("--workers", type=int, default=None, metavar="N",
@@ -192,9 +184,8 @@ def _phase(args, say):
     slice_axis = 2 if slice_axis is None else slice_axis
     say(f"  {Path(args.magnitude).name}  {magnitude.shape}, phase x {scale:.6g} to radians, "
         f"slices along axis {slice_axis}")
-    out = stabilize_phase(magnitude, phase, filter=args.filter, fwhm=args.fwhm,
-                          mean_phase=args.mean_phase, slice_axis=slice_axis,
-                          imag=bool(args.imag), workers=args.workers)
+    out = stabilize_phase(magnitude, phase, slice_axis=slice_axis, imag=bool(args.imag),
+                          workers=args.workers)
     real, imag = out if args.imag else (out, None)
     del magnitude, phase
     io.save_like(args.output, real, affine, header)
