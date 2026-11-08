@@ -414,10 +414,16 @@ def _strided_level(whitened_level, dwi, mask, patch, algorithm, workers):
 
     MP-PCA's level is a patch mean, and the field is pooled 3^3 after, so the full grid
     adds nothing the pooling keeps. Computed at mask voxels with every coordinate even,
-    plus mask voxels with no such voxel in their 3^3 box. The rest are filled by a tent
-    interpolation in variance over the good computed levels, zero where there is none.
-    On EDDEN at 0.9 mm the level pass took 13 s against 92 s. The loop table moved by
-    at most 5e-5, the median of d by 0.3%, sigma_hat by 0.1%.
+    plus mask voxels with no such voxel in their 3^3 box, plus the two outer layers of
+    the mask. The rest are filled by a tent interpolation in variance over the good
+    computed levels, zero where there is none. On EDDEN at 0.9 mm the level pass took
+    26 s against 92 s. The loop table moved by at most 5e-5, the median of d by 0.3%,
+    sigma_hat by 0.1%, and no voxel's d by more than 10%.
+
+    ⚠ The rim is needed. At the mask edge the fill sees grid points on the inside only,
+    and the level often climbs steeply inward there. Without the rim, edge voxels of
+    EDDEN 0.9 mm had d up to 79% too high. Two layers, because the fill reaches one
+    voxel and the 3^3 pooling one more.
 
     ``whitened_level`` is passed in: the denoiser imports this package, so a top-level
     import would be circular.
@@ -427,6 +433,7 @@ def _strided_level(whitened_level, dwi, mask, patch, algorithm, workers):
     box = np.ones((3, 3, 3), np.int32)
     computed = grid | (mask & (ndimage.convolve(grid.astype(np.int32), box,
                                                 mode="constant") == 0))
+    computed |= mask & ~ndimage.binary_erosion(mask, box, iterations=2, border_value=0)
     level = whitened_level(dwi, computed, None, patch, algorithm, workers=workers)
     good = _good_level(level, computed)
     tent = np.array([0.5, 1.0, 0.5])

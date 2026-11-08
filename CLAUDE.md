@@ -136,8 +136,10 @@ picks the b0s the default mask is drawn from.
 
 The level pass runs on a stride-2 grid of patch centers (`_strided_level`), filled in
 between by a tent interpolation in variance, then pooled. MP-PCA's level is a patch mean
-and the pooling blurs at that scale anyway. Fixed, no option. EDDEN 0.9 mm: 13 s against
-92 s, table within 5e-5, median d 0.3%, σ̂ 0.1%. It needs no flat-mode correction: no
+and the pooling blurs at that scale anyway. Fixed, no option. EDDEN 0.9 mm: 26 s against
+92 s, table within 5e-5, median d 0.3%, σ̂ 0.1%, no voxel's d over 10%. ⚠ The two outer
+mask layers are computed in full. Filled, the edge saw only inner grid points, and edge
+voxels' d came out up to 79% too high where the level climbs steeply inward. It needs no flat-mode correction: no
 `C` is involved, and only ratios of `d` matter.
 
 `level_rounds` (default 0) re-estimates `d` as `pool(d * s)`, with `s` the whitened σ̂
