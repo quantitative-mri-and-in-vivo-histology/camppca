@@ -25,7 +25,7 @@ import numpy as np
 from scipy import ndimage
 from scipy.ndimage import uniform_filter
 
-from ..patch import check_patch, patch_offsets, required_lag, resolve_patch
+from ..patch import check_patch, patch_offsets, required_lag, resolve_patch, table_index
 from .masks import brain_mask
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask"]
@@ -155,8 +155,8 @@ def _table_C(rho, patch, lag):
     o = patch_offsets(patch)
     dx = o[:, 0][:, None] - o[:, 0][None, :]
     dy = o[:, 1][:, None] - o[:, 1][None, :]
-    dz = np.abs(o[:, 2][:, None] - o[:, 2][None, :])
-    R = rho[dx + lag, dy + lag, np.minimum(dz, rho.shape[2] - 1)]
+    dz = o[:, 2][:, None] - o[:, 2][None, :]
+    R = rho[table_index(dx, dy, dz, lag)]
     R = 0.5 * (R + R.T)
     np.fill_diagonal(R, 1.0)
     return R
@@ -178,7 +178,7 @@ FALLBACK_REASON = ("the noise bulk most likely holds signal, as an unstabilized 
 
 
 def _build_C(rho, patch, lag):
-    """Patch correlation from a lag table ``rho[dx+lag, dy+lag, |dz|]``; no wraparound.
+    """Patch correlation from a lag table, read by :func:`~camppca.patch.table_index`.
 
     Projected to the nearest PSD matrix with unit diagonal if the measured table is
     indefinite.  The bounds check that guards it lives in

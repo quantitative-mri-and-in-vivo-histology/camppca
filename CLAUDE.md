@@ -51,7 +51,7 @@ patch shape, so it is computed on demand, never stored.
 |---|---|---|---|
 | patch matrix, rows = voxels | X (M×N) | — | |
 | unit-diagonal patch correlation | C | `C` | **not** `R` |
-| lag correlation table | ρ(h) | `rho` | `rho[dx+lag, dy+lag, abs(dz)]`, 1.0 at zero lag |
+| lag correlation table | ρ(h) | `rho` | `rho[table_index(dx, dy, dz, lag)]`, the half dz ≥ 0, 1.0 at zero lag |
 | patch noise covariance | Σ = σ²DCD | — | **paper only** — never materialized in code |
 | whitener | W = (DCD)^(-1/2) | `whitener` + row division by `d` | **σ-free by design** |
 | relative level field | d(x) | `d` | **not** `g` — that is the g-factor |
@@ -148,7 +148,7 @@ voxel's level. On synthetic data the rim of half a patch at the mask edge then s
 within a median 0.8% of the true level, up to 5%. The old fill, the median over the mask,
 pushed it off by a median 2.9%, up to 32%.
 
-Each round fits one value per lag class (595 at 7³) to the pooled bulk, in whitened
+Each round fits one value per lag class (364 at 5³, 1098 at 7³) to the pooled bulk, in whitened
 units, by conjugate gradients. ⚠ **The hole.** Every patch keeps its patch-mean pattern
 as signal, so the bulk cannot see one direction: the same value added to every lag. It
 is fixed by holding the mean over the far lag classes, those on the edge of the patch's
@@ -244,8 +244,13 @@ Breaking any of these corrupts results without an error:
   patch can be indefinite for a larger one, and whitening by a near-singular `C` sends
   σ̂ to ~1e-7. `patch_correlation` raises. `_build_C` still projects silently, because
   the loop needs that each round.
-- Patch flattening is **C-order, z fastest**; `rho[dx+lag, dy+lag, abs(dz)]`. Paired —
-  the two orders must agree.
+- Patch flattening is **C-order, z fastest**; `rho[table_index(dx, dy, dz, lag)]`.
+  Paired — the two orders must agree.
+- **The table's only symmetry is ρ(h) = ρ(−h).** It stores the half dz ≥ 0, and a lag
+  with dz < 0 is read as (−dx, −dy, −dz) (`patch.table_index`). Until 2026-11-08 it was
+  read as (dx, dy, |dz|), which added a mirror in z: 204 classes at 5³ instead of 364.
+  Do not bring back a mirror in any axis. It fails for a noise pattern tilted off the
+  axes, by GRAPPA kernels, oblique reslicing or any resampling.
 - `rho` is a correlation (unit at zero lag): **pattern only**. The absolute level comes
   from the per-patch MP fit. Only *ratios* of `d` matter.
 - **`d` is defined up to scale.** Rows are divided by it and the center voxel multiplied
