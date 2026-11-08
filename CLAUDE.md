@@ -134,6 +134,12 @@ picks the b0s the default mask is drawn from.
 ⚠ The pooling is needed: unpooled, the rank grain under strong correlation made the final
 `C` near singular on ideas02 (smallest eigenvalue 1e-9).
 
+The level pass runs on a stride-2 grid of patch centers (`_strided_level`), filled in
+between by a tent interpolation in variance, then pooled. MP-PCA's level is a patch mean
+and the pooling blurs at that scale anyway. Fixed, no option. EDDEN 0.9 mm: 13 s against
+92 s, table within 5e-5, median d 0.3%, σ̂ 0.1%. It needs no flat-mode correction: no
+`C` is involved, and only ratios of `d` matter.
+
 `level_rounds` (default 0) re-estimates `d` as `pool(d * s)`, with `s` the whitened σ̂
 of every mask voxel's patch, then refits the loop. The fixed point is a flat `s`. It
 changed U by at most 0.006 and σ̂ by at most 0.3% at three to four times the cost, hence
@@ -291,6 +297,14 @@ Breaking any of these corrupts results without an error:
   `d` at the center voxel but *not* `sigma_hat`, so the API must apply that multiply by
   default. σ̂ is the headline metric — the scale of `d` must not leak into the reported
   number.
+- **The reported σ̂ leaves the flat mode out** (`_flat_mode_factor`, the paper's Eq. 6 in
+  its per-voxel form): `σ̂² = σ̂²_MPPCA d² M/(M−1) [P C P]_cc`, `P = I − uuᵀ`. The loop
+  cannot see the flat direction of the table and fixes it by assuming the far lags
+  average to zero. Off by `c`, the voxel's full level moves by about `c/2`, this one only
+  at second order. It is one global factor, 1 for white noise, 0.984 on EDDEN 2 mm at
+  5³. With `aggregate="mean"` the center entry becomes the mean diagonal. Do not move it
+  into the level pass or the engine: `d` is defined up to scale, and the engine's σ̂
+  feeds the shrinkers.
 - `_effective_d` in `noise_model/__init__.py` is the **only** place `d` is guarded (bad or
   outside-mask voxels get the nearest good mask voxel's level). The engine takes the
   field as given. Bad includes a level below 1% of the median (`LEVEL_FLOOR`): a patch of
