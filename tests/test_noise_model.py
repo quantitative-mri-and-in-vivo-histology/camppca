@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from scipy.ndimage import binary_erosion
 
 from camppca import denoise_mppca, denoise_with_noise_model
 from camppca.denoiser import _flat_mode_factor
@@ -140,13 +141,15 @@ def test_d_is_the_standard_mppca_level_pooled():
     assert model.provenance["level_rounds_run"] == 0, "no level rounds by default"
 
 
-def test_the_strided_level_is_the_full_one_on_its_grid():
+def test_the_strided_level_is_the_full_one_on_its_grid_and_rim():
     dwi, _, mask, _ = _synthetic(np.random.default_rng(1))
     full = whitened_level(dwi, mask, None, (5, 5, 3), workers=1)
     strided = _strided_level(whitened_level, dwi, mask, (5, 5, 3), "cordero-grande", 1)
 
     x, y, z = np.indices(mask.shape)
     grid = mask & (x % 2 == 0) & (y % 2 == 0) & (z % 2 == 0)
+    grid |= mask & ~binary_erosion(mask, np.ones((3, 3, 3), bool), iterations=2,
+                                   border_value=0)
     # Not exact: the level pass asks LAPACK for eigenvalues only, in batches that differ
     # with the grid, and a near-tied MP cut can flip between them.
     np.testing.assert_allclose(strided[grid], full[grid], rtol=5e-3)
