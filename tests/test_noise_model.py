@@ -13,7 +13,7 @@ from camppca.noise_model import (
     _strided_level,
     estimate_noise_model,
 )
-from camppca.patch import patch_offsets
+from camppca.patch import patch_offsets, table_index
 
 
 def _synthetic(rng, shape=(20, 20, 10), n_dirs=27, sigma=8.0, rank=4):
@@ -61,7 +61,7 @@ def test_patch_correlation_reads_rho_at_the_right_lags():
     rng = np.random.default_rng(0)
     for i, j in rng.integers(0, len(offs), size=(20, 2)):
         dx, dy, dz = offs[i] - offs[j]
-        assert C[i, j] == pytest.approx(rho[dx + lag, dy + lag, abs(dz)], abs=1e-9)
+        assert C[i, j] == pytest.approx(rho[table_index(dx, dy, dz, lag)], abs=1e-9)
 
 
 def test_patch_correlation_refuses_a_patch_wider_than_the_measured_lag():

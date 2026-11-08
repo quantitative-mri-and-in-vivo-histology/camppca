@@ -5,7 +5,7 @@ needs them to gather voxels.  Putting them here keeps the engine from importing 
 estimator.
 
 ⚠ The flattening order is C-order with z fastest, and it is PAIRED with the indexing of
-``rho`` (``rho[dx+lag, dy+lag, abs(dz)]``).  The two must agree or C is silently wrong.
+``rho`` (:func:`table_index`).  The two must agree or C is silently wrong.
 """
 
 import numpy as np
@@ -21,6 +21,18 @@ def patch_offsets(patch):
 def patch_size(patch):
     """Number of voxels in the patch (paper M, code ``n_vox``)."""
     return int(np.prod(np.asarray(patch, int)))
+
+
+def table_index(dx, dy, dz, lag):
+    """Where lag ``(dx, dy, dz)`` sits in ``rho``: ``rho[ix, iy, iz]``.
+
+    A correlation has ``rho(h) = rho(-h)``, so the table holds the half with ``dz >= 0``
+    and a lag with ``dz < 0`` is read as ``(-dx, -dy, -dz)``. Flipping only ``dz`` would
+    add a mirror symmetry in z that the noise need not have. In the ``dz = 0`` plane both
+    ``(dx, dy)`` and ``(-dx, -dy)`` are stored, with the same value.
+    """
+    flip = np.asarray(dz) < 0
+    return (np.where(flip, -dx, dx) + lag, np.where(flip, -dy, dy) + lag, np.abs(dz))
 
 
 def required_lag(patch):

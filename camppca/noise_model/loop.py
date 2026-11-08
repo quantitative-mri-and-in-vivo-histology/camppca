@@ -10,7 +10,8 @@ data units, so all patches together give one linear equation for ``Sigma``::
 One round whitens every sampled patch with the current ``C``, splits it with the
 denoiser's own code (:func:`~camppca.denoiser.camppca._whiten_split`), and fits that
 equation with ``Sigma`` restricted to a stationary one: one value per lag class, the voxel
-pairs that share a lag ``(dx, dy, |dz|)``. 595 classes at 7^3, against 58,996 unknowns
+pairs that share a lag up to its sign, ``h`` and ``-h``. 1098 classes at 7^3, against
+58,996 unknowns
 for a free ``Sigma``. The current kernel enters a round only through each patch's rank
 and kept directions. Directions a patch kept are NOT filled in with the current kernel's
 values; that is what keeps the loop from drifting.
@@ -69,7 +70,7 @@ from scipy.ndimage import binary_erosion
 
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
-from ..patch import patch_offsets
+from ..patch import patch_offsets, table_index
 from ..pool import resolve_workers, worker_pool
 from . import (
     FALLBACK_REASON,
@@ -373,7 +374,8 @@ def _fit_table(S, factors, C, patch, lag, dzmax, start, threads=PRODUCT_THREADS)
     built in 0.25 s. Dropping the removal altogether left 125 and 19 steps.
 
     Returns:
-        ``rho[dx+lag, dy+lag, |dz|]`` with unit zero lag. Lags the patch never spans are 0.
+        the lag table, see :func:`~camppca.patch.table_index`, with unit zero lag. Lags
+        the patch never spans are 0.
     """
     whitener64 = sqrtm_psd(C, -0.5)
     whitener = whitener64.astype(np.float32)
@@ -425,30 +427,32 @@ def _fit_table(S, factors, C, patch, lag, dzmax, start, threads=PRODUCT_THREADS)
     values = basis @ y
     table = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     for val, (dx, dy, dz) in zip(values, lags, strict=True):
-        table[dx + lag, dy + lag, dz] = table[-dx + lag, -dy + lag, dz] = val
+        table[dx + lag, dy + lag, dz] = val
+        if dz == 0:                                 # the dz = 0 plane holds both signs
+            table[-dx + lag, -dy + lag, 0] = val
     return table / table[lag, lag, 0]
 
 
 def _spanned(patch, lag, dzmax):
-    """Bool table: the ``rho[dx+lag, dy+lag, |dz|]`` entries some voxel pair in the patch has."""
+    """Bool table: the ``rho`` entries some voxel pair in the patch reads."""
     off = patch_offsets(patch)
     d = off[:, None, :] - off[None, :, :]
     spanned = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1), bool)
-    spanned[d[..., 0] + lag, d[..., 1] + lag, np.abs(d[..., 2])] = True
+    spanned[table_index(d[..., 0], d[..., 1], d[..., 2], lag)] = True
     return spanned
 
 
 def _lag_classes(patch):
-    """Every voxel pair's lag class, and the (dx, dy, |dz|) of each class.
+    """Every voxel pair's lag class, and the (dx, dy, dz) of each class, dz >= 0.
 
-    ``(dx, dy, dz)`` and ``(-dx, -dy, dz)`` share a class, because a table indexed by
-    ``|dz|`` cannot tell them apart.
+    ``h`` and ``-h`` share a class, the one symmetry every correlation has. 364 classes
+    at 5^3 besides lag zero, 1098 at 7^3.
     """
     off = patch_offsets(patch)
     d = off[:, None, :] - off[None, :, :]
-    dx, dy, dz = d[..., 0], d[..., 1], np.abs(d[..., 2])
-    flip = (dx < 0) | ((dx == 0) & (dy < 0))
-    dx, dy = np.where(flip, -dx, dx), np.where(flip, -dy, dy)
+    dx, dy, dz = d[..., 0], d[..., 1], d[..., 2]
+    flip = (dz < 0) | ((dz == 0) & ((dx < 0) | ((dx == 0) & (dy < 0))))
+    dx, dy, dz = np.where(flip, -dx, dx), np.where(flip, -dy, dy), np.where(flip, -dz, dz)
     lags, cls = np.unique(np.stack([dx, dy, dz], -1).reshape(-1, 3), axis=0,
                           return_inverse=True)
     return cls.reshape(dx.shape), lags

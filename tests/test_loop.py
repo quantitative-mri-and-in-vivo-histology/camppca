@@ -14,6 +14,7 @@ from scipy.ndimage import distance_transform_cdt
 from camppca import estimate_noise_model
 from camppca.denoiser.camppca import sqrtm_psd
 from camppca.noise_model import _effective_d, loop
+from camppca.patch import table_index
 
 HX = np.array([0.3, 1.0, 0.3])          # in-plane correlation along x
 HY = np.array([0.15, 1.0, 0.15])        # and along y; z left uncorrelated
@@ -67,6 +68,24 @@ def test_loop_keeps_the_injected_correlation_under_a_varying_level(model):
         assert rho[LAG + k, LAG, 0] == pytest.approx(want[LAG + k, LAG, 0], abs=0.03)
         assert rho[LAG, LAG + k, 0] == pytest.approx(want[LAG, LAG + k, 0], abs=0.03)
     assert abs(rho[LAG, LAG, 1]) < 0.05, "z was never correlated"
+
+
+def test_the_loop_tells_a_sheared_correlation_from_its_mirror():
+    """Noise correlated between (x, z) and (x+1, z+1) only. A table read by |dz| alone
+    would force the same value on (-1, 0, 1)."""
+    rng = np.random.default_rng(4)
+    shape, n_vols, a = (32, 32, 12), 60, 0.6
+    signal = rng.standard_normal(shape + (4,)) @ rng.standard_normal((4, n_vols))
+    w = rng.standard_normal(shape + (n_vols,))
+    noise = (w + a * np.roll(w, (1, 1), axis=(0, 2))) / np.sqrt(1 + a ** 2)
+    dwi = signal * 25 + 400 + 10.0 * noise
+    mask = np.zeros(shape, bool)
+    mask[3:29, 3:29, 2:10] = True
+    model = estimate_noise_model(dwi, mask, patch=PATCH)
+
+    rho = model.rho
+    assert rho[table_index(1, 0, 1, LAG)] == pytest.approx(a / (1 + a ** 2), abs=0.05)
+    assert abs(rho[table_index(-1, 0, 1, LAG)]) < 0.05
 
 
 def test_the_loop_kernel_is_a_valid_correlation_for_its_patch(model):
@@ -240,7 +259,9 @@ def test_the_fit_is_the_pinned_least_squares(dataset, model):
     values = pin @ np.linalg.lstsq(design @ pin, (W @ S @ W).ravel(), rcond=None)[0]
     ref = np.zeros_like(table)
     for v, (dx, dy, dz) in zip(values, lags, strict=True):
-        ref[dx + LAG, dy + LAG, dz] = ref[-dx + LAG, -dy + LAG, dz] = v
+        ref[dx + LAG, dy + LAG, dz] = v
+        if dz == 0:
+            ref[-dx + LAG, -dy + LAG, 0] = v
     ref /= ref[LAG, LAG, 0]
 
     assert abs(far @ values) < 1e-10
