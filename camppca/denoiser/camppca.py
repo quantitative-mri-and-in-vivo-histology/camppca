@@ -1,7 +1,7 @@
-"""Covariance-aware MP-PCA.
+"""Covariance-aware MPPCA.
 
 Whitens each patch with ``C^(-1/2)``, runs one Marchenko-Pastur fit on the whitened patch,
-and unwhitens. Standard MP-PCA assumes the patch noise is i.i.d. across voxels; here it is
+and unwhitens. Standard MPPCA assumes the patch noise is i.i.d. across voxels; here it is
 ``Sigma = sigma^2 D C D``, so the fit happens where that assumption holds::
 
     Y[:, n] = signal + eps_n,   Cov(eps_n) = sigma^2 C
@@ -21,7 +21,7 @@ code divides rows by ``d`` and then applies ``C^(-1/2)``, i.e. ``W = C^(-1/2) D^
 ``W^T W = (DCD)^(-1)`` either way, so the Gram, the spectrum, the threshold, the retained
 subspace and the reconstruction are all identical. Do NOT "fix" one to match the other.
 
-STANDARD MP-PCA IS THE CASE C = None. The whitening multiply is skipped and the center row
+STANDARD MPPCA IS THE CASE C = None. The whitening multiply is skipped and the center row
 is the patch's own, so :func:`~camppca.denoiser.mppca.denoise_mppca` runs this same engine.
 
 WHERE C COMES FROM. :meth:`~camppca.noise_model.NoiseModel.patch_correlation` derives it,
@@ -56,7 +56,7 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algorithm: str,
                   values_only: bool = False):
     """Whiten a batch of patches and split each spectrum at the Marchenko-Pastur edge.
 
-    The one place the split happens: both denoisers, the level pass and the loop kernel
+    The one place the split happens: both denoisers, the level pass and the loop
     estimator all call it. It runs in the dtype of ``patches``.
 
     Args:
@@ -70,7 +70,7 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algorithm: str,
             None.
 
     Returns:
-        ``(whitened, evals, evecs, rank, sigma_hat)``: (B, n_vox, n_vols) whitened
+        ``(whitened, evals, evecs, rank, sigma_mppca)``: (B, n_vox, n_vols) whitened
         patches, (B, n_vols) descending Gram eigenvalues, (B, n_vols, n_vols) their
         eigenvectors as columns in the same order, (B,) retained component count, (B,)
         fitted noise level.
@@ -81,12 +81,12 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algorithm: str,
         evals, evecs = eigvalsh_descending(gram), None
     else:
         evals, evecs = eigh_descending(gram)
-    rank, sigma_hat = mp_threshold(evals, n_small, n_large, algorithm)
-    return whitened, evals, evecs, rank, sigma_hat
+    rank, sigma_mppca = mp_threshold(evals, n_small, n_large, algorithm)
+    return whitened, evals, evecs, rank, sigma_mppca
 
 
 def _tile_patches(dwi, d_field, index):
-    """A tile's patches, rows divided by their level when there is a level field.
+    """A tile's patches, rows divided by their level when there is a relative noise map.
 
     Returns:
         ``(patches, levels)``: (B, n_vox, n_vols) in the dtype of ``dwi``, and (B, n_vox)
@@ -126,13 +126,13 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
             :func:`~camppca.denoiser.gather.patch_tiles`. None is the center row.
 
     Returns:
-        ``(signal, sigma_hat, rank)``: (B, n_vols) denoised center spectra, or with
+        ``(signal, sigma_mppca, rank)``: (B, n_vols) denoised center spectra, or with
         ``full`` (B, n_vox, n_vols) rebuilt patches, in the units of ``patches``, (B,)
         fitted noise level, (B,) retained component count.
     """
     n_vox, n_vols = patches.shape[1], patches.shape[2]
 
-    whitened, evals, evecs, rank, sigma_hat = _whiten_split(
+    whitened, evals, evecs, rank, sigma_mppca = _whiten_split(
         patches, whitener, n_small, n_large, algorithm)
 
     if full:
@@ -141,10 +141,10 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
         if shrink != "hard":
             alignment = signal_alignment(whitened, evecs, evals, C, levels, root, r) \
                 if shrink == "lr" else None
-            w = w * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)[:, :r]
+            w = w * shrink_weight(evals, sigma_mppca, n_vox, n_vols, alignment)[:, :r]
         V = evecs[:, :, :r]
         return np.matmul(np.matmul(patches, V) * w[:, None, :], V.conj().transpose(0, 2, 1)), \
-            sigma_hat, rank
+            sigma_mppca, rank
 
     # e_c^T C^(1/2) Yw = e_c^T C^(1/2) C^(-1/2) X = e_c^T X: the voxel's own row, since
     # both roots come from one eigendecomposition. No product with C^(1/2) is needed.
@@ -156,16 +156,16 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
     if shrink != "hard":
         alignment = signal_alignment(whitened, evecs, evals, C, r=int(rank.max())) \
             if shrink == "lr" else None
-        kept = kept * shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)
+        kept = kept * shrink_weight(evals, sigma_mppca, n_vox, n_vols, alignment)
     signal = np.einsum("bk,bnk->bn", kept, evecs.conj())
-    return signal, sigma_hat, rank
+    return signal, sigma_mppca, rank
 
 
 def _level_voxels(dwi, d_field, voxels, whitener, patch, algorithm, tile):
     """The tile loop of :func:`whitened_level` for some voxels.
 
     Returns:
-        ``(sigma_hat,)``: (V,) in d-normalized units, in the order of ``voxels``.
+        ``(sigma_mppca,)``: (V,) in d-normalized units, in the order of ``voxels``.
     """
     n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
@@ -182,12 +182,12 @@ def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TI
                    d_field=None, workers=None):
     """The MP noise level of every mask voxel's whitened patch, without denoising.
 
-    The split :func:`denoise_whitened` makes, stopped once ``sigma_hat`` is known: only the
+    The split :func:`denoise_whitened` makes, stopped once ``sigma_mppca`` is known: only the
     eigenvalues are computed and nothing is reconstructed. With ``C`` None and no
-    ``d_field`` this is standard MP-PCA's ``sigma_hat``.
+    ``d_field`` this is standard MPPCA's ``sigma_mppca``.
 
     Args:
-        dwi: (X, Y, Z, N) data, real or complex. For complex data ``sigma_hat`` is one
+        dwi: (X, Y, Z, N) data, real or complex. For complex data ``sigma_mppca`` is one
             channel's level, as in the denoisers.
         mask: (X, Y, Z) boolean.
         C: (n_vox, n_vox) patch correlation with unit diagonal, or None for white noise,
@@ -196,11 +196,11 @@ def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TI
             :func:`~camppca.patch.default_patch`.
         algorithm: which Marchenko-Pastur variant to cut with.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
-        d_field: (X, Y, Z) level field, already guarded, or None.
+        d_field: (X, Y, Z) relative noise map, already guarded, or None.
         workers: CPU processes to split the voxels over, see :mod:`camppca.pool`.
 
     Returns:
-        (X, Y, Z) ``sigma_hat`` in d-normalized units, zero outside ``mask``.
+        (X, Y, Z) ``sigma_mppca`` in d-normalized units, zero outside ``mask``.
     """
     check_algorithm(algorithm)
     dwi = as_data(dwi)
@@ -233,23 +233,23 @@ def _denoise_whitened_voxels(dwi, d_field, voxels, whitener, C, patch, algorithm
     multiplied back on the way out.
 
     Returns:
-        ``(signal, sigma_hat, rank)``: (V, N) in data units, (V,) in d-normalized units,
+        ``(signal, sigma_mppca, rank)``: (V, N) in data units, (V,) in d-normalized units,
         (V,), in the order of ``voxels``.
     """
     n_vols = dwi.shape[3]
     n_vox = patch_size(patch)
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
     signal = np.empty((voxels.size, n_vols), dwi.dtype)
-    sigma_hat = np.empty(voxels.size, np.float32)
+    sigma_mppca = np.empty(voxels.size, np.float32)
     rank = np.empty(voxels.size, np.int32)
     for sl, index, rows in patch_tiles(dwi.shape[:3], voxels, patch, tile=tile):
         patches, levels = _tile_patches(dwi, d_field, index)
-        tile_signal, sigma_hat[sl], rank[sl] = _denoise_tile(
+        tile_signal, sigma_mppca[sl], rank[sl] = _denoise_tile(
             patches, whitener, None, C, n_small, n_large, algorithm, shrink, rows=rows)
         if levels is not None:
             tile_signal = tile_signal * levels[np.arange(len(rows)), rows, None]  # data units
         signal[sl] = tile_signal
-    return signal, sigma_hat, rank
+    return signal, sigma_mppca, rank
 
 
 def _mean_whitened_voxels(dwi, d_field, mask, centers, whitener, root, C, patch,
@@ -269,31 +269,31 @@ def _mean_whitened_voxels(dwi, d_field, mask, centers, whitener, root, C, patch,
     box = BoxSum(dwi.shape, centers, patch, mask, dwi.dtype)
     for _, index, _ in patch_tiles(dwi.shape[:3], centers, patch, tile=tile):
         patches, levels = _tile_patches(dwi, d_field, index)
-        recon, sigma_hat, rank = _denoise_tile(patches, whitener, root, C, n_small,
+        recon, sigma_mppca, rank = _denoise_tile(patches, whitener, root, C, n_small,
                                                n_large, algorithm, shrink, full=True,
                                                levels=levels)
         if levels is not None:
             recon = recon * levels[:, :, None]
-        box.add(index, recon, sigma_hat, rank)
+        box.add(index, recon, sigma_mppca, rank)
     return box.result()
 
 
 def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TILE,
                      d_field=None, shrink="hard", workers=None, aggregate="center",
                      stride=1):
-    """MP-PCA on the patch whitened by ``C^(-1/2)``.
+    """MPPCA on the patch whitened by ``C^(-1/2)``.
 
     Args:
         dwi: (X, Y, Z, N) data, real or complex; see :mod:`camppca.denoiser.mppca` for
             complex data.
         mask: (X, Y, Z) boolean; only these voxels are denoised.
         C: (n_vox, n_vox) patch correlation with unit diagonal, or None for white noise:
-            standard MP-PCA, where "lr" is "gd".
+            standard MPPCA, where "lr" is "gd".
         patch: box shape, three odd integers. None picks dwidenoise's default, see
             :func:`~camppca.patch.default_patch`.
         algorithm: which Marchenko-Pastur variant to cut with.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
-        d_field: (X, Y, Z) level field, ALREADY guarded by the caller
+        d_field: (X, Y, Z) relative noise map, ALREADY guarded by the caller
             (:meth:`~camppca.noise_model.NoiseModel.effective_d`). Each voxel row is
             divided by its own level before whitening, which is exact for
             ``Sigma = sigma^2 D C D``, and the voxel's row is multiplied back on the way
@@ -307,7 +307,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
         stride: with "mean", a patch center every ``stride`` voxels per axis.
 
     Returns:
-        ``(denoised, sigma_hat, rank)``. ``sigma_hat`` is in d-normalized units; the
+        ``(denoised, sigma_mppca, rank)``. ``sigma_mppca`` is in d-normalized units; the
         caller multiplies by ``d`` to get data units. With "mean", ``rank`` is the mean
         rank as float32.
     """
@@ -341,26 +341,26 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
                   (dwi, d_field, mask),
                   voxel_chunks(patch_centers(mask, patch, stride), MEAN_CHUNKS, tile),
                   assembly.add, workers)
-        denoised, sigma_hat, rank = assembly.finish()
+        denoised, sigma_mppca, rank = assembly.finish()
         if np.iscomplexobj(dwi):
-            sigma_hat /= np.sqrt(2.0)      # one channel's level, as for real data
+            sigma_mppca /= np.sqrt(2.0)      # one channel's level, as for real data
         restore_nonfinite(denoised, bad, values)
-        return denoised, sigma_hat, rank
+        return denoised, sigma_mppca, rank
 
     voxels = np.flatnonzero(mask)
     coords = np.unravel_index(voxels, mask.shape)
     denoised = dwi.copy()
-    sigma_hat = np.zeros(dwi.shape[:3], np.float32)
+    sigma_mppca = np.zeros(dwi.shape[:3], np.float32)
     rank = np.zeros(dwi.shape[:3], np.int32)
 
     def write(sl, outputs):
         where = tuple(c[sl] for c in coords)
-        denoised[where], sigma_hat[where], rank[where] = outputs
+        denoised[where], sigma_mppca[where], rank[where] = outputs
 
     run_voxels(partial(_denoise_whitened_voxels, whitener=whitener, C=C, patch=patch,
                        algorithm=algorithm, tile=tile, shrink=shrink),
                (dwi, d_field), voxels, write, workers, tile)
     if np.iscomplexobj(dwi):
-        sigma_hat /= np.sqrt(2.0)
+        sigma_mppca /= np.sqrt(2.0)
     restore_nonfinite(denoised, bad, values)
-    return denoised, sigma_hat, rank
+    return denoised, sigma_mppca, rank

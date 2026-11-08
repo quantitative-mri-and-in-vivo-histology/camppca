@@ -43,15 +43,15 @@ def low_rank_volume(rng, rank, shape=SHAPE, n_vols=N_VOLS, scale=100.0):
 
 
 @pytest.mark.parametrize("sigma_true", [2.0, 12.0])
-def test_sigma_hat_is_the_noise_level_of_one_channel(sigma_true):
+def test_sigma_is_the_noise_level_of_one_channel(sigma_true):
     dwi = circular_noise(np.random.default_rng(0), sigma_true)
     mask = interior_mask()
 
     result = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
 
     assert result.denoised.dtype == np.complex64
-    assert result.sigma_hat.dtype == np.float32
-    assert abs(np.median(result.sigma_hat[mask]) - sigma_true) < 0.05 * sigma_true
+    assert result.sigma.dtype == np.float32
+    assert abs(np.median(result.sigma[mask]) - sigma_true) < 0.05 * sigma_true
 
 
 def test_a_zero_imaginary_part_gives_the_real_result():
@@ -63,7 +63,7 @@ def test_a_zero_imaginary_part_gives_the_real_result():
     cplx = denoise_mppca(dwi.astype(np.complex64), mask, patch=PATCH, workers=1)
 
     np.testing.assert_array_equal(cplx.rank, real.rank)
-    np.testing.assert_allclose(cplx.sigma_hat * np.sqrt(2), real.sigma_hat, rtol=1e-4)
+    np.testing.assert_allclose(cplx.sigma * np.sqrt(2), real.sigma, rtol=1e-4)
     scale = np.abs(real.denoised[mask]).max()
     assert np.abs(cplx.denoised[mask] - real.denoised[mask]).max() < 1e-4 * scale
 
@@ -78,7 +78,7 @@ def test_a_global_phase_changes_nothing_but_the_phase():
     b = denoise_mppca(dwi * turn, mask, patch=PATCH, workers=1)
 
     np.testing.assert_array_equal(a.rank, b.rank)
-    np.testing.assert_allclose(a.sigma_hat[mask], b.sigma_hat[mask], rtol=1e-4)
+    np.testing.assert_allclose(a.sigma[mask], b.sigma[mask], rtol=1e-4)
     scale = np.abs(a.denoised[mask]).max()
     assert np.abs(b.denoised[mask] - a.denoised[mask] * turn).max() < 1e-4 * scale
 
@@ -107,12 +107,12 @@ def test_an_identity_whitener_reproduces_standard_mppca(aggregate, shrink):
 
     standard = denoise_mppca(dwi, mask, patch=PATCH, workers=1, aggregate=aggregate,
                              shrink=shrink)
-    denoised, sigma_hat, rank = denoise_whitened(dwi, mask, np.eye(125), patch=PATCH,
+    denoised, sigma_mppca, rank = denoise_whitened(dwi, mask, np.eye(125), patch=PATCH,
                                                  workers=1, aggregate=aggregate,
                                                  shrink=shrink)
 
     np.testing.assert_array_equal(rank, standard.rank)
-    np.testing.assert_allclose(sigma_hat[mask], standard.sigma_hat[mask], rtol=1e-4)
+    np.testing.assert_allclose(sigma_mppca[mask], standard.sigma[mask], rtol=1e-4)
     scale = np.abs(standard.denoised[mask]).max()
     assert np.abs(denoised[mask] - standard.denoised[mask]).max() < 1e-4 * scale
 
@@ -128,7 +128,7 @@ def test_camppca_denoises_complex_data_with_a_model_from_the_real_part():
 
     assert result.denoised.dtype == np.complex64
     assert result.model.provenance["data"] == "complex, estimated on the real part"
-    assert abs(np.median(result.sigma_hat[mask]) - 20.0) < 0.1 * 20.0
+    assert abs(np.median(result.sigma[mask]) - 20.0) < 0.1 * 20.0
     before = np.abs(dwi[mask] - signal[mask]).mean()
     after = np.abs(result.denoised[mask] - signal[mask]).mean()
     assert after < 0.5 * before
@@ -179,4 +179,4 @@ def test_an_unstabilized_real_part_falls_back_instead_of_crashing():
     assert model.provenance["fallback"]
     out = denoise_with_noise_model(real, model, workers=1)
     assert np.isfinite(out.denoised).all()
-    assert abs(np.median(out.sigma_hat[mask]) - 20.0) < 0.1 * 20.0, "MP-PCA's level"
+    assert abs(np.median(out.sigma[mask]) - 20.0) < 0.1 * 20.0, "MPPCA's level"

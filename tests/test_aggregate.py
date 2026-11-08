@@ -4,7 +4,7 @@ The reference rebuilds every patch centered in the mask, its box moved inward at
 edge, accumulates only into mask voxels, and divides. For camppca it unwhitens with an explicit
 ``D C^(1/2)``, which also checks that the engine may skip that product.
 
-Each patch's rank, sigma_hat and eigenvectors come from the float32 split of that one
+Each patch's rank, sigma_mppca and eigenvectors come from the float32 split of that one
 patch, as in the engine: in float64 about 6% of these patches cut one component lower, a
 near-tie at the MP edge, and eigenvectors near the cut, whose eigenvalues nearly
 coincide, span a slightly different subspace. The split is tested elsewhere; here the
@@ -47,7 +47,7 @@ def correlation(patch, ax=0.5, ay=0.3, az=0.15):
 
 
 def reference_mean(dwi, mask, centers, C=None, d=None):
-    """Brute force in float64. Returns (denoised, sigma_hat, rank) like the engine."""
+    """Brute force in float64. Returns (denoised, sigma_mppca, rank) like the engine."""
     shape = np.array(SHAPE)
     off = patch_offsets(PATCH) - np.array(PATCH) // 2
     n_vox = len(off)
@@ -101,7 +101,7 @@ def test_mppca_mean_is_the_long_way(dataset, stride):
 
     np.testing.assert_allclose(got.rank, want[2], atol=1e-6)
     np.testing.assert_allclose(got.denoised, want[0], rtol=1e-4, atol=2e-3)
-    np.testing.assert_allclose(got.sigma_hat, want[1], rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(got.sigma, want[1], rtol=1e-4, atol=1e-5)
     assert got.provenance["aggregate"] == "mean" and got.provenance["stride"] == stride
 
 
@@ -126,8 +126,8 @@ def test_pooled_mean_is_the_serial_mean(dataset):
                                workers=1)
         pooled = denoise_mppca(dwi, mask, patch=PATCH, aggregate="mean", stride=stride,
                                workers=3)
-        for a, b in zip((serial.denoised, serial.sigma_hat, serial.rank),
-                        (pooled.denoised, pooled.sigma_hat, pooled.rank), strict=True):
+        for a, b in zip((serial.denoised, serial.sigma, serial.rank),
+                        (pooled.denoised, pooled.sigma, pooled.rank), strict=True):
             np.testing.assert_array_equal(a, b)
     serial = denoise_whitened(dwi, mask, C, patch=PATCH, d_field=d, aggregate="mean",
                               stride=2, workers=1)
@@ -141,10 +141,10 @@ def test_a_stride_still_covers_every_mask_voxel_and_leaves_the_outside(dataset):
     dwi, mask, _ = dataset
     got = denoise_mppca(dwi, mask, patch=PATCH, aggregate="mean", stride=3, workers=1)
 
-    assert np.all(got.sigma_hat[mask] > 0), "every mask voxel got at least one patch"
+    assert np.all(got.sigma[mask] > 0), "every mask voxel got at least one patch"
     assert np.all(got.rank[mask] > 0)
     np.testing.assert_array_equal(got.denoised[~mask], dwi[~mask])
-    assert not got.sigma_hat[~mask].any() and not got.rank[~mask].any()
+    assert not got.sigma[~mask].any() and not got.rank[~mask].any()
     assert patch_centers(mask, PATCH, 3).size < mask.sum(), "the stride thins the centers"
 
 

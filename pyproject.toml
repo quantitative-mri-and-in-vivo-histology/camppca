@@ -1,7 +1,7 @@
 [project]
 name = "camppca"
 version = "0.1.0"
-description = "Covariance-Aware Marchenko-Pastur PCA: self-estimated spatial noise covariance and MP-PCA denoising in the whitened domain for diffusion MRI"
+description = "Covariance-Aware Marchenko-Pastur PCA: self-estimated spatial noise covariance and MPPCA denoising in the whitened domain for diffusion MRI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -11,7 +11,7 @@ authors = [
 keywords = [
     "diffusion MRI",
     "denoising",
-    "MP-PCA",
+    "MPPCA",
     "Marchenko-Pastur",
     "noise covariance",
     "whitening",

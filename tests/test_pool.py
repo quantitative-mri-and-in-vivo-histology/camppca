@@ -34,7 +34,7 @@ def dataset():
 
 @pytest.fixture(scope="module")
 def model(dataset):
-    """A correlated kernel and a level field that varies, so both whitening steps act."""
+    """A correlated pattern and a relative noise map that varies, so both whitening steps act."""
     _, mask = dataset
     rho = np.zeros((2 * LAG + 1, 2 * LAG + 1, PATCH[2]))
     for i in range(-LAG, LAG + 1):
@@ -72,7 +72,7 @@ def test_pooled_mppca_is_the_serial_pass(dataset):
     for workers in (2, 3):
         pooled = denoise_mppca(dwi, mask, patch=PATCH, workers=workers)
         np.testing.assert_array_equal(pooled.denoised, serial.denoised)
-        np.testing.assert_array_equal(pooled.sigma_hat, serial.sigma_hat)
+        np.testing.assert_array_equal(pooled.sigma, serial.sigma)
         np.testing.assert_array_equal(pooled.rank, serial.rank)
 
 
@@ -81,7 +81,7 @@ def test_pooled_camppca_is_the_serial_pass(dataset, model):
     serial = denoise_with_noise_model(dwi, model, patch=PATCH, workers=1)
     pooled = denoise_with_noise_model(dwi, model, patch=PATCH, workers=3)
     np.testing.assert_array_equal(pooled.denoised, serial.denoised)
-    np.testing.assert_array_equal(pooled.sigma_hat, serial.sigma_hat)
+    np.testing.assert_array_equal(pooled.sigma, serial.sigma)
     np.testing.assert_array_equal(pooled.rank, serial.rank)
 
 
@@ -97,14 +97,14 @@ def test_pooled_level_pass_is_the_serial_pass(dataset, model, white):
 
 def test_the_pooled_loop_is_the_serial_loop(dataset, model):
     """Bit for bit: the sampled patches go in fixed chunks, pooled in chunk order. When
-    the chunks followed the worker count, a near-tied rank moved the kernel by 1e-4."""
+    the chunks followed the worker count, a near-tied rank moved the pattern by 1e-4."""
     dwi, mask = dataset
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
-    serial, _ = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
+    serial, _ = loop.fit_rho(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
                                  workers=1)
     for workers in (2, 3):
-        pooled, info = loop.loop_kernel(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
+        pooled, info = loop.fit_rho(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
                                         workers=workers)
         np.testing.assert_array_equal(pooled, serial)
     assert info["converged"]

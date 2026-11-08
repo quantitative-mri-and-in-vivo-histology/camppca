@@ -58,12 +58,12 @@ def test_an_identity_whitener_reproduces_standard_mppca(dataset):
     dwi, mask = dataset
     identity = np.eye(patch_size(PATCH))
 
-    denoised, sigma_hat, rank = denoise_whitened(dwi, mask, identity, patch=PATCH)
+    denoised, sigma_mppca, rank = denoise_whitened(dwi, mask, identity, patch=PATCH)
     plain = denoise_mppca(dwi, mask, patch=PATCH)
 
     scale = np.abs(plain.denoised[mask]).max()
     assert np.abs(denoised[mask] - plain.denoised[mask]).max() < 1e-5 * scale
-    assert np.abs(sigma_hat[mask] - plain.sigma_hat[mask]).max() < 1e-4 * np.median(sigma_hat[mask])
+    assert np.abs(sigma_mppca[mask] - plain.sigma[mask]).max() < 1e-4 * np.median(sigma_mppca[mask])
     np.testing.assert_array_equal(rank[mask], plain.rank[mask])
 
 
@@ -99,18 +99,18 @@ def test_every_masked_voxel_matches_the_long_way(dataset):
 
 
 def test_the_level_pass_matches_the_full_denoise(dataset):
-    """whitened_level stops after the fit, so its sigma_hat is the denoiser's, with and
-    without a level field. With C None it is standard MP-PCA's."""
+    """whitened_level stops after the fit, so its sigma_mppca is the denoiser's, with and
+    without a relative noise map. With C None it is standard MPPCA's."""
     dwi, mask = dataset
     C = separable_correlation(PATCH)
     level = np.random.default_rng(1).uniform(0.5, 2.0, SHAPE).astype(np.float32)
 
     for corr, d_field in ((np.eye(patch_size(PATCH)), None), (C, None), (C, level)):
-        _, sigma_hat, _ = denoise_whitened(dwi, mask, corr, patch=PATCH, d_field=d_field)
+        _, sigma_mppca, _ = denoise_whitened(dwi, mask, corr, patch=PATCH, d_field=d_field)
         fast = whitened_level(dwi, mask, corr, patch=PATCH, d_field=d_field)
-        np.testing.assert_allclose(fast[mask], sigma_hat[mask], rtol=1e-4)
+        np.testing.assert_allclose(fast[mask], sigma_mppca[mask], rtol=1e-4)
         assert np.all(fast[~mask] == 0)
-    plain = denoise_mppca(dwi, mask, patch=PATCH).sigma_hat
+    plain = denoise_mppca(dwi, mask, patch=PATCH).sigma
     np.testing.assert_allclose(whitened_level(dwi, mask, None, patch=PATCH)[mask],
                                plain[mask], rtol=1e-4)
 

@@ -2,8 +2,8 @@
 
 The hard threshold keeps every component above the MP edge at full weight. A shrinker
 weights each one instead, by how much of its singular value is signal. Both run on the
-whitened patch at the patch's own ``sigma_hat``, and both keep the MP rank: a component
-the rule called noise was counted in ``sigma_hat`` as noise, so it stays dropped.
+whitened patch at the patch's own ``sigma_mppca``, and both keep the MP rank: a component
+the rule called noise was counted in ``sigma_mppca`` as noise, so it stays dropped.
 
 ``"gd"``  Gavish & Donoho's Frobenius-optimal shrinker. Optimal for the error in the
           WHITENED patch.
@@ -13,7 +13,7 @@ the rule called noise was counted in ``sigma_hat`` as noise, so it stays dropped
           matters, in data units, wants a different weight. With white noise the two agree.
 
 For a patch of ``n_vox`` voxels and ``n_vols`` volumes, ``gamma = n_vox / n_vols``, and
-``sw_k = s_k / (sigma_hat sqrt(n_vols))`` the k-th whitened singular value in units of the
+``sw_k = s_k / (sigma_mppca sqrt(n_vols))`` the k-th whitened singular value in units of the
 noise. Above the edge ``1 + sqrt(gamma)``::
 
     l_k    = [sw^2 - 1 - gamma + sqrt((sw^2 - 1 - gamma)^2 - 4 gamma)] / 2
@@ -61,13 +61,13 @@ def check_shrink(shrink: str) -> str:
     return shrink
 
 
-def shrink_weight(evals: np.ndarray, sigma_hat: np.ndarray, n_vox: int, n_vols: int,
+def shrink_weight(evals: np.ndarray, sigma_mppca: np.ndarray, n_vox: int, n_vols: int,
                   alignment: np.ndarray | None = None) -> np.ndarray:
     """Per component, the shrunk singular value over the observed one.
 
     Args:
         evals: (B, n_vols) descending eigenvalues of the whitened Gram.
-        sigma_hat: (B,) the patch's MP noise level.
+        sigma_mppca: (B,) the patch's MP noise level.
         n_vox: voxels in the patch.
         n_vols: volumes in the patch.
         alignment: (B, n_vols) ``q_k`` from :func:`signal_alignment` for "lr"; None
@@ -77,12 +77,12 @@ def shrink_weight(evals: np.ndarray, sigma_hat: np.ndarray, n_vox: int, n_vols: 
         (B, n_vols) weights, 0 below the edge. The caller zeroes ``k >= rank``.
     """
     with np.errstate(divide="ignore", invalid="ignore"):   # both branches of each where
-        return _shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment)
+        return _shrink_weight(evals, sigma_mppca, n_vox, n_vols, alignment)
 
 
-def _shrink_weight(evals, sigma_hat, n_vox, n_vols, alignment):
+def _shrink_weight(evals, sigma_mppca, n_vox, n_vols, alignment):
     gamma = n_vox / n_vols
-    sw = np.sqrt(evals) / (sigma_hat[:, None] * np.sqrt(n_vols))
+    sw = np.sqrt(evals) / (sigma_mppca[:, None] * np.sqrt(n_vols))
     above = sw > 1 + np.sqrt(gamma)
     x = sw ** 2 - 1 - gamma
     ell = np.where(above, (x + np.sqrt(np.maximum(x ** 2 - 4 * gamma, 0.0))) / 2, 1.0)

@@ -5,17 +5,17 @@ a correlation pattern that does not::
 
     Sigma = sigma^2 * D * C * D          D = diag(d)
 
-``rho`` (the lag table) and ``d`` (the relative level field) are the model.  ``C``, the
+``rho`` (the correlation pattern) and ``d`` (the relative noise map) are the model.  ``C``, the
 n_vox x n_vox patch correlation, is DERIVED from rho plus a patch shape -- a denoiser knob, not a
 property of the noise -- so it is computed on demand by :meth:`NoiseModel.patch_correlation`
 and never stored.
 
-This half of the seam is source-specific: here both come from MP-PCA itself. ``d`` is
-standard MP-PCA's noise level, pooled, and rho is the loop kernel (``loop.py``) started
+This half of the seam is source-specific: here both come from MPPCA itself. ``d`` is
+standard MPPCA's noise level, pooled, and rho comes from the loop (``loop.py``), started
 from white. A future alignment-based estimator builds the same :class:`NoiseModel` a
 different way and feeds the same engine, so nothing downstream may assume this one.
 
-The loop runs MP-PCA's own split, so it uses the denoiser's internals.
+The loop runs MPPCA's own split, so it uses the denoiser's internals.
 """
 
 import warnings
@@ -39,9 +39,9 @@ MIN_VOLUMES = 50
 #: On real data the first round moved ``d`` by 3.5 to 5%, the second by under 1%.
 LEVEL_TOL = 5e-3
 
-#: Smallest eigenvalue a patch correlation may have. A lag table can be valid for one
+#: Smallest eigenvalue a patch correlation may have. A correlation pattern can be valid for one
 #: patch and indefinite for a larger one. `_build_C` then projects it to a C with
-#: eigenvalues near zero, whitening divides by them, and sigma_hat collapses to ~1e-7
+#: eigenvalues near zero, whitening divides by them, and sigma collapses to ~1e-7
 #: everywhere without an error.
 MIN_EIGENVALUE = 1e-3
 
@@ -61,17 +61,17 @@ def _good_level(d, mask):
 
 
 def _effective_d(d, mask):
-    """The level field as the engine uses it. The one place ``d`` is guarded.
+    """The relative noise map as the engine uses it. The one place ``d`` is guarded.
 
     ``d`` is defined up to scale: rows are divided by it and the center voxel multiplied
-    back, so a constant cancels in the denoised image, the rank and ``sigma_hat`` in data
+    back, so a constant cancels in the denoised image, the rank and ``sigma`` in data
     units. Voxels that are non-finite, below :data:`LEVEL_FLOOR` times the median over the
     mask, or outside the mask get the level of the nearest good mask voxel. Edge patches
     include outside voxels, and by default they are denoised too, so a brain voxel the
     mask missed gets a local level.
 
     The engine takes the field as given and rescales the denoised image by it at the center
-    voxel, but NOT ``sigma_hat``. Putting sigma_hat back into data units therefore means
+    voxel, but NOT ``sigma_mppca``. Putting sigma_mppca back into data units therefore means
     applying this same field, which is why the denoiser takes it from
     :meth:`NoiseModel.effective_d` and passes it down.
     """
@@ -84,11 +84,11 @@ def _effective_d(d, mask):
 
 @dataclass
 class NoiseModel:
-    """Spatial noise model: correlation pattern ``rho`` plus level field ``d``.
+    """Spatial noise model: correlation pattern ``rho`` plus relative noise map ``d``.
 
-    ``rho``        (2*lag+1, 2*lag+1, dzmax+1) correlation lag table, unit at zero lag.
+    ``rho``        (2*lag+1, 2*lag+1, dzmax+1) correlation pattern, unit at zero lag.
                    PATTERN ONLY -- carries no level.
-    ``d``          (X, Y, Z) level field, defined up to scale: an MP-PCA noise level
+    ``d``          (X, Y, Z) relative noise map, defined up to scale: an MPPCA noise level
                    pooled over a ``pool``^3 box.  Only ratios matter.  Zero outside
                    ``mask``.
     ``mask``       (X, Y, Z) bool, the voxels the model was estimated on.
@@ -144,13 +144,13 @@ class NoiseModel:
                 f"rho is not a valid correlation for patch "
                 f"{tuple(int(v) for v in patch)}: the smallest eigenvalue of C is "
                 f"{smallest:.2e}, below {MIN_EIGENVALUE:g}. Whitening divides by it, and "
-                f"sigma_hat would collapse toward zero. Estimate the noise model at this "
+                f"sigma would collapse toward zero. Estimate the noise model at this "
                 f"patch.")
         return C
 
 
 def _table_C(rho, patch, lag):
-    """The patch correlation a lag table spells out, symmetric with unit diagonal, NOT
+    """The patch correlation a correlation pattern spells out, symmetric with unit diagonal, NOT
     projected: its smallest eigenvalue says whether the table is a valid correlation."""
     o = patch_offsets(patch)
     dx = o[:, 0][:, None] - o[:, 0][None, :]
@@ -163,22 +163,22 @@ def _table_C(rho, patch, lag):
 
 
 def _white_rho(shape):
-    """A lag table of white noise: 1 at zero lag, 0 elsewhere."""
+    """A correlation pattern of white noise: 1 at zero lag, 0 elsewhere."""
     rho = np.zeros(shape)
     rho[shape[0] // 2, shape[1] // 2, 0] = 1.0
     return rho
 
 
-#: Why a loop kernel fell back to white noise. Signal below the MP edge is smooth and
+#: Why the loop fell back to white noise. Signal below the MP edge is smooth and
 #: alike in every patch, so pooled it reads as strong correlation that no stationary
 #: table explains. An unstabilized phase leaves such signal in the real part.
 FALLBACK_REASON = ("the noise bulk most likely holds signal, as an unstabilized phase "
                    "leaves in the real part. The noise model falls back to white noise: "
-                   "camppca then denoises like MP-PCA with the level field.")
+                   "camppca then denoises like MPPCA with the relative noise map.")
 
 
 def _build_C(rho, patch, lag):
-    """Patch correlation from a lag table, read by :func:`~camppca.patch.table_index`.
+    """Patch correlation from a correlation pattern, read by :func:`~camppca.patch.table_index`.
 
     Projected to the nearest PSD matrix with unit diagonal if the measured table is
     indefinite.  The bounds check that guards it lives in
@@ -245,26 +245,26 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
                None picks dwidenoise's default, see :func:`~camppca.patch.default_patch`.
     ``lowb``   b-value at or below which a volume counts as a b0.
     ``seed``   picks the loop's patch centers, so re-estimating gives an identical model.
-    ``pool``   box width, in voxels, the level field ``d`` is averaged over.  Averaged in
+    ``pool``   box width, in voxels, the relative noise map ``d`` is averaged over.  Averaged in
                variance, over mask voxels only; see :func:`_pool_level`.  1 disables it.
     ``algorithm``, ``noise_field``  the denoiser settings the model is fitted to: the MP rule,
                and whether rows are divided by ``d``.  Pass the ones you will denoise with.
     ``level_rounds``  how many times ``d`` is re-estimated from the whitened patches.
-               0, the default, keeps standard MP-PCA's level.
+               0, the default, keeps standard MPPCA's level.
     ``workers``  CPU processes for the passes over every voxel and the loop's
                split, see :mod:`camppca.pool`. The default is one per physical core.
                1 runs everything in this process.
 
-    The level field ``d`` is standard MP-PCA's ``sigma_hat`` at every mask voxel, pooled
+    The relative noise map ``d`` is standard MPPCA's ``sigma`` at every mask voxel, pooled
     ``pool``^3.  Unpooled, its rank grain made ``C`` near singular on strongly correlated
-    data.  The kernel is the loop's (:mod:`camppca.noise_model.loop`), started from white
+    data.  rho is the loop's (:mod:`camppca.noise_model.loop`), started from white
     noise: 1 at lag 0, 0 elsewhere.
 
     Each level round splits every mask voxel's whitened patch, which gives ``s``, the
     level in d-normalized units.  The new ``d`` is ``d * s`` pooled, and the loop is
     refitted from the previous table.  The rounds stop when ``d`` moves by less than
     :data:`LEVEL_TOL`.  At the fixed point ``s`` is flat: every whitened patch carries the
-    same noise level.  On real data this changed U by at most 0.006 and ``sigma_hat`` by
+    same noise level.  On real data this changed the sphericity by at most 0.006 and ``sigma`` by
     at most 0.3%, at three to four times the cost, hence the default of 0.
 
     With ``noise_field=False``, ``d`` is 1 in the mask and only the loop runs.
@@ -318,7 +318,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     # Imported here: these use denoiser internals, and the denoiser imports this package,
     # so a top-level import would be circular.
     from ..denoiser.camppca import whitened_level
-    from .loop import loop_kernel
+    from .loop import fit_rho
 
     rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     rho[lag, lag, 0] = 1.0
@@ -330,7 +330,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     else:
         d = mask.astype(np.float32)
     sample = _good_level(d, mask)          # the same patches in every level round
-    rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
+    rho, info = fit_rho(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
                             noise_field=noise_field, workers=workers, sample=sample)
 
     rounds_run, change, spread = 0, None, None
@@ -349,7 +349,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
         if change < LEVEL_TOL:
             break
         d = new
-        rho, info = loop_kernel(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
+        rho, info = fit_rho(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
                                 noise_field=noise_field, workers=workers, sample=sample)
         if info["fallback"]:
             break
@@ -359,7 +359,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
                 seed=int(seed), lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
-                u_kernel=info["u_kernel"], n_centers=info["n_centers"],
+                sphericity=info["sphericity"], n_centers=info["n_centers"],
                 loop_algorithm=algorithm, loop_noise_field=bool(noise_field),
                 level_rounds=level_rounds, level_rounds_run=rounds_run,
                 fallback=info["fallback"])
@@ -377,10 +377,10 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     try:
         model.patch_correlation(patch)
     except ValueError as err:
-        reason = f"the loop kernel is not usable: {err} {FALLBACK_REASON}"
+        reason = f"the loop's correlation pattern is not usable: {err} {FALLBACK_REASON}"
         warnings.warn(reason, RuntimeWarning, stacklevel=2)
         model.rho = _white_rho(rho.shape)
-        model.provenance.update(fallback=reason, u_kernel=0.0)
+        model.provenance.update(fallback=reason, sphericity=0.0)
     return model
 
 
@@ -410,15 +410,15 @@ def _check_phase_stabilized(imag, mask, level, seed):
 
 
 def _strided_level(whitened_level, dwi, mask, patch, algorithm, workers):
-    """Standard MP-PCA's level on a stride-2 grid of patch centers, filled in between.
+    """Standard MPPCA's level on a stride-2 grid of patch centers, filled in between.
 
-    MP-PCA's level is a patch mean, and the field is pooled 3^3 after, so the full grid
+    MPPCA's level is a patch mean, and the field is pooled 3^3 after, so the full grid
     adds nothing the pooling keeps. Computed at mask voxels with every coordinate even,
     plus mask voxels with no such voxel in their 3^3 box, plus the two outer layers of
     the mask. The rest are filled by a tent interpolation in variance over the good
     computed levels, zero where there is none. On EDDEN at 0.9 mm the level pass took
     26 s against 92 s. The loop table moved by at most 5e-5, the median of d by 0.3%,
-    sigma_hat by 0.1%, and no voxel's d by more than 10%.
+    sigma by 0.1%, and no voxel's d by more than 10%.
 
     ⚠ The rim is needed. At the mask edge the fill sees grid points on the inside only,
     and the level often climbs steeply inward there. Without the rim, edge voxels of
@@ -448,7 +448,7 @@ def _strided_level(whitened_level, dwi, mask, patch, algorithm, workers):
 
 
 def _level_field(level, mask, pool):
-    """A per-voxel level pooled ``pool``^3 into a level field, zero outside ``mask``.
+    """A per-voxel level pooled ``pool``^3 into a relative noise map, zero outside ``mask``.
 
     Levels below the floor of ``_effective_d`` are left out of the pooling and come out
     zero, for ``_effective_d`` to fill. Pooled in, zero-filled slices would pull their

@@ -3,7 +3,7 @@
 Injects spatially correlated noise with an analytically known rho and sigma, then checks
 the whole chain: the estimator recovers both, whitening collapses the patch off-diagonals
 toward the i.i.d. floor, and the MP fit lands on the true level -- where standard,
-white-noise MP-PCA does not.
+white-noise MPPCA does not.
 """
 
 import warnings
@@ -110,17 +110,17 @@ def test_whitening_collapses_the_patch_off_diagonals(model, dataset):
 
 
 def test_camppca_lands_on_the_true_level_where_white_mppca_does_not(dataset):
-    """The paper's core claim: color makes standard MP-PCA under-estimate sigma."""
+    """The paper's core claim: color makes standard MPPCA under-estimate sigma."""
     dwi, bvals, mask = dataset
     patch = (5, 5, 3)
 
-    ours = denoise_camppca(dwi, mask, bvals=bvals, patch=patch).sigma_hat
-    white = denoise_mppca(dwi, mask, patch=patch).sigma_hat
+    ours = denoise_camppca(dwi, mask, bvals=bvals, patch=patch).sigma
+    white = denoise_mppca(dwi, mask, patch=patch).sigma
 
     ours_med, white_med = np.median(ours[mask]), np.median(white[mask])
-    # Measured: camppca ~10.0, white MP-PCA ~5.3 against a true 10.0.
+    # Measured: camppca ~10.0, white MPPCA ~5.3 against a true 10.0.
     assert ours_med == pytest.approx(SIGMA_TRUE, rel=0.15)
-    assert white_med < 0.7 * SIGMA_TRUE, "white MP-PCA under-estimates on colored noise"
+    assert white_med < 0.7 * SIGMA_TRUE, "white MPPCA under-estimates on colored noise"
     assert abs(ours_med - SIGMA_TRUE) < abs(white_med - SIGMA_TRUE) / 3
 
 
@@ -129,7 +129,7 @@ def test_denoise_reduces_variance_and_keeps_shape(dataset):
     result = denoise_camppca(dwi, mask, bvals=bvals, patch=(5, 5, 3))
 
     assert result.denoised.shape == dwi.shape
-    assert result.sigma_hat.shape == dwi.shape[:3]
+    assert result.sigma.shape == dwi.shape[:3]
     assert (dwi - result.denoised)[mask].std() < SIGMA_TRUE * 1.2
 
 
@@ -139,11 +139,11 @@ def test_every_voxel_is_denoised_unless_mask_only(dataset, model):
     everywhere = denoise_with_noise_model(dwi, model)
     only = denoise_with_noise_model(dwi, model, mask_only=True)
 
-    assert (everywhere.sigma_hat > 0).all() and (everywhere.rank > 0).all()
+    assert (everywhere.sigma > 0).all() and (everywhere.rank > 0).all()
     assert (dwi - everywhere.denoised)[~mask].std() > 0.5 * SIGMA_TRUE
     passthrough = dwi.astype(only.denoised.dtype)        # engine works in float32
     assert np.all(only.denoised[~mask] == passthrough[~mask]), "outside the mask is untouched"
-    assert not only.sigma_hat[~mask].any()
+    assert not only.sigma[~mask].any()
     np.testing.assert_array_equal(only.denoised[mask], everywhere.denoised[mask])
     assert everywhere.provenance["mask_only"] is False
     assert only.provenance["mask_only"] is True
@@ -162,12 +162,12 @@ def test_the_scale_of_d_cancels(dataset, model):
     quarter = denoise_with_noise_model(dwi, replace(model, d=model.d * 0.25), patch=(5, 5, 3))
     odd = denoise_with_noise_model(dwi, replace(model, d=model.d * 7.3), patch=(5, 5, 3))
 
-    for name in ("denoised", "sigma_hat", "rank"):
+    for name in ("denoised", "sigma", "rank"):
         assert np.array_equal(getattr(quarter, name), getattr(ref, name)), name
     assert (odd.rank[mask] != ref.rank[mask]).mean() < 0.005
     same = odd.rank == ref.rank
     # float32 eigenvalues next to the baseline component: measured up to 6e-4 relative
-    np.testing.assert_allclose(odd.sigma_hat[same & mask], ref.sigma_hat[same & mask],
+    np.testing.assert_allclose(odd.sigma[same & mask], ref.sigma[same & mask],
                                rtol=2e-3)
 
 

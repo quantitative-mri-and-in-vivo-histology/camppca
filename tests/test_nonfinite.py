@@ -35,7 +35,7 @@ def test_mppca_fits_nonfinite_as_zero_and_puts_it_back(data, aggregate):
     want = denoise_mppca(zeroed, patch=PATCH, workers=1, aggregate=aggregate)
 
     _same_except_nonfinite(got.denoised, want.denoised, dirty)
-    np.testing.assert_array_equal(got.sigma_hat, want.sigma_hat)
+    np.testing.assert_array_equal(got.sigma, want.sigma)
 
 
 @pytest.mark.parametrize("aggregate", ["center", "mean"])
@@ -52,7 +52,7 @@ def test_camppca_fits_nonfinite_as_zero_and_puts_it_back(data, aggregate):
     np.testing.assert_array_equal(model.rho, clean_model.rho)
     np.testing.assert_array_equal(model.d, clean_model.d)
     _same_except_nonfinite(got.denoised, want.denoised, dirty)
-    np.testing.assert_array_equal(got.sigma_hat, want.sigma_hat)
+    np.testing.assert_array_equal(got.sigma, want.sigma)
 
 
 def test_finite_input_is_not_copied_or_warned_about(data):

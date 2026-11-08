@@ -11,9 +11,9 @@ Outputs split by AUDIENCE, not by kind:
                      --mask was given. A mask the user supplies is the recommended way;
                      the estimated one is a fallback, written so it can be checked and
                      reused.
-    --noise PATH     the sigma_hat map -- a downstream product (SNR maps, weighting),
+    --noise PATH     the sigma map -- a downstream product (SNR maps, weighting),
                      first-class, as `dwidenoise -noise` is
-    --qc DIR         things to look at: rho as NIfTI + a plot, the level field d,
+    --qc DIR         things to look at: rho as NIfTI + a plot, the relative noise map d,
                      rank, provenance.json
 
 ⚠ `--qc` is deliberately a SUPERSET. Today it dumps the free byproducts. When the real QC
@@ -59,8 +59,8 @@ def _add_common(p):
     p.add_argument("--lowb", type=float, default=100.0,
                    help="b-value at or below which a volume counts as a b0 (default: 100)")
     p.add_argument("--level-rounds", type=int, default=0, metavar="N",
-                   help="re-estimate the level field d from the whitened patches up to N "
-                        "times (default: 0, keep standard MP-PCA's level)")
+                   help="re-estimate the relative noise map d from the whitened patches up to N "
+                        "times (default: 0, keep standard MPPCA's level)")
     p.add_argument("--algorithm", choices=ALGORITHMS, default="cordero-grande",
                    help="Marchenko-Pastur rule, for the noise model and the denoise "
                         "(default: cordero-grande)")
@@ -81,15 +81,15 @@ def _mask_path(output):
 
 def _parser():
     p = argparse.ArgumentParser(
-        prog="camppca", description="Covariance-aware MP-PCA denoising for diffusion MRI.")
+        prog="camppca", description="Covariance-aware MPPCA denoising for diffusion MRI.")
     sub = p.add_subparsers(dest="command", required=True)
 
     d = sub.add_parser("denoise", help="estimate the noise model, then denoise")
     d.add_argument("input", help="4D input image, real or complex")
     d.add_argument("output", help="denoised 4D image, complex if the input is")
-    d.add_argument("--noise", metavar="PATH", help="write the sigma_hat map here")
+    d.add_argument("--noise", metavar="PATH", help="write the sigma map here")
     d.add_argument("--no-noise-field", action="store_true",
-                   help="ignore the per-voxel level field d (whiten with the pattern only)")
+                   help="ignore the per-voxel relative noise map d (whiten with the pattern only)")
     d.add_argument("--aggregate", choices=("center", "mean"), default="center",
                    help="write back each patch's center voxel (default), or the mean of "
                         "the overlapping patch reconstructions")
@@ -143,7 +143,7 @@ def _write_qc(directory, model, affine, header, result=None):
 
     prov = dict(model=model.provenance)
     if result is not None:
-        io.save_like(out / "sigma_hat.nii.gz", result.sigma_hat, affine, header)
+        io.save_like(out / "sigma.nii.gz", result.sigma, affine, header)
         io.save_like(out / "rank.nii.gz", result.rank, affine, header)
         prov["denoise"] = result.provenance
     io.save_json(out / "provenance.json", prov)
@@ -219,7 +219,7 @@ def main(argv=None):
     # A patch one voxel wide in-plane gives lag 0: no x=1 entry to show.
     lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
     say(f"  noise model: patch {'x'.join(map(str, model.provenance['patch']))}, "
-        f"lag {model.lag}{lag1}, U {model.provenance['u_kernel']:.3f}")
+        f"lag {model.lag}{lag1}, sphericity {model.provenance['sphericity']:.3f}")
 
     result = None
     if args.command == "denoise":
@@ -239,7 +239,7 @@ def main(argv=None):
             say(f"  wrote {mask_path}: no --mask given, so one was estimated from the "
                 "mean b0. Check it; supplying your own brain mask is recommended.")
         if args.noise:
-            io.save_like(args.noise, result.sigma_hat, affine, header)
+            io.save_like(args.noise, result.sigma, affine, header)
             say(f"  wrote {args.noise}")
 
     if args.qc:

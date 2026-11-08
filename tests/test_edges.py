@@ -72,4 +72,4 @@ def test_the_opposite_face_does_not_reach_an_edge_voxel(dwi):
     a = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
     b = denoise_mppca(far, mask, patch=PATCH, workers=1)
     np.testing.assert_array_equal(a.denoised[0], b.denoised[0])
-    np.testing.assert_array_equal(a.sigma_hat[0], b.sigma_hat[0])
+    np.testing.assert_array_equal(a.sigma[0], b.sigma[0])

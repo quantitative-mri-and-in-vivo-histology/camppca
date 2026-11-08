@@ -131,7 +131,7 @@ def test_estimate_covers_the_lags_the_patch_needs():
 def test_d_is_the_standard_mppca_level_pooled():
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(1))
     model = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
-    standard = denoise_mppca(dwi, mask, patch=(5, 5, 3)).sigma_hat
+    standard = denoise_mppca(dwi, mask, patch=(5, 5, 3)).sigma
     pooled = _pool_level(np.where(mask, standard, 0.0).astype(np.float64), mask, 3)
 
     assert np.median(model.d[mask]) == pytest.approx(sigma, rel=0.1)
@@ -293,9 +293,9 @@ def test_zero_filled_slices_inside_the_mask_do_not_break_the_estimate():
     model = estimate_noise_model(dwi, mask=np.ones(shape, bool), patch=(5, 5, 5), workers=1)
     result = denoise_with_noise_model(dwi, model, workers=1)
 
-    assert np.isfinite(result.denoised).all() and np.isfinite(result.sigma_hat).all()
+    assert np.isfinite(result.denoised).all() and np.isfinite(result.sigma).all()
     assert abs(model.rho[model.lag + 1, model.lag, 0]) < 0.02, "the noise is white"
-    assert np.median(result.sigma_hat[:, :, 3:10]) == pytest.approx(sigma, rel=0.05)
+    assert np.median(result.sigma[:, :, 3:10]) == pytest.approx(sigma, rel=0.05)
 
 
 def test_estimate_pools_d():
@@ -326,12 +326,12 @@ def test_the_flat_mode_factor(aggregate):
     assert _flat_mode_factor(C, aggregate) == pytest.approx(np.sqrt(1 - a), rel=1e-12)
 
 
-def test_sigma_hat_leaves_the_flat_mode_out():
+def test_sigma_leaves_the_flat_mode_out():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(3))
     model = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
     out = denoise_with_noise_model(dwi, model, mask_only=True)
     C = model.patch_correlation((5, 5, 3))
     _, raw, _ = denoise_whitened(dwi, mask, C, patch=(5, 5, 3), d_field=model.effective_d())
     expected = raw * model.effective_d() * _flat_mode_factor(C)
-    np.testing.assert_allclose(out.sigma_hat[mask], expected[mask], rtol=1e-6)
+    np.testing.assert_allclose(out.sigma[mask], expected[mask], rtol=1e-6)
     assert _flat_mode_factor(C) < 1, "positive correlation: below the voxel's own level"

@@ -15,15 +15,15 @@ The recipe is EDDEN's preprocessing, with a different filter:
    phase from k-space sampling and the coil combination, which can vary faster than any
    smooth estimate follows;
 2. in each slice, in plane, for every volume, estimate the remaining smooth phase with the
-   decorrelated kernel of Sprenger et al., their Opt5;
+   decorrelated filter of Sprenger et al., their Opt5;
 3. rotate by minus that phase and keep the real part.
 
-The kernel is a 5 x 5 smoother in image space that gives almost no weight to the center
+The filter is a 5 x 5 smoother in image space that gives almost no weight to the center
 voxel and its direct neighbours, whose noise is correlated with the center's. The estimate
 then barely sees the voxel's own noise, so the real part stays unbiased. EDDEN used a Hann
 window cubed in k-space, which they describe as a Tukey filter with an FWHM of 58%. On
 complex white noise of unit level it leaves the real part's mean at 0.54, against 0.01
-with the kernel and 1.25 for the magnitude.
+with the filter and 1.25 for the magnitude.
 
 The reference volume itself ends up as its magnitude, noise floor included. It is a bright
 b0, where the floor is small.
@@ -86,7 +86,7 @@ def stabilize_phase(magnitude, phase, slice_axis=2, imag=False, workers=None):
         magnitude: (X, Y, Z, N) magnitude.
         phase: (X, Y, Z, N) phase, in radians or in any unit whose range is one full
             turn, as scanners store it. See :func:`phase_scale`.
-        slice_axis: the spatial axis across slices. The kernel works in the other two.
+        slice_axis: the spatial axis across slices. The filter works in the other two.
         imag: also return the imaginary part, which should hold noise only.
         workers: CPU processes the volumes are split over, see :mod:`camppca.pool`. The
             volumes are independent, so the result does not depend on it.

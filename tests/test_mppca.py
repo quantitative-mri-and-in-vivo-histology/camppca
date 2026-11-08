@@ -1,4 +1,4 @@
-"""Standard MP-PCA, checked against data we build from a known signal and a known sigma.
+"""Standard MPPCA, checked against data we build from a known signal and a known sigma.
 
 Nothing here compares against another denoiser. Each test states a property the method
 must have and constructs the data that makes it checkable: pure noise of a known level,
@@ -39,7 +39,7 @@ def test_recovers_the_noise_level_of_a_pure_noise_volume():
 
     result = denoise_mppca(dwi, mask, patch=PATCH)
 
-    assert abs(np.median(result.sigma_hat[mask]) - sigma_true) < 0.05 * sigma_true
+    assert abs(np.median(result.sigma[mask]) - sigma_true) < 0.05 * sigma_true
 
 
 def test_a_noiseless_low_rank_volume_survives_intact():
@@ -69,7 +69,7 @@ def test_the_retained_rank_and_the_noise_level_match_the_signal_they_came_from(s
 
     assert np.median(result.rank[mask]) == 3
     assert (result.rank[mask] <= 4).all()
-    assert abs(np.median(result.sigma_hat[mask]) - sigma_true) < 0.05 * sigma_true
+    assert abs(np.median(result.sigma[mask]) - sigma_true) < 0.05 * sigma_true
 
 
 def test_denoising_moves_a_noisy_volume_closer_to_its_signal():
@@ -118,7 +118,7 @@ def test_voxels_outside_the_mask_are_left_alone():
 
     outside = ~mask
     np.testing.assert_array_equal(result.denoised[outside], dwi[outside])
-    assert (result.sigma_hat[outside] == 0).all()
+    assert (result.sigma[outside] == 0).all()
     assert (result.rank[outside] == 0).all()
 
 
@@ -131,7 +131,7 @@ def test_every_voxel_can_be_denoised_including_the_corners():
     result = denoise_mppca(dwi, patch=PATCH)
 
     assert np.isfinite(result.denoised).all()
-    assert (result.sigma_hat > 0).all()
+    assert (result.sigma > 0).all()
     assert (result.rank > 0).all()
 
 
@@ -164,9 +164,9 @@ def test_the_result_describes_what_was_run():
     result = denoise_mppca(dwi, interior_mask(), patch=PATCH, algorithm="veraart")
 
     assert result.denoised.shape == dwi.shape
-    assert result.sigma_hat.shape == SHAPE
+    assert result.sigma.shape == SHAPE
     assert result.rank.shape == SHAPE
-    assert result.model is None, "standard MP-PCA does not use a noise model"
+    assert result.model is None, "standard MPPCA does not use a noise model"
     assert result.provenance["method"] == "mppca"
     assert result.provenance["patch"] == PATCH
     assert result.provenance["algorithm"] == "veraart"
