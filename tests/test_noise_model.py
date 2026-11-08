@@ -4,7 +4,15 @@ import numpy as np
 import pytest
 
 from camppca import denoise_mppca, denoise_with_noise_model
-from camppca.noise_model import NoiseModel, _effective_d, _pool_level, estimate_noise_model
+from camppca.denoiser import _flat_mode_factor
+from camppca.denoiser.camppca import denoise_whitened, whitened_level
+from camppca.noise_model import (
+    NoiseModel,
+    _effective_d,
+    _pool_level,
+    _strided_level,
+    estimate_noise_model,
+)
 from camppca.patch import patch_offsets
 
 
@@ -126,11 +134,24 @@ def test_d_is_the_standard_mppca_level_pooled():
     pooled = _pool_level(np.where(mask, standard, 0.0).astype(np.float64), mask, 3)
 
     assert np.median(model.d[mask]) == pytest.approx(sigma, rel=0.1)
-    # Not exact: the level pass asks LAPACK for eigenvalues only, the denoiser for vectors
-    # too, and a near-tied MP cut can flip between them.
-    np.testing.assert_allclose(model.d[mask], pooled[mask], rtol=5e-3)
+    # Not exact: the level pass runs on a stride-2 grid and fills in between.
+    np.testing.assert_allclose(model.d[mask], pooled[mask], rtol=0.03)
     assert np.all(model.d[~mask] == 0)
     assert model.provenance["level_rounds_run"] == 0, "no level rounds by default"
+
+
+def test_the_strided_level_is_the_full_one_on_its_grid():
+    dwi, _, mask, _ = _synthetic(np.random.default_rng(1))
+    full = whitened_level(dwi, mask, None, (5, 5, 3), workers=1)
+    strided = _strided_level(whitened_level, dwi, mask, (5, 5, 3), "cordero-grande", 1)
+
+    x, y, z = np.indices(mask.shape)
+    grid = mask & (x % 2 == 0) & (y % 2 == 0) & (z % 2 == 0)
+    # Not exact: the level pass asks LAPACK for eigenvalues only, in batches that differ
+    # with the grid, and a near-tied MP cut can flip between them.
+    np.testing.assert_allclose(strided[grid], full[grid], rtol=5e-3)
+    assert (strided[mask] > 0).all() and not strided[~mask].any()
+    np.testing.assert_allclose(np.median(strided[mask]), np.median(full[mask]), rtol=0.01)
 
 
 @pytest.mark.parametrize("level_rounds", [0, 1])
@@ -290,3 +311,24 @@ def test_estimate_rejects_a_pool_smaller_than_one_voxel():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(6))
     with pytest.raises(ValueError, match="pool must be"):
         estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3), pool=0)
+
+
+@pytest.mark.parametrize("aggregate", ["center", "mean"])
+def test_the_flat_mode_factor(aggregate):
+    assert _flat_mode_factor(np.eye(27), aggregate) == pytest.approx(1.0, abs=1e-12)
+    # Equal correlation a between every pair: P C P = (1 - a) P, so the factor is
+    # sqrt(1 - a) at every position.
+    a = 0.3
+    C = np.full((27, 27), a) + (1 - a) * np.eye(27)
+    assert _flat_mode_factor(C, aggregate) == pytest.approx(np.sqrt(1 - a), rel=1e-12)
+
+
+def test_sigma_hat_leaves_the_flat_mode_out():
+    dwi, bvals, mask, _ = _synthetic(np.random.default_rng(3))
+    model = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
+    out = denoise_with_noise_model(dwi, model, mask_only=True)
+    C = model.patch_correlation((5, 5, 3))
+    _, raw, _ = denoise_whitened(dwi, mask, C, patch=(5, 5, 3), d_field=model.effective_d())
+    expected = raw * model.effective_d() * _flat_mode_factor(C)
+    np.testing.assert_allclose(out.sigma_hat[mask], expected[mask], rtol=1e-6)
+    assert _flat_mode_factor(C) < 1, "positive correlation: below the voxel's own level"

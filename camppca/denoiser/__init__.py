@@ -30,6 +30,27 @@ from .shrink import RULES, check_shrink
 __all__ = ["DenoiseResult", "denoise_camppca", "denoise_mppca",
            "denoise_with_noise_model"]
 
+def _flat_mode_factor(C, aggregate="center"):
+    """The factor that takes the flat mode out of the reported noise level.
+
+    The loop cannot see one direction of the table, the same value added at every lag. It
+    changes the d-divided patch's noise only along the flat mode u, u_i = 1/sqrt(n_vox),
+    and is fixed by assuming the far lags average to zero. A voxel's full noise level
+    leans on that assumption, so the reported level leaves the flat mode out:
+    ``sigma_hat^2 = sigma_hat_MPPCA^2 * d^2 * n_vox/(n_vox-1) * [P C P]_jj`` with
+    ``P = I - u u^T``. ``j`` is the center voxel, or with ``aggregate="mean"`` the mean
+    over the patch, since a voxel then sits at every position once. The factor is one
+    number for the whole image, and 1 for white noise.
+    """
+    C = np.asarray(C, np.float64)
+    n_vox = C.shape[0]
+    centered = C - C.mean(0, keepdims=True)
+    projected = centered - centered.mean(1, keepdims=True)         # P C P
+    diag = projected[n_vox // 2, n_vox // 2] if aggregate == "center" else \
+        np.trace(projected) / n_vox
+    return float(np.sqrt(n_vox / (n_vox - 1) * diag))
+
+
 def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
                              algorithm="cordero-grande", shrink="hard", workers=None,
                              aggregate="center", stride=1, mask_only=False):
@@ -90,6 +111,7 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
         # The engine rescales the IMAGE by d at the center voxel but not sigma_hat.
         # Do it here, or the scale of d leaks into the headline number.
         sigma_hat = sigma_hat * d_eff
+    sigma_hat = sigma_hat * _flat_mode_factor(C, aggregate)
 
     where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"

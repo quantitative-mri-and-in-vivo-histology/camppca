@@ -78,7 +78,7 @@ from camppca import denoise_camppca
 
 result = denoise_camppca(dwi, mask, bvals=bvals)  # mask is optional
 result.denoised     # (X, Y, Z, N)
-result.sigma_hat    # (X, Y, Z) MP-PCA's noise estimate, in data units
+result.sigma_hat    # (X, Y, Z) the noise level, in data units, without the flat mode
 result.rank         # (X, Y, Z) retained rank
 result.model        # the noise model it estimated along the way
 ```
@@ -117,6 +117,10 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
   matches the MP theory the noise estimate rests on. `aggregate="mean"`
   (`--aggregate mean`) averages the overlapping patch reconstructions instead, and
   `stride` (`--stride N`) keeps a patch every N voxels per axis.
+- **σ̂ leaves out the noise the whole patch shares.** That part depends on an assumption
+  the estimate cannot check, so it is projected out. Under positive correlation σ̂ is a
+  little below the voxel's full noise level, about 1.6% on EDDEN's 2 mm data. For white
+  noise the two are equal.
 - **With `--mask-only`, voxels outside the mask pass through unchanged**, and `sigma_hat`
   is zero there. Apply the mask yourself if you want zeros.
 - **NaN or inf in the input enter the fit as zero** and stay NaN or inf in the output,
