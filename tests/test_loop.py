@@ -1,8 +1,8 @@
-"""The loop kernel, on synthetic data with a KNOWN noise correlation and level field.
+"""The loop, on synthetic data with a KNOWN noise correlation and relative noise map.
 
-These tests check that the loop finds the kernel from a white start, converges, does not
-depend on where it starts, that the batched split is the per-patch algebra, that the fit
-is the pinned least squares, and that the level rounds recover the level field.
+These tests check that the loop finds the correlation pattern from a white start,
+converges, does not depend on where it starts, that the batched split is the per-patch algebra, that the fit
+is the pinned least squares, and that the level rounds recover the relative noise map.
 """
 
 import warnings
@@ -88,18 +88,18 @@ def test_the_loop_tells_a_sheared_correlation_from_its_mirror():
     assert abs(rho[table_index(-1, 0, 1, LAG)]) < 0.05
 
 
-def test_the_loop_kernel_is_a_valid_correlation_for_its_patch(model):
+def test_the_loop_pattern_is_a_valid_correlation_for_its_patch(model):
     """The table must pass the near-singular check at its own patch."""
     C = model.patch_correlation(PATCH)
-    assert model.provenance["u_kernel"] == pytest.approx(loop._sphericity_excess(C))
+    assert model.provenance["sphericity"] == pytest.approx(loop._sphericity_excess(C))
 
 
-def test_the_loop_lands_on_the_same_kernel_from_a_white_start(dataset, model):
+def test_the_loop_lands_on_the_same_pattern_from_a_white_start(dataset, model):
     dwi, _, mask = dataset
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
 
-    from_white, info = loop.loop_kernel(dwi, mask, model.d, white, PATCH, LAG, seed=0)
+    from_white, info = loop.fit_rho(dwi, mask, model.d, white, PATCH, LAG, seed=0)
 
     assert info["converged"]
     assert np.abs(from_white - model.rho).max() < 0.01
@@ -182,11 +182,11 @@ def test_the_convergence_warning_reports_the_last_change(dataset, model, monkeyp
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
     with pytest.warns(RuntimeWarning, match="did not converge") as caught:
-        loop.loop_kernel(dwi, mask, model.d, white, PATCH, LAG, seed=0)
+        loop.fit_rho(dwi, mask, model.d, white, PATCH, LAG, seed=0)
     assert "by 0.0000" not in str(caught[0].message)
 
 
-def test_an_unusable_loop_kernel_falls_back_to_white_noise(dataset, monkeypatch):
+def test_an_unusable_loop_pattern_falls_back_to_white_noise(dataset, monkeypatch):
     """Lag-1 correlation 0.7 alone is indefinite on 5 voxels. Whitening by its projection
     overflowed float32; the loop now stops at the first such round."""
     dwi, bvals, mask = dataset
@@ -198,7 +198,7 @@ def test_an_unusable_loop_kernel_falls_back_to_white_noise(dataset, monkeypatch)
         return rho
 
     monkeypatch.setattr(loop, "_fit_table", indefinite)
-    with pytest.warns(RuntimeWarning, match="not a valid correlation after round 1"):
+    with pytest.warns(RuntimeWarning, match="not valid after round 1"):
         model = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, level_rounds=2)
 
     white = np.zeros_like(model.rho)
@@ -206,7 +206,7 @@ def test_an_unusable_loop_kernel_falls_back_to_white_noise(dataset, monkeypatch)
     np.testing.assert_array_equal(model.rho, white)
     assert "unstabilized phase" in model.provenance["fallback"]
     assert model.provenance["level_rounds_run"] == 0
-    assert model.provenance["u_kernel"] == 0.0
+    assert model.provenance["sphericity"] == 0.0
 
 
 def test_the_loop_fits_to_the_denoisers_settings(dataset, model):

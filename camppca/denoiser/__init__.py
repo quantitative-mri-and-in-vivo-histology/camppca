@@ -6,7 +6,7 @@ alignment-based estimator feeds the same code.
 
 ``camppca.py`` is the covariance-aware method, ``mppca.py`` the standard white-noise one.
 What they share lives in ``mp_threshold.py``, ``gather.py`` and ``result.py``, next to
-them. The loop kernel estimator in ``noise_model/loop.py`` reuses the split and
+them. The loop in ``noise_model/loop.py`` reuses the split and
 ``sqrtm_psd`` from here. The level guard belongs to the noise model:
 :meth:`~camppca.noise_model.NoiseModel.effective_d`.
 
@@ -37,15 +37,15 @@ def _flat_mode_factor(C, aggregate="center"):
     changes the d-divided patch's noise only along the flat mode u, u_i = 1/sqrt(n_vox),
     and is fixed by assuming the far lags average to zero. A voxel's full noise level
     leans on that assumption, so the reported level leaves the flat mode out:
-    ``sigma_hat^2 = sigma_hat_MPPCA^2 * d^2 * n_vox/(n_vox-1) * [P C P]_jj`` with
-    ``P = I - u u^T``. ``j`` is the center voxel, or with ``aggregate="mean"`` the mean
+    ``sigma^2 = sigma_mppca^2 * d^2 * n_vox/(n_vox-1) * [(I - u u^T) C (I - u u^T)]_jj``.
+    ``j`` is the center voxel, or with ``aggregate="mean"`` the mean
     over the patch, since a voxel then sits at every position once. The factor is one
     number for the whole image, and 1 for white noise.
     """
     C = np.asarray(C, np.float64)
     n_vox = C.shape[0]
     centered = C - C.mean(0, keepdims=True)
-    projected = centered - centered.mean(1, keepdims=True)         # P C P
+    projected = centered - centered.mean(1, keepdims=True)    # (I - uu^T) C (I - uu^T)
     diag = projected[n_vox // 2, n_vox // 2] if aggregate == "center" else \
         np.trace(projected) / n_vox
     return float(np.sqrt(n_vox / (n_vox - 1) * diag))
@@ -61,7 +61,7 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
     ``patch``        None takes the patch the model was estimated for, the one its loop
                      fitted to, or dwidenoise's default if the model records none
                      (:func:`~camppca.patch.default_patch`).
-    ``noise_field``  apply the model's relative level field ``d`` (Sigma = sigma^2 D C D).
+    ``noise_field``  apply the model's relative noise map ``d`` (Sigma = sigma^2 D C D).
                      Adds the WITHIN-patch heteroscedasticity, which widens the noise bulk
                      the same way off-diagonal color does.
     ``shrink``       weight on the kept components: "hard" (default), "gd" or "lr"; see
@@ -95,7 +95,7 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
 
     fitted = (model.fitted_to.get("algorithm"), model.fitted_to.get("noise_field"))
     if "algorithm" in model.fitted_to and fitted != (algorithm, bool(noise_field)):
-        warnings.warn(f"the loop kernel was fitted with algorithm={fitted[0]!r}, "
+        warnings.warn(f"the loop was fitted with algorithm={fitted[0]!r}, "
                       f"noise_field={fitted[1]}, but this denoise uses algorithm={algorithm!r}, "
                       f"noise_field={bool(noise_field)}. Re-estimate with the same settings.",
                       RuntimeWarning, stacklevel=2)
@@ -103,15 +103,15 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
     d_eff = model.effective_d() if noise_field else None
 
     region = model.mask if mask_only else np.ones(model.mask.shape, bool)
-    denoised, sigma_hat, rank = denoise_whitened(
+    denoised, sigma_mppca, rank = denoise_whitened(
         dwi, region, C, patch=tuple(int(v) for v in patch), algorithm=algorithm,
         d_field=d_eff, shrink=shrink, workers=workers, aggregate=aggregate, stride=stride)
 
     if d_eff is not None:
-        # The engine rescales the IMAGE by d at the center voxel but not sigma_hat.
+        # The engine rescales the IMAGE by d at the center voxel but not sigma_mppca.
         # Do it here, or the scale of d leaks into the headline number.
-        sigma_hat = sigma_hat * d_eff
-    sigma_hat = sigma_hat * _flat_mode_factor(C, aggregate)
+        sigma_mppca = sigma_mppca * d_eff
+    sigma = sigma_mppca * _flat_mode_factor(C, aggregate)
 
     where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"
@@ -121,7 +121,7 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
                 stride=stride, mask_only=bool(mask_only),
                 rule=f"Cordero-Grande/Exp2, {RULES[shrink]}, {where}",
                 model=dict(model.provenance))
-    return DenoiseResult(denoised=denoised, sigma_hat=sigma_hat, rank=rank, model=model,
+    return DenoiseResult(denoised=denoised, sigma=sigma, rank=rank, model=model,
                          provenance=prov)
 
 

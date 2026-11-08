@@ -41,12 +41,12 @@ def test_denoise_writes_image_noise_map_and_qc(dataset, capsys):
     assert denoised.shape == (34, 34, 16, 50)
     assert np.allclose(denoised.affine, np.eye(4)), "geometry is inherited from the input"
 
-    sigma_hat = np.asanyarray(nib.load(str(noise)).dataobj)
-    assert sigma_hat.shape == (34, 34, 16), "the noise map is 3D, not 4D with a stale dim4"
-    assert np.median(sigma_hat[sigma_hat > 0]) == pytest.approx(10.0, rel=0.2)
+    sigma = np.asanyarray(nib.load(str(noise)).dataobj)
+    assert sigma.shape == (34, 34, 16), "the sigma map is 3D, not 4D with a stale dim4"
+    assert np.median(sigma[sigma > 0]) == pytest.approx(10.0, rel=0.2)
 
     for name in ("rho.nii.gz", "noise_field_d.nii.gz", "mask.nii.gz",
-                 "sigma_hat.nii.gz", "rank.nii.gz", "provenance.json"):
+                 "sigma.nii.gz", "rank.nii.gz", "provenance.json"):
         assert (qc / name).exists(), name
 
     prov = json.loads((qc / "provenance.json").read_text())
@@ -82,7 +82,7 @@ def test_estimate_writes_qc_but_no_image(dataset):
                "--patch", "5", "5", "3", *_grad(dataset)])
     assert rc == 0
     assert (qc / "provenance.json").exists()
-    assert not (qc / "sigma_hat.nii.gz").exists(), "nothing was denoised"
+    assert not (qc / "sigma.nii.gz").exists(), "nothing was denoised"
     assert not (qc / "rank.nii.gz").exists()
 
 

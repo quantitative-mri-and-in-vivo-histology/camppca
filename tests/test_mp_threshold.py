@@ -46,9 +46,9 @@ def test_finds_a_signal_that_stands_well_clear_of_the_noise(true_rank):
     right = rng.standard_normal((true_rank, N_VOLS))
     signal = 60.0 * left @ right
     data = (signal + noise_matrix(rng, 1.0)).astype(np.float32)
-    rank, sigma_hat = mp_threshold(spectrum(data), N_SMALL, N_LARGE)
+    rank, sigma_mppca = mp_threshold(spectrum(data), N_SMALL, N_LARGE)
     assert int(rank[0]) == true_rank
-    assert abs(float(sigma_hat[0]) - 1.0) < 0.1
+    assert abs(float(sigma_mppca[0]) - 1.0) < 0.1
 
 
 def test_the_noise_level_is_recovered_alongside_a_strong_signal():
@@ -56,8 +56,8 @@ def test_the_noise_level_is_recovered_alongside_a_strong_signal():
     sigma_true = 4.0
     signal = 200.0 * rng.standard_normal((N_VOX, 3)) @ rng.standard_normal((3, N_VOLS))
     data = (signal + noise_matrix(rng, sigma_true)).astype(np.float32)
-    _, sigma_hat = mp_threshold(spectrum(data), N_SMALL, N_LARGE)
-    assert abs(float(sigma_hat[0]) - sigma_true) < 0.1 * sigma_true
+    _, sigma_mppca = mp_threshold(spectrum(data), N_SMALL, N_LARGE)
+    assert abs(float(sigma_mppca[0]) - sigma_true) < 0.1 * sigma_true
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
@@ -65,9 +65,9 @@ def test_every_algorithm_agrees_on_a_well_separated_case(algorithm):
     rng = np.random.default_rng(4)
     signal = 100.0 * rng.standard_normal((N_VOX, 2)) @ rng.standard_normal((2, N_VOLS))
     data = (signal + noise_matrix(rng, 1.0)).astype(np.float32)
-    rank, sigma_hat = mp_threshold(spectrum(data), N_SMALL, N_LARGE, algorithm)
+    rank, sigma_mppca = mp_threshold(spectrum(data), N_SMALL, N_LARGE, algorithm)
     assert int(rank[0]) == 2
-    assert abs(float(sigma_hat[0]) - 1.0) < 0.15
+    assert abs(float(sigma_mppca[0]) - 1.0) < 0.15
 
 
 def test_a_batch_is_thresholded_independently():
@@ -88,9 +88,9 @@ def test_a_batch_is_thresholded_independently():
 
 
 def test_the_noise_level_stays_positive_and_finite_for_a_degenerate_spectrum():
-    _, sigma_hat = mp_threshold(np.zeros((1, N_VOLS), np.float32), N_SMALL, N_LARGE)
-    assert float(sigma_hat[0]) > 0
-    assert np.isfinite(sigma_hat[0])
+    _, sigma_mppca = mp_threshold(np.zeros((1, N_VOLS), np.float32), N_SMALL, N_LARGE)
+    assert float(sigma_mppca[0]) > 0
+    assert np.isfinite(sigma_mppca[0])
 
 
 def test_an_unknown_algorithm_is_rejected():

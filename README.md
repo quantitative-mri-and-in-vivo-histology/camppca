@@ -1,10 +1,10 @@
 # camppca
 
-**Covariance-Aware Marchenko–Pastur PCA** — MP-PCA denoising for diffusion MRI that
+**Covariance-Aware Marchenko–Pastur PCA** — MPPCA denoising for diffusion MRI that
 accounts for spatially correlated noise.
 
-Standard MP-PCA assumes white noise. Real EPI reconstruction (GRAPPA/SENSE, partial
-Fourier, apodization) correlates noise across neighboring voxels, so MP-PCA
+Standard MPPCA assumes white noise. Real EPI reconstruction (GRAPPA/SENSE, partial
+Fourier, apodization) correlates noise across neighboring voxels, so MPPCA
 under-estimates the noise level and under-denoises. camppca estimates the spatial noise
 covariance from the data itself — no noise-only scan needed — and denoises in the
 whitened domain, where the Marchenko–Pastur assumption holds.
@@ -30,8 +30,8 @@ camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/                         
 |---|---|
 | *(positional out)* | the denoised 4D image |
 | *(no `--mask`)* | `out_mask.nii.gz` next to the output: the brain mask estimated in its place |
-| `--noise PATH` | the σ̂ map, in the input's units — a first-class product, as `dwidenoise -noise` is |
-| `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the level field, σ̂, rank, `provenance.json` |
+| `--noise PATH` | the σ map, in the input's units — a first-class product, as `dwidenoise -noise` is |
+| `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the relative noise map, σ, rank, `provenance.json` |
 
 **Supply a brain mask with `--mask`.** The noise model is estimated inside it. Every voxel
 is denoised, so brain the mask missed at its edge is denoised too. `--mask-only` denoises
@@ -42,7 +42,7 @@ from the mean of every volume. Every volume enters the estimate either way.
 `--patch X Y Z` sets the patch, odd in every dimension. The default follows dwidenoise.
 It is the smallest odd cube with at least as many voxels as there are volumes: `5 5 5` up
 to 125 volumes, `7 7 7` up to 343.
-`--level-rounds N` re-estimates the level field from the whitened patches up to N times
+`--level-rounds N` re-estimates the relative noise map from the whitened patches up to N times
 (default 0). `--shrink gd` or `lr` shrinks the kept components instead of keeping them
 whole. `--algorithm` picks the Marchenko-Pastur rule, `cordero-grande` by default.
 
@@ -60,14 +60,14 @@ The real part keeps Gaussian noise, so it has no Rician noise floor. The recipe 
 EDDEN preprocessing (Manzano-Patrón et al. 2024) with a different filter. The raw phase of
 one bright reference volume, in practice a b0, is removed from every volume. Then in each
 slice and volume a smooth estimate of the phase is removed. It comes from the decorrelated
-kernel of Sprenger et al. (2017), where EDDEN used a k-space low-pass. The phase is read in
+filter of Sprenger et al. (2017), where EDDEN used a k-space low-pass. The phase is read in
 radians or in any unit whose range is one full turn, such as -4096 to 4094 on Siemens.
 `--imag` writes the imaginary part, which should hold noise only.
 
 ### Complex data: denoising both channels
 
 `camppca denoise` also takes a complex image and writes a complex one. Both channels are
-denoised together. The noise model is estimated on the real part. σ̂ is the noise level of
+denoised together. The noise model is estimated on the real part. σ is the noise level of
 one channel. After phase stabilization the imaginary part holds mostly noise, so denoising
 the real part alone usually gives the lower error. On EDDEN's 2 mm data it did.
 
@@ -78,12 +78,12 @@ from camppca import denoise_camppca
 
 result = denoise_camppca(dwi, mask, bvals=bvals)  # mask is optional
 result.denoised     # (X, Y, Z, N)
-result.sigma_hat    # (X, Y, Z) the noise level, in data units, without the flat mode
+result.sigma        # (X, Y, Z) the noise level, in data units, without the flat mode
 result.rank         # (X, Y, Z) retained rank
 result.model        # the noise model it estimated along the way
 ```
 
-Standard white-noise MP-PCA is `camppca.denoise_mppca(dwi, mask)`, which returns the same
+Standard white-noise MPPCA is `camppca.denoise_mppca(dwi, mask)`, which returns the same
 result object with `model` unset.
 
 Estimation and denoising are separate, so the noise model can be inspected, reused, or
@@ -93,7 +93,7 @@ supplied from elsewhere:
 from camppca import estimate_noise_model, denoise_with_noise_model
 
 model = estimate_noise_model(dwi, mask, bvals=bvals)   # patch: dwidenoise's rule
-model.rho           # the correlation lag table — the pattern, no level
+model.rho           # the correlation pattern, no level
 model.d             # relative noise level per voxel
 model.patch_correlation(model.fitted_to["patch"])   # the n_vox × n_vox patch correlation, on demand
 
@@ -117,11 +117,11 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
   matches the MP theory the noise estimate rests on. `aggregate="mean"`
   (`--aggregate mean`) averages the overlapping patch reconstructions instead, and
   `stride` (`--stride N`) keeps a patch every N voxels per axis.
-- **σ̂ leaves out the noise the whole patch shares.** That part depends on an assumption
-  the estimate cannot check, so it is projected out. Under positive correlation σ̂ is a
+- **σ leaves out the noise the whole patch shares.** That part depends on an assumption
+  the estimate cannot check, so it is projected out. Under positive correlation σ is a
   little below the voxel's full noise level, about 1.6% on EDDEN's 2 mm data. For white
   noise the two are equal.
-- **With `--mask-only`, voxels outside the mask pass through unchanged**, and `sigma_hat`
+- **With `--mask-only`, voxels outside the mask pass through unchanged**, and `sigma`
   is zero there. Apply the mask yourself if you want zeros.
 - **NaN or inf in the input enter the fit as zero** and stay NaN or inf in the output,
   with a warning. Resampled images often carry NaN in the background.

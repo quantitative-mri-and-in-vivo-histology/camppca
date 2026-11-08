@@ -9,9 +9,9 @@ The processes are joblib's reusable loky workers: started on first use, kept war
 between calls, and able to run functions defined in a user's script. A worker that dies
 raises an error instead of hanging, and the next call starts fresh ones. They are not
 pinned to cores; on the EDDEN 0.9 mm image that cost nothing against the former pinned
-pool (151.5 s against 154.1 s for the MP-PCA pass).
+pool (151.5 s against 154.1 s for the MPPCA pass).
 
-Large arrays, the volume and the level field, reach the workers as joblib memory maps:
+Large arrays, the volume and the relative noise map, reach the workers as joblib memory maps:
 written once per pass to a file the workers map read-only. The file goes to the temp
 directory, so ``TMPDIR`` or ``JOBLIB_TEMP_FOLDER`` moves it, to local scratch on a
 cluster say. joblib's own default would be ``/dev/shm``, which pins the whole volume in
@@ -108,7 +108,7 @@ def run_voxels(fn, arrays, voxels, write, workers: int, tile: int):
     Args:
         fn: picklable ``fn(*arrays, voxels)`` returning a tuple of arrays whose first
             axis runs over the voxels it was given.
-        arrays: the large inputs, the volume and the level field say. In the pool they
+        arrays: the large inputs, the volume and the relative noise map say. In the pool they
             are memory-mapped once for all chunks.
         voxels: flat voxel indices, C order.
         write: ``write(sl, outputs)`` stores one chunk's outputs; ``sl`` slices

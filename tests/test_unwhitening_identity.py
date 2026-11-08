@@ -9,7 +9,7 @@ which is plain associativity. It never uses idempotency of the projector, so `f`
 0/1 keep-mask is irrelevant to exactness. A continuous shrinkage profile, or an arbitrary
 one, is equally exact.
 
-Hard thresholding is therefore a METHOD choice, made for sigma_hat sensitivity and because
+Hard thresholding is therefore a METHOD choice, made for sigma sensitivity and because
 shrinkage would optimize in the whitened metric while the output lands in data units. It
 is not a structural constraint. See CLAUDE.md.
 

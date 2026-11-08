@@ -9,7 +9,7 @@ rebuilds every patch whole and averages, at each voxel, all the patches that cov
 - ``stride`` keeps a patch center every ``stride`` voxels per axis; mask voxels the grid
   leaves uncovered, near a thin edge say, get their own centered patch;
 - plain mean, no weights;
-- ``sigma_hat`` is the root of the mean ``sigma_hat^2`` over the covering patches, and
+- ``sigma_mppca`` is the root of the mean ``sigma_mppca^2`` over the covering patches, and
   ``rank`` the mean rank.
 
 Each chunk of patch centers sums its rebuilt patches over its box: the x-slices its
@@ -93,9 +93,9 @@ class BoxSum:
         self.var = np.zeros(n, np.float64)
         self.rank = np.zeros(n, np.float64)
 
-    def add(self, index, recon, sigma_hat, rank):
+    def add(self, index, recon, sigma_mppca, rank):
         """Add one tile: ``index`` from :func:`~camppca.denoiser.gather.patch_tiles`,
-        ``recon`` (B, n_vox, N) rebuilt patches, ``sigma_hat`` and ``rank`` (B,)."""
+        ``recon`` (B, n_vox, N) rebuilt patches, ``sigma_mppca`` and ``rank`` (B,)."""
         _, Y, Z = self.dims
         px, py, pz = index
         flat = ((px - self.lo) * Y + py) * Z + pz
@@ -104,7 +104,7 @@ class BoxSum:
             f, keep = flat[b][inside[b]], inside[b]
             self.sum[f] += recon[b][keep]
             self.count[f] += 1
-            self.var[f] += float(sigma_hat[b]) ** 2
+            self.var[f] += float(sigma_mppca[b]) ** 2
             self.rank[f] += float(rank[b])
 
     def result(self):
@@ -139,13 +139,13 @@ class MeanAssembly:
         self.rank[x] += rank
 
     def finish(self):
-        """``(denoised, sigma_hat, rank)``; sigma_hat and rank zero outside the mask."""
-        sigma_hat = np.zeros(self.mask.shape, np.float32)
+        """``(denoised, sigma_mppca, rank)``; sigma_mppca and rank zero outside the mask."""
+        sigma_mppca = np.zeros(self.mask.shape, np.float32)
         rank = np.zeros(self.mask.shape, np.float32)
         for i in range(self.mask.shape[0]):
             m = self.count[i] > 0
             n = self.count[i][m]
             self.denoised[i][m] /= n[:, None].astype(np.float32)
-            sigma_hat[i][m] = np.sqrt(self.var[i][m] / n)
+            sigma_mppca[i][m] = np.sqrt(self.var[i][m] / n)
             rank[i][m] = self.rank[i][m] / n
-        return self.denoised, sigma_hat, rank
+        return self.denoised, sigma_mppca, rank

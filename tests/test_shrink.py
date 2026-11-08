@@ -148,7 +148,7 @@ def test_shrinkage_changes_the_weights_only(dataset):
     for results in (out, std):
         for k in ("gd", "lr"):
             assert np.array_equal(results[k].rank, results["hard"].rank)
-            assert np.array_equal(results[k].sigma_hat, results["hard"].sigma_hat)
+            assert np.array_equal(results[k].sigma, results["hard"].sigma)
             assert not np.array_equal(results[k].denoised[mask], results["hard"].denoised[mask])
         assert results["gd"].provenance["shrink"] == "gd"
     np.testing.assert_allclose(out["lr"].denoised, out["gd"].denoised, rtol=1e-4)  # float32

@@ -15,7 +15,7 @@ __all__ = ["DenoiseResult"]
 class DenoiseResult:
     """Denoised data plus the noise level the Marchenko-Pastur fit found.
 
-    ``sigma_hat`` is an OUTPUT. It is what the fit measured, in the input's units.
+    ``sigma`` is an OUTPUT. It is what the fit measured, in the input's units.
 
     Voxels outside the region denoised are passed through unchanged. Both denoisers write
     back the center voxel of each patch by default; ``aggregate="mean"`` averages the overlapping
@@ -25,9 +25,9 @@ class DenoiseResult:
     denoised: np.ndarray
     """(X, Y, Z, N) denoised data."""
 
-    sigma_hat: np.ndarray
+    sigma: np.ndarray
     """(X, Y, Z) fitted noise level, zero outside the region denoised. With
-    ``aggregate="mean"``, the root of the mean sigma_hat^2 over the patches covering each
+    ``aggregate="mean"``, the root of the mean sigma^2 over the patches covering each
     voxel."""
 
     rank: np.ndarray
@@ -35,7 +35,7 @@ class DenoiseResult:
     With ``aggregate="mean"``, the mean rank over the covering patches, as float32."""
 
     model: NoiseModel | None = None
-    """The noise model used, or None for standard MP-PCA, which does not use one."""
+    """The noise model used, or None for standard MPPCA, which does not use one."""
 
     provenance: dict = field(default_factory=dict)
     """What was run, for the record: patch, algorithm, and the rule applied."""

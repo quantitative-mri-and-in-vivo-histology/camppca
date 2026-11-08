@@ -1,4 +1,4 @@
-"""Standard MP-PCA denoising.
+"""Standard MPPCA denoising.
 
 Marchenko-Pastur PCA over a moving box patch, assuming the noise is independent across
 voxels.
@@ -12,7 +12,7 @@ Per masked voxel:
 
 Complex data are denoised as complex: the Gram matrix is ``X^H X`` and the rebuild uses the
 conjugated eigenvectors, both no-ops on real data. The Marchenko-Pastur law is the same,
-with the variance of a complex entry, twice that of one channel. So ``sigma_hat`` is divided
+with the variance of a complex entry, twice that of one channel. So ``sigma_mppca`` is divided
 by sqrt(2) on the way out and stays the noise level of one channel.
 
 Center-voxel only by default, with no averaging across the overlapping patches. The noise
@@ -25,7 +25,7 @@ The core eigendecomposes the ``n_vols x n_vols`` Gram matrix instead of taking t
 equals ``u[center] * s``, so projecting the center row onto the retained eigenvectors
 gives what reconstructing the whole patch and reading one row out would give.
 
-It runs the covariance-aware engine with no patch correlation and no level field, which is
+It runs the covariance-aware engine with no patch correlation and no relative noise map, which is
 exactly this method: see :func:`~camppca.denoiser.camppca.denoise_whitened`.
 
 References: Veraart 2016, Cordero-Grande 2019, Ades-Aron 2020.
@@ -50,7 +50,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, *, patch=None
                   algorithm: str = "cordero-grande", shrink: str = "hard",
                   workers: int | None = None, aggregate: str = "center",
                   stride: int = 1) -> DenoiseResult:
-    """Denoise a 4D volume with standard MP-PCA.
+    """Denoise a 4D volume with standard MPPCA.
 
     Args:
         dwi: (X, Y, Z, N) data, real or complex. Complex data are denoised as complex.
@@ -74,7 +74,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, *, patch=None
 
     Returns:
         A :class:`~camppca.denoiser.result.DenoiseResult` with ``model`` unset, since standard
-        MP-PCA does not use a noise model.
+        MPPCA does not use a noise model.
 
     Raises:
         ValueError: if ``dwi`` is not 4D, ``mask`` does not match its spatial shape,
@@ -95,13 +95,13 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, *, patch=None
             raise ValueError(
                 f"mask shape {mask.shape} does not match dwi spatial shape {dwi.shape[:3]}")
 
-    denoised, sigma_hat, rank = denoise_whitened(
+    denoised, sigma_mppca, rank = denoise_whitened(
         dwi, mask, None, patch=patch, algorithm=algorithm, shrink=tile_shrink,
         workers=workers, aggregate=aggregate, stride=stride)
     where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"
     return DenoiseResult(
-        denoised=denoised, sigma_hat=sigma_hat, rank=rank,
+        denoised=denoised, sigma=sigma_mppca, rank=rank,
         provenance=dict(method="mppca", version=__version__,
                         patch=tuple(int(v) for v in patch),
                         algorithm=algorithm, shrink=shrink, aggregate=aggregate,

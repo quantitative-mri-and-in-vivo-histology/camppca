@@ -1,7 +1,7 @@
-"""The loop kernel: refine rho until it explains the MP-PCA bulk of every patch at once.
+"""The loop: refine rho until it explains the MPPCA bulk of every patch at once.
 
-MP-PCA splits each whitened patch into kept directions and a bulk. Given a kernel, the
-bulk of every patch must have the covariance that kernel says. A patch's bulk covariance
+MPPCA splits each whitened patch into kept directions and a bulk. Given a correlation
+pattern, the bulk of every patch must have the covariance it says. A patch's bulk covariance
 is ``(I - Q_b) Sigma (I - Q_b)^T``, with ``Q_b`` the projector onto its kept directions in
 data units, so all patches together give one linear equation for ``Sigma``::
 
@@ -12,8 +12,8 @@ denoiser's own code (:func:`~camppca.denoiser.camppca._whiten_split`), and fits 
 equation with ``Sigma`` restricted to a stationary one: one value per lag class, the voxel
 pairs that share a lag up to its sign, ``h`` and ``-h``. 1098 classes at 7^3, against
 58,996 unknowns
-for a free ``Sigma``. The current kernel enters a round only through each patch's rank
-and kept directions. Directions a patch kept are NOT filled in with the current kernel's
+for a free ``Sigma``. The current pattern enters a round only through each patch's rank
+and kept directions. Directions a patch kept are NOT filled in with the current pattern's
 values; that is what keeps the loop from drifting.
 
 THE HOLE. Every patch keeps its smooth patch-mean pattern as signal, so the bulk barely
@@ -25,9 +25,9 @@ box, is held at zero.
 
 The fit used to solve for a free ``Sigma`` and average it over lags. There the hole is an
 eigenvalue of 1.1e-4 along the patch mean, and a converged solve divides by it: the
-kernel ran away on the crop, U 0.16 to 9 in eleven rounds. 30 Richardson steps hid that
+pattern ran away on the crop, sphericity 0.16 to 9 in eleven rounds. 30 Richardson steps hid that
 by stopping early. With the far classes pinned, the loop converges, and on the paper's
-phantom with a signal MP-PCA separates perfectly (one flat value per volume) it lands
+phantom with a signal MPPCA separates perfectly (one flat value per volume) it lands
 within 0.005 of the true correlation, against 0.014 for the converged free solve.
 
 ⚠ The split itself is biased, and no fit undoes it. Signal components near the MP edge
@@ -36,15 +36,16 @@ are smooth in space and read as extra correlation. On the paper's phantom (Hann 
 f = 0.5, g = 0.33, 80 volumes, 5^3) a round started at the truth gave a z correlation
 of 0.037 where the truth is 0, and the converged loop 0.051. Patch2Self overshot too.
 
-The rounds stop when U of the patch correlation changes by less than :data:`LOOP_TOL`.
-U closes about half its remaining gap each round, and a start far from the answer can dip
-and turn, so a looser tolerance stops early on a single small step. The table of the last
+The rounds stop when the sphericity of the patch correlation changes by less than
+:data:`LOOP_TOL`. It closes about half its remaining gap each round, and a start far
+from the answer can dip and turn, so a looser tolerance stops early on a single small
+step. The table of the last
 round is returned.
 
-Patch rows are divided by the guarded level field before whitening, exactly as the
+Patch rows are divided by the guarded relative noise map before whitening, exactly as the
 denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens. The
 MP rule (``algorithm``) and whether rows are divided by ``d`` (``noise_field``) are the
-denoiser's settings, passed in, so the kernel is fitted to the split it will serve.
+denoiser's settings, passed in, so the pattern is fitted to the split it will serve.
 
 Lags the patch never spans, such as ``|dx| > 2`` for a 3 x 7 patch whose table reaches
 lag 6, carry no information from the bulk. They keep the starting table's values.
@@ -54,8 +55,8 @@ float64: with the free solve the patch-mean direction of the next ``C`` was near
 singular, and float32 rounding spilled into the bulk and ran the ranks to the maximum.
 The pinned fit keeps the smallest eigenvalue of ``C`` near 0.2 to 0.4. Against a float64
 split the table moved by at most 2.4e-5 on the crop and 1.3e-5 on the paper's phantom,
-with U the same to four digits; 1% of patch ranks flipped on near-tied MP cuts. The fit
-runs in float32 too, within 1e-4 of a float64 least squares.
+with the sphericity the same to four digits; 1% of patch ranks flipped on near-tied MP
+cuts. The fit runs in float32 too, within 1e-4 of a float64 least squares.
 """
 
 import warnings
@@ -82,10 +83,10 @@ from . import (
     _white_rho,
 )
 
-__all__ = ["loop_kernel"]
+__all__ = ["fit_rho"]
 
 N_CENTERS = 3000        # sampled patches the bulk is pooled over
-LOOP_TOL = 1e-3         # stop when U of C changes by less than this between rounds
+LOOP_TOL = 1e-3         # stop when C's sphericity changes by less than this per round
 MAX_ROUNDS = 20
 LOOP_CHUNKS = 32        # fixed chunks of sampled patches, so workers cannot change the sums
 FIT_TOL = 1e-5          # the fit stops at this gradient, relative to its start
@@ -96,16 +97,16 @@ PRODUCT_CHUNK = 64      # patches per thread task
 _product_pools = {}     # one thread pool per thread count, kept: starting one costs time
 
 
-def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande",
+def fit_rho(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande",
                 noise_field=True, workers=None, sample=None):
-    """Refine a kernel until it is consistent with the MP-PCA bulk of the patches.
+    """Refine rho until it is consistent with the MPPCA bulk of the patches.
 
     Args:
         dwi: (X, Y, Z, N) data. Every volume enters, as every volume enters the denoiser.
         mask: (X, Y, Z) bool.
-        d: (X, Y, Z) level field. Guarded by ``_effective_d`` as the denoiser guards it.
+        d: (X, Y, Z) relative noise map. Guarded by ``_effective_d`` as the denoiser guards it.
         rho_start: (2*lag+1, 2*lag+1, dzmax+1) table to start from.
-        patch: the patch the kernel must serve, as a length-3 int array.
+        patch: the patch the pattern must serve, as a length-3 int array.
         lag: in-plane reach of ``rho_start``.
         seed: seeds the choice of patch centers.
         algorithm: the MP rule the denoiser will cut with.
@@ -120,7 +121,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
     Returns:
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
         lag and ``rho_start``'s values at lags the patch never spans, and a dict with
-        ``rounds``, ``converged``, ``u_kernel`` (U of the returned table's patch
+        ``rounds``, ``converged``, ``sphericity`` (that of the returned table's patch
         correlation), ``n_centers`` and ``fallback``: None, or why the table fell back
         to white noise because a round's fit was not a valid correlation.
 
@@ -167,7 +168,7 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
             # Check before projecting: whitening by a near-singular C overflowed float32.
             smallest = float(np.linalg.eigvalsh(_table_C(rho, patch, lag))[0])
             if smallest < MIN_EIGENVALUE:
-                fallback = (f"the loop kernel is not a valid correlation after round "
+                fallback = (f"the loop's correlation pattern is not valid after round "
                             f"{rounds}: the smallest eigenvalue of C is {smallest:.1e}, "
                             f"below {MIN_EIGENVALUE:g}. {FALLBACK_REASON}")
                 warnings.warn(fallback, RuntimeWarning, stacklevel=3)
@@ -181,20 +182,21 @@ def loop_kernel(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-gr
                 break
             u_prev = u
         if not converged and fallback is None:
-            warnings.warn(f"loop kernel did not converge in {MAX_ROUNDS} rounds; U changed "
-                          f"by {change:.4f} in the last one, against a tolerance "
+            warnings.warn(f"the loop did not converge in {MAX_ROUNDS} rounds; the "
+                          f"sphericity changed by {change:.4f} in the last one, against a "
+                          f"tolerance "
                           f"of {LOOP_TOL}", RuntimeWarning, stacklevel=3)
     rho = rho.copy()
     unspanned = ~_spanned(patch, lag, dzmax)
     rho[unspanned] = rho_start[unspanned]
     info = dict(rounds=rounds, converged=converged, fallback=fallback,
-                u_kernel=_sphericity_excess(_build_C(rho, patch, lag)),
+                sphericity=_sphericity_excess(_build_C(rho, patch, lag)),
                 n_centers=int(centers[0].size))
     return rho, info
 
 
 def _sphericity_excess(C):
-    """U = n tr(C^2) / tr(C)^2 - 1 of a unit-diagonal C; zero when C is white."""
+    """The sphericity n tr(C^2) / tr(C)^2 - 1 of a unit-diagonal C; zero when C is white."""
     return float((C ** 2).sum() / len(C) - 1.0)
 
 
@@ -254,7 +256,7 @@ def _split_chunk(patches, C, algorithm, tile=TILE):
 
     Returns:
         ``(bulk, parts, rank)``: (n_vox, n_vox) whitened bulk summed over the batch, each
-        ``Rw Rw^T / (N sigma_hat^2)``; a list of each patch's kept basis ``U_b``
+        ``Rw Rw^T / (N sigma_mppca^2)``; a list of each patch's kept basis ``U_b``
         (n_vox, rank_b); (B,) ranks.
     """
     n_b, n_vox, n_vols = patches.shape
@@ -263,7 +265,7 @@ def _split_chunk(patches, C, algorithm, tile=TILE):
     bulk = np.zeros((n_vox, n_vox))
     parts, ranks = [], []
     for start in range(0, n_b, tile):
-        whitened, evals, evecs, rank, sigma_hat = _whiten_split(
+        whitened, evals, evecs, rank, sigma_mppca = _whiten_split(
             np.asarray(patches[start:start + tile], np.float32), whitener, n_small, n_large,
             algorithm)
         r = int(rank.max())
@@ -271,7 +273,7 @@ def _split_chunk(patches, C, algorithm, tile=TILE):
         keep = (np.arange(r)[None, :] < rank[:, None])[:, None, :]
         coords = np.where(keep, np.matmul(whitened, V), 0.0)              # (b, n_vox, r)
         resid = whitened - np.matmul(coords, V.transpose(0, 2, 1))
-        scaled = resid / (np.sqrt(n_vols) * sigma_hat)[:, None, None]
+        scaled = resid / (np.sqrt(n_vols) * sigma_mppca)[:, None, None]
         flat = scaled.transpose(1, 0, 2).reshape(n_vox, -1).astype(np.float64)
         bulk += flat @ flat.T
         U = coords / np.sqrt(np.maximum(evals[:, :r], 1e-12))[:, None, :]
@@ -374,7 +376,7 @@ def _fit_table(S, factors, C, patch, lag, dzmax, start, threads=PRODUCT_THREADS)
     built in 0.25 s. Dropping the removal altogether left 125 and 19 steps.
 
     Returns:
-        the lag table, see :func:`~camppca.patch.table_index`, with unit zero lag. Lags
+        the correlation pattern, see :func:`~camppca.patch.table_index`, with unit zero lag. Lags
         the patch never spans are 0.
     """
     whitener64 = sqrtm_psd(C, -0.5)

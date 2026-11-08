@@ -45,8 +45,8 @@ def mp_threshold(eigenvalues: np.ndarray, n_small: int, n_large: int,
         algorithm: one of :data:`ALGORITHMS`.
 
     Returns:
-        ``(rank, sigma_hat)``: (B,) int32 count of retained components, and (B,) float
-        noise level implied by the discarded ones. ``sigma_hat`` is floored at the dtype
+        ``(rank, sigma_mppca)``: (B,) int32 count of retained components, and (B,) float
+        noise level implied by the discarded ones. ``sigma_mppca`` is floored at the dtype
         epsilon so it is always positive and finite.
 
     Raises:
@@ -77,6 +77,6 @@ def mp_threshold(eigenvalues: np.ndarray, n_small: int, n_large: int,
     rank = np.where(np.any(crossed, axis=1), np.argmax(crossed, axis=1), n_small - 1)
 
     sigma_sq = np.take_along_axis(predicted, rank[:, None], axis=1)[:, 0]
-    sigma_hat = np.sqrt(np.maximum(sigma_sq, 0.0))
-    sigma_hat = np.where((sigma_hat > 0) & np.isfinite(sigma_hat), sigma_hat, eps)
-    return rank.astype(np.int32), sigma_hat.astype(eigenvalues.dtype)
+    sigma_mppca = np.sqrt(np.maximum(sigma_sq, 0.0))
+    sigma_mppca = np.where((sigma_mppca > 0) & np.isfinite(sigma_mppca), sigma_mppca, eps)
+    return rank.astype(np.int32), sigma_mppca.astype(eigenvalues.dtype)
