@@ -21,7 +21,7 @@ feature lands (whiteness before/after, noise-only spectrum against the MP edge, 
 index.html) it writes into the SAME directory -- no second flag, no rename.
 
 `--model` (a reloadable NoiseModel npz) is deliberately NOT here. Estimation is seconds
-against a minutes-long denoise and is deterministic given the seed, so re-estimating is
+against a minutes-long denoise and is deterministic, so re-estimating is
 identical; the only strong reason is cross-dataset rho transfer, which is a research
 activity for now. Purely additive whenever that changes.
 """

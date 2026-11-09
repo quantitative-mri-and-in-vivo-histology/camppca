@@ -99,7 +99,7 @@ def test_the_loop_lands_on_the_same_pattern_from_a_white_start(dataset, model):
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
 
-    from_white, info = loop.fit_rho(dwi, mask, model.d, white, PATCH, LAG, seed=0)
+    from_white, info = loop.fit_rho(dwi, mask, model.d, white, PATCH, LAG)
 
     assert info["converged"]
     assert np.abs(from_white - model.rho).max() < 0.01
@@ -142,9 +142,16 @@ def _patch_projectors(factors, C):
 
 def test_the_batched_split_is_the_per_patch_algebra(dataset, model):
     dwi, _, mask = dataset
-    centers = loop._sample_centers(mask, PATCH, np.random.default_rng(1))
-    patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)[:40]
+    centers = loop._sample_centers(mask, PATCH)[0]
+    patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)
     C = model.patch_correlation(PATCH)
+    # Patches with a clear gap at the cut. Where the kept and dropped singular values are
+    # within 10%, float32 and float64 disagree on the projector by up to 8e-3, which is
+    # rounding, not algebra.
+    rank = loop._split(patches, C, "cordero-grande")[1].rank
+    s = np.linalg.svd(sqrtm_psd(C, -0.5) @ patches.astype(np.float64), compute_uv=False)
+    gap = s[np.arange(len(s)), rank - 1] / s[np.arange(len(s)), rank]
+    patches = patches[gap > 1.1][:40]
 
     S, factors = loop._split(patches, C, "cordero-grande")
     S_ref, Q_ref = _reference_split(patches, C, factors.rank)
@@ -159,7 +166,44 @@ def test_a_mask_too_thin_for_the_patch_is_refused():
     mask = np.zeros((20, 20, 6), bool)
     mask[3:17, 3:17, 2:4] = True               # two slices, the patch needs three
     with pytest.raises(ValueError, match="no mask voxel has its whole"):
-        loop._sample_centers(mask, PATCH, np.random.default_rng(0))
+        loop._sample_centers(mask, PATCH)[0]
+
+
+def _grid_mask():
+    mask = np.zeros((60, 60, 30), bool)
+    mask[3:57, 3:57, 2:28] = True              # 800 whole 5 x 5 x 3 tiles
+    return mask
+
+
+def test_the_grid_tiles_the_mask_with_whole_patches():
+    mask = _grid_mask()
+    centers, stride = loop._sample_centers(mask, PATCH)
+
+    assert stride == tuple(PATCH)
+    cover = np.zeros(mask.shape, int)
+    for c in np.array(centers).T:
+        cover[tuple(slice(v - h, v + h + 1) for v, h in zip(c, PATCH // 2, strict=True))] += 1
+    assert centers[0].size == 800
+    assert cover.max() == 1, "patches at stride = patch share no voxel"
+    assert not cover[~mask].any(), "every patch lies inside the mask"
+    np.testing.assert_array_equal(centers, loop._sample_centers(mask, PATCH)[0])
+
+
+def test_the_grid_widens_above_the_cap_and_narrows_below_the_floor(monkeypatch):
+    mask = _grid_mask()
+    monkeypatch.setattr(loop, "MAX_CENTERS", 300)
+    centers, stride = loop._sample_centers(mask, PATCH)
+    assert centers[0].size <= 300 and all(s > p for s, p in zip(stride, PATCH, strict=True))
+
+    monkeypatch.setattr(loop, "MAX_CENTERS", 5000)
+    monkeypatch.setattr(loop, "MIN_CENTERS", 2000)
+    centers, stride = loop._sample_centers(mask, PATCH)
+    assert centers[0].size >= 2000 and all(s < p for s, p in zip(stride, PATCH, strict=True))
+
+    tiny = np.zeros((20, 20, 10), bool)
+    tiny[6:14, 6:14, 2:7] = True               # 48 eligible centers, fewer than the floor
+    centers, stride = loop._sample_centers(tiny, PATCH)
+    assert stride == (1, 1, 1) and centers[0].size == 48
 
 
 def test_lags_the_patch_never_spans_keep_the_white_start(dataset):
@@ -182,7 +226,7 @@ def test_the_convergence_warning_reports_the_last_change(dataset, model, monkeyp
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
     with pytest.warns(RuntimeWarning, match="did not converge") as caught:
-        loop.fit_rho(dwi, mask, model.d, white, PATCH, LAG, seed=0)
+        loop.fit_rho(dwi, mask, model.d, white, PATCH, LAG)
     assert "by 0.0000" not in str(caught[0].message)
 
 
@@ -242,7 +286,7 @@ def test_the_fit_is_the_pinned_least_squares(dataset, model):
     """The float32 conjugate-gradient fit against a dense float64 least squares built one
     patch at a time, in whitened units, with the far-class mean held at zero."""
     dwi, _, mask = dataset
-    centers = loop._sample_centers(mask, PATCH, np.random.default_rng(2))
+    centers = loop._sample_centers(mask, PATCH)[0]
     patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)[:300]
     C = model.patch_correlation(PATCH)
     S, factors = loop._split(patches, C, "cordero-grande")

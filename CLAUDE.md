@@ -125,13 +125,23 @@ with `d` = standard MPPCA's σ pooled 3³, gave the same pattern and median σ w
 ### The loop
 
 `estimate_noise_model` starts `rho` from white noise (1 at lag 0) and refines it until it
-explains the MPPCA bulk of 3000 sampled patches at once (`noise_model/loop.py`). It fits
+explains the MPPCA bulk of its patches at once (`noise_model/loop.py`). It fits
 to the denoiser's own split: `algorithm` and `noise_field` are passed to
 `estimate_noise_model`, stored with the patch in `NoiseModel.fitted_to`, and a mismatch
 at denoising warns. The denoiser reads `fitted_to`, never `provenance`, which is only a
 record: a second estimator sets `fitted_to` or leaves keys out.
 Every volume enters, b0s included, because the denoiser whitens them all. `bvals` only
 picks the b0s the default mask is drawn from.
+
+The patches lie on a grid (`_sample_centers`), each wholly inside the mask, with stride
+equal to the patch, so they tile the mask without overlap. The grid's phase is the one
+with the most centers. Above 5000 the stride widens, below 500 it narrows to overlap,
+down to every voxel. No seed. EDDEN 0.9 mm gets 4579 patches, 2 mm 1563. Measured
+2026-11-09 (`docs/local/2026-11-09_loop_sampling.md`): σ moved by at most 0.1% above a
+few hundred patches, ρ stopped improving at about 700 patches of 7³, and at 2 mm
+overlapping centers up to 7060 came no closer than the tiling. A grid was no more
+precise than random centers at the same count. Patches reaching outside the mask lowered
+the sphericity a little and gained nothing. Until then the loop drew 3000 random centers.
 
 `d` is standard MPPCA's σ pooled 3³ (`whitened_level` with `C=None`, eigenvalues only).
 ⚠ The pooling is needed: unpooled, the rank grain under strong correlation made the final
@@ -240,7 +250,7 @@ Breaking any of these corrupts results without an error:
   correlation, smallest eigenvalue of its `C` below `MIN_EIGENVALUE`, checked before
   projecting. It warns, and provenance records `fallback`. Cause seen: in the real part
   of data whose phase was never stabilized, the signal is higher rank, part of it falls
-  below the MP edge, and pooled over 3000 patches that smooth signal reads as strong
+  below the MP edge, and pooled over the loop's patches that smooth signal reads as strong
   correlation no table explains. `_build_C` then projected to a C with eigenvalue 1e-9,
   the next round whitened by up to 3e4, and float32 overflowed (EDDEN 2 mm raw real
   part, 2026-11-05). camppca with a white model is MPPCA with the relative noise map.

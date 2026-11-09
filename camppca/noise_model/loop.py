@@ -85,7 +85,8 @@ from . import (
 
 __all__ = ["fit_rho"]
 
-N_CENTERS = 3000        # sampled patches the bulk is pooled over
+MAX_CENTERS = 5000      # patch centers the bulk is pooled over, at most
+MIN_CENTERS = 500       # fewer tiles than this and the grid narrows, so patches overlap
 LOOP_TOL = 1e-3         # stop when C's sphericity changes by less than this per round
 MAX_ROUNDS = 20
 LOOP_CHUNKS = 32        # fixed chunks of sampled patches, so workers cannot change the sums
@@ -97,7 +98,7 @@ PRODUCT_CHUNK = 64      # patches per thread task
 _product_pools = {}     # one thread pool per thread count, kept: starting one costs time
 
 
-def fit_rho(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande",
+def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
                 noise_field=True, workers=None, sample=None):
     """Refine rho until it is consistent with the MPPCA bulk of the patches.
 
@@ -108,13 +109,12 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande
         rho_start: (2*lag+1, 2*lag+1, dzmax+1) table to start from.
         patch: the patch the pattern must serve, as a length-3 int array.
         lag: in-plane reach of ``rho_start``.
-        seed: seeds the choice of patch centers.
         algorithm: the MP rule the denoiser will cut with.
         noise_field: whether the denoiser will divide rows by ``d``.
         workers: CPU processes the sampled patches are split over each round, see
             :mod:`camppca.pool`. Each gathers and splits its own share. The fit stays
             in this process.
-        sample: (X, Y, Z) bool, the voxels patch centers are drawn from, or None for the
+        sample: (X, Y, Z) bool, the voxels patch centers are taken from, or None for the
             mask voxels whose level passes the floor of ``_effective_d``. The level rounds
             pass the first one, so every round fits the same patches.
 
@@ -122,8 +122,9 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
         lag and ``rho_start``'s values at lags the patch never spans, and a dict with
         ``rounds``, ``converged``, ``sphericity`` (that of the returned table's patch
-        correlation), ``n_centers`` and ``fallback``: None, or why the table fell back
-        to white noise because a round's fit was not a valid correlation.
+        correlation), ``n_centers``, ``stride`` (of the grid of patch centers, see
+        :func:`_sample_centers`) and ``fallback``: None, or why the table fell back to
+        white noise because a round's fit was not a valid correlation.
 
     Raises:
         ValueError: if no mask voxel has its whole patch inside the mask, among the
@@ -135,7 +136,7 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande
     # Patches with a level below the floor hold near-constant data, which the fit cannot use.
     if sample is None:
         sample = _good_level(d, mask)
-    centers = _sample_centers(sample, patch, np.random.default_rng(seed))
+    centers, stride = _sample_centers(sample, patch)
     levels = _effective_d(d, mask) if noise_field else np.ones(mask.shape, np.float32)
 
     # Fixed chunks, pooled in chunk order, so the model does not depend on ``workers``.
@@ -191,7 +192,7 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, seed, algorithm="cordero-grande
     rho[unspanned] = rho_start[unspanned]
     info = dict(rounds=rounds, converged=converged, fallback=fallback,
                 sphericity=_sphericity_excess(_build_C(rho, patch, lag)),
-                n_centers=int(centers[0].size))
+                n_centers=int(centers[0].size), stride=stride)
     return rho, info
 
 
@@ -200,15 +201,52 @@ def _sphericity_excess(C):
     return float((C ** 2).sum() / len(C) - 1.0)
 
 
-def _sample_centers(mask, patch, rng):
-    """Up to :data:`N_CENTERS` mask voxels whose whole patch lies inside the mask."""
+def _sample_centers(mask, patch):
+    """Patch centers on a grid, each patch wholly inside the mask.
+
+    The stride is the patch, so the patches tile the mask without overlap and each brings
+    its own noise. Of the grid's phases the one with the most centers is taken. Above
+    :data:`MAX_CENTERS` the stride widens by one voxel per axis until under it. Below
+    :data:`MIN_CENTERS` it narrows until over it, down to every voxel.
+
+    Measured 2026-11-09 on EDDEN 0.9, 1.5 and 2 mm (``docs/local/2026-11-09_loop_sampling.md``):
+    sigma moved by at most 0.1% above a few hundred patches, and rho stopped improving at
+    about 700 patches of 7^3. At 2 mm and 5^3 overlapping centers beyond the tiling, up
+    to 7060, came no closer than the tiling's 1508. A grid was no more precise than random
+    centers at the same count. It ties the count to the mask and needs no seed. Patches
+    reaching outside the mask lowered the sphericity a little and gained nothing.
+
+    Returns:
+        ``(centers, stride)``: the centers as index arrays, C order, and the stride used.
+    """
     eligible = binary_erosion(mask, structure=np.ones(tuple(patch), bool), border_value=0)
-    idx = np.flatnonzero(eligible)
-    if idx.size == 0:
+    if not eligible.any():
         raise ValueError(f"no mask voxel has its whole {tuple(int(v) for v in patch)} "
                          "patch inside the mask, so the loop has no patch to fit")
-    pick = np.sort(rng.choice(idx, size=min(N_CENTERS, idx.size), replace=False))
-    return np.unravel_index(pick, mask.shape)
+    stride = tuple(int(v) for v in patch)
+    centers = _grid(eligible, stride)
+    if centers.sum() > MAX_CENTERS:
+        while centers.sum() > MAX_CENTERS:
+            stride = tuple(s + 1 for s in stride)
+            centers = _grid(eligible, stride)
+        return np.nonzero(centers), stride
+    while centers.sum() < MIN_CENTERS and max(stride) > 1:
+        stride = tuple(max(s - 1, 1) for s in stride)
+        centers = _grid(eligible, stride)
+    return np.nonzero(centers), stride
+
+
+def _grid(eligible, stride):
+    """The eligible voxels on the grid of this stride, at the phase that keeps the most."""
+    best, keep = -1, None
+    for phase in np.ndindex(*stride):
+        on = tuple(slice(p, None, s) for p, s in zip(phase, stride, strict=True))
+        count = int(eligible[on].sum())
+        if count > best:
+            best, keep = count, on
+    grid = np.zeros_like(eligible)
+    grid[keep] = eligible[keep]
+    return grid
 
 
 def _gather(dwi, d_eff, centers, patch):
