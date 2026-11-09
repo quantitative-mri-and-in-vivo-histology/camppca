@@ -244,7 +244,8 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     ``patch``  the patch this model must be able to serve; sets the lag rho covers.
                None picks dwidenoise's default, see :func:`~camppca.patch.default_patch`.
     ``lowb``   b-value at or below which a volume counts as a b0.
-    ``seed``   picks the loop's patch centers, so re-estimating gives an identical model.
+    ``seed``   picks the voxels the phase check of complex data samples.  The loop's
+               patch centers lie on a grid, so re-estimating gives an identical model.
     ``pool``   box width, in voxels, the relative noise map ``d`` is averaged over.  Averaged in
                variance, over mask voxels only; see :func:`_pool_level`.  1 disables it.
     ``algorithm``, ``noise_field``  the denoiser settings the model is fitted to: the MP rule,
@@ -330,7 +331,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     else:
         d = mask.astype(np.float32)
     sample = _good_level(d, mask)          # the same patches in every level round
-    rho, info = fit_rho(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
+    rho, info = fit_rho(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
                             noise_field=noise_field, workers=workers, sample=sample)
 
     rounds_run, change, spread = 0, None, None
@@ -349,7 +350,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
         if change < LEVEL_TOL:
             break
         d = new
-        rho, info = fit_rho(dwi, mask, d, rho, patch, lag, seed, algorithm=algorithm,
+        rho, info = fit_rho(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
                                 noise_field=noise_field, workers=workers, sample=sample)
         if info["fallback"]:
             break
@@ -360,6 +361,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
                 sphericity=info["sphericity"], n_centers=info["n_centers"],
+                loop_stride=info["stride"],
                 loop_algorithm=algorithm, loop_noise_field=bool(noise_field),
                 level_rounds=level_rounds, level_rounds_run=rounds_run,
                 fallback=info["fallback"])

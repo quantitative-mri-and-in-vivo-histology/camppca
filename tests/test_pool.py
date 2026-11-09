@@ -101,10 +101,10 @@ def test_the_pooled_loop_is_the_serial_loop(dataset, model):
     dwi, mask = dataset
     white = np.zeros_like(model.rho)
     white[LAG, LAG, 0] = 1.0
-    serial, _ = loop.fit_rho(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
+    serial, _ = loop.fit_rho(dwi, mask, model.d, white, np.array(PATCH), LAG,
                                  workers=1)
     for workers in (2, 3):
-        pooled, info = loop.fit_rho(dwi, mask, model.d, white, np.array(PATCH), LAG, 0,
+        pooled, info = loop.fit_rho(dwi, mask, model.d, white, np.array(PATCH), LAG,
                                         workers=workers)
         np.testing.assert_array_equal(pooled, serial)
     assert info["converged"]
