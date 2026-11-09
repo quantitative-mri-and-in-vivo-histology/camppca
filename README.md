@@ -122,7 +122,7 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
 ## Notes
 
 - **The work runs in a pool of CPU processes**, one per physical core, through joblib.
-  On a 16-core machine that was faster than an RTX 4060 Ti. `workers=1` (`--workers 1`)
+  `workers=1` (`--workers 1`)
   runs everything in one process. `CAMPPCA_WORKERS` sets the default, and a container's
   CPU quota caps it. The image reaches the workers as a memory-mapped file in
   the temp directory; set `TMPDIR` or `JOBLIB_TEMP_FOLDER` to move it, to local scratch on
@@ -139,8 +139,8 @@ Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
   is zero there. Apply the mask yourself if you want zeros.
 - **NaN or inf in the input enter the fit as zero** and stay NaN or inf in the output,
   with a warning. Resampled images often carry NaN in the background.
-- **Keep ≳ 50 volumes in the pooled patch.** The noise-level estimator degenerates as the
-  retained rank approaches `min(P, N)`.
+- **Keep ≳ 50 volumes.** The noise-level estimator degenerates as the retained rank
+  approaches the smaller of the patch's voxel count and the volume count.
 
 Phase stabilization follows Eichner et al., NeuroImage 2015;122:373-384, and Sprenger et
 al., Magn Reson Med 2017;77:559-570. The EDDEN data and its preprocessing are from
