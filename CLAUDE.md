@@ -27,12 +27,7 @@ MPPCA (whiten → MPPCA → unwhiten); phase stabilization of complex data, as a
 before denoising; complex denoising; the CLI around them.
 
 **Out:** the warp/alignment lane (reusing FSL eddy displacement fields to denoise in a
-common anatomical frame) — a separate project. The research repo this is ported from is
-called `warp_denoise` for historical reasons; nothing warp-related comes with it.
-
-Being ported from `~/workspace/cdmri_26_adaptive_denoising` @ `ec08de0`. Verbatim source
-copies live in `reference/` (gitignored scratch). Brief: `docs/local/port_core_brief.md`.
-File:line citations below refer to those **reference** files, not to ported modules.
+common anatomical frame) — a separate project.
 
 ## The noise model
 
@@ -79,23 +74,16 @@ stays in the data for the per-patch MP fit to find.
 
 | paper | code | is |
 |---|---|---|
-| M | `P` = prod(patch) | voxels in a patch |
-| N | `N` | volumes |
-| — | `V` | mask voxels |
+| M | `n_vox` = prod(patch) | voxels in a patch |
+| N | `n_vols` | volumes |
+| — | `n_mask` | mask voxels |
 
-In code these are spelled `n_vox`, `n_vols`, `n_mask` — the bare letters were
-renamed once the self-test was green. `Mp`/`Np` became **`n_small`/`n_large`**: the
-reference had `Mp, Np = min(P, N), max(P, N)`, the *sorted* pair, so under this notation
-the old names read as patch-M and patch-N, which they never meant.
+In code these are spelled `n_vox`, `n_vols`, `n_mask`. The sorted pair is
+`n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)`.
 
-⚠ **`P` is the retained rank, as in the paper.** The reference code used `P` for the
-voxels in a patch, now `n_vox`. No other `P` in code or docs: the flat-mode projector is
-written out as `(I − uuᵀ)`. `U` is the left singular vectors, as in the paper. The
-sphericity is named in words.
-
-Worked example: the story doc's "M = 125, N = 34" (paper convention: 125 voxels,
-34 volumes) lands in code as `Mp = 34`, `Np = 125`. "Rank → Mp" means rank approaching
-the 34 volumes.
+⚠ **`P` is the retained rank, as in the paper.** No other `P` in code or docs: the
+flat-mode projector is written out as `(I − uuᵀ)`. `U` is the left singular vectors, as
+in the paper. The sphericity is named in words.
 
 ## The seam
 
@@ -113,14 +101,9 @@ output was bit for bit the same as the old separate copy in 228 cases (2026-11-0
 split goes through `_whiten_split`: both denoisers, the level pass (eigenvalues only) and
 the loop.
 
-Both halves are numpy and scipy, CPU only. JAX was removed 2026-11-03: per-patch
-eigendecompositions over a pool of CPU processes beat the GPU on a 16-core host. The
-estimator reuses the engine's own split.
-
-Patch2Self was removed from the estimator 2026-11-02 (spec:
-`docs/local/2026-11-02_no_p2s_estimator_spec.md`). Starting the loop from white noise,
-with `d` = standard MPPCA's σ pooled 3³, gave the same pattern and median σ within
-0.3% on four datasets. The P2S code moves to the paper repo, which still scores whiteness with it.
+Both halves are numpy and scipy, CPU only: per-patch eigendecompositions over a pool of
+CPU processes beat the GPU. The estimator reuses the engine's own split. Patch2Self is
+not part of the estimator: starting the loop from white noise gave the same pattern.
 
 ### The loop
 
@@ -210,10 +193,11 @@ two large values: near convergence it is a millionth of the likelihood. Write-up
   float32 resolution, and the denoiser returned σ 0. Damped steps, mixing with white
   noise and a margin above the floor each failed one of the phantoms.
 
-⚠ **The hole.** Every patch keeps its patch-mean pattern
-as signal, so the bulk cannot see one direction: the same value added to every lag. It
-is fixed by holding the mean over the far lag classes, those on the edge of the patch's
-lag box, at zero. Do not go back to a free solve of `Sigma` with lag averaging: there the
+⚠ **The hole.** Every patch keeps its patch-mean pattern as signal, so the bulk cannot
+see one direction: among covariances, the same value added to every lag. With the zero
+lag held at 1 it becomes `1 − ρ` at each lag. It is fixed by holding the mean over the
+far lag classes, those on the edge of the patch's lag box, at its starting value: zero
+for white noise and for every table the loop returns. Do not go back to a free solve of `Sigma` with lag averaging: there the
 hole is a near-null eigenvalue (1.1e-4 on the crop), a converged solve divides by it, and
 the pattern ran away (sphericity 0.16 to 9). The old 30 Richardson steps only hid that by stopping
 early.
@@ -255,17 +239,16 @@ file would need a format kept readable across versions.
   the share of noise patches keeping a component, which needs about 20,000 draws. No
   shell split: b1000 against b2000 differed by up to 1.6%, the split's bias growing with
   the signal (`docs/local/2026-11-09_qc_trial.md`).
-- EDDEN 2026-11-09, defaults: 2 mm, check 20 s against an estimate of 4 s, regions up to
-  0.37% against 0.30% random, volume halves within 0.15%. 0.9 mm, check 185 s against
-  39 s, six of eight regions beyond twice the random subsets, at 0.25 to 0.38% against 0.06%, low z above
-  and high z below, as in the trial.
-  Volume halves within 0.13%. Real, and small. The synthetic noise runs in the worker
-  pool, one task per comparison: serial it was 80 s of the 0.9 mm check.
+- EDDEN 2026-11-09, defaults: 2 mm, regions up to 0.37% against 0.30% random, volume
+  halves within 0.15%. 0.9 mm, six of eight regions beyond twice the random subsets, at
+  0.25 to 0.38% against 0.06%, low z above and high z below, as in the trial. Volume
+  halves within 0.13%. Real, and small. The synthetic noise runs in the worker pool,
+  one task per comparison.
 
 ### One whitener
 
 The paper and the code both whiten with `W = C^(-1/2) D^(-1)`: divide rows by `d`, then
-apply `C^(-1/2)` (`whitened.py:166`, `:200-206` in the reference). `WᵀW = (DCD)^(-1)`, so
+apply `C^(-1/2)`. `WᵀW = (DCD)^(-1)`, so
 the symmetric `(DCD)^(-1/2)` would give the same Gram, spectrum, MP threshold, retained
 subspace and reconstruction. Older paper drafts used it.
 
@@ -282,6 +265,7 @@ subspace and reconstruction. Older paper drafts used it.
         camppca.py         covariance-aware MPPCA — the method, and the one engine
         mppca.py           standard white-noise MPPCA: the engine with C = None
         mp_threshold.py    mp_threshold() — the Marchenko-Pastur cutoff rule
+        shrink.py          the opt-in shrinkers, shrink="gd" | "lr"
         gather.py          patch extraction, a tile at a time
         aggregate.py       patch averaging, the opt-in aggregate="mean"
         spectrum.py        batched eigh through scipy's LAPACK, descending
@@ -306,8 +290,7 @@ or `camppca.noise_model.` prefix.
 
 - **Never `estimate` or `model` bare** — they do not say *what* is estimated or modeled.
   It is always the **noise model**: `estimate_noise_model`, `denoise_with_noise_model`.
-  This deviates from the port brief's frozen `estimate_noise` / `denoise_with_model`,
-  deliberately.
+  Not `estimate_noise` or `denoise_with_model` either.
 - `mp_threshold.py`, `gather.py` and `result.py` sit in `denoiser/`. `patch.py` sits
   above it because the loop needs it too.
 - `loop.py` imports denoiser internals, and `denoiser/__init__.py` imports
@@ -520,9 +503,6 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
 - **Every full-volume pass and the loop's split run in worker processes by default**
   (`pool.py`, joblib's loky workers, `workers=None` = one per physical core, `workers=1`
   = in-process).
-  Measured 2026-11-03 on the EDDEN crop at 297 volumes and 7³, 16 cores: estimate 17 s
-  (6 loop rounds), camppca denoise 8 s, MPPCA denoise 5 s. main with P2S and JAX took
-  74 s for the estimate.
   - Processes, not threads: scipy's `eigh` holds the GIL, and OpenBLAS queues callers
     from several threads (5.9x at 8 threads, 2.7x at 16, called through ctypes). MKL
     scales across threads but would be a large x86-only dependency, and only ties.
@@ -537,18 +517,10 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
   - A pooled pass is the serial pass bit for bit. So is the loop: its sampled patches go
     in 32 fixed chunks (`LOOP_CHUNKS`), pooled in chunk order. When the chunks followed
     the worker count, a near-tied rank moved `rho` by about 1e-4.
-  - EDDEN 0.9 mm (228 x 228 x 132, 199 volumes, 2.0M brain voxels, 7³), whole camppca
-    pipeline: 298 s (estimate 103 s, of which the level pass 90 s; denoise 195 s).
-    Peak system RAM above idle, image included: loading 5.5 GB, estimate 8.4 GB, denoise
-    12.8 GB. The main process holds the input and the output, 5.5 GB each.
-  - What the 17 s is: the level pass 3 s, six splits at 1.0 s, six fits at 1.2 s. A fit
-    is 3 to 4 preconditioned steps of two bulk maps each, plus 0.25 s to build the
-    preconditioner. The splits are slower in the pool than alone, about 1.5 times, from
-    shared memory bandwidth and clock. Measured with the least-squares fit. The
-    likelihood loop on EDDEN 0.9 mm (2026-11-09): estimate 27.4 s against 25.1 s, of
-    which six Fisher steps 3.8 s and six line-search passes 3.2 s. A pass gathers and
-    whitens the patches again in the workers, and needs per patch only products with
-    the trial `C`'s inverse and an r x r solve.
+  - The main process holds the input and the output.
+  - The splits are slower in the pool than alone, from shared memory bandwidth and
+    clock. A line-search pass gathers and whitens the patches again in the workers, and
+    needs per patch only products with the trial `C`'s inverse and an r x r solve.
   - **BLAS threads in the main process are set inside camppca's calls only**
     (`pool.blas_threads`, `pool.limit_blas` on `estimate_noise_model`,
     `denoise_with_noise_model`, `denoise_whitened`, `whitened_level`), through
