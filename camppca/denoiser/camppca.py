@@ -41,7 +41,7 @@ from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch
 from .gather import TILE, as_data, patch_tiles, restore_nonfinite, zero_nonfinite
 from .mp_threshold import check_algorithm, mp_threshold
 from .shrink import check_shrink, shrink_weight, signal_alignment
-from .spectrum import eigh_descending, eigvalsh_descending
+from .spectrum import eigh_descending, eigvalsh_descending, top_eigvecs, tridiagonal_eigvalsh
 
 
 def sqrtm_psd(A, p=0.5, floor=1e-10):
@@ -53,7 +53,7 @@ def sqrtm_psd(A, p=0.5, floor=1e-10):
 
 
 def _whiten_split(patches, whitener, n_small: int, n_large: int, algorithm: str,
-                  values_only: bool = False):
+                  values_only: bool = False, kept_only: bool = False):
     """Whiten a batch of patches and split each spectrum at the Marchenko-Pastur edge.
 
     The one place the split happens: both denoisers, the level pass and the loop
@@ -68,6 +68,9 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algorithm: str,
         algorithm: which Marchenko-Pastur variant to cut with.
         values_only: compute the eigenvalues only, for the level pass. ``evecs`` is then
             None.
+        kept_only: compute only the eigenvectors each patch keeps, for the denoiser;
+            the other columns of ``evecs`` are zero. Real data only, complex data gets
+            them all. See :func:`~camppca.denoiser.spectrum.top_eigvecs`.
 
     Returns:
         ``(whitened, evals, evecs, rank, sigma_mppca)``: (B, n_vox, n_vols) whitened
@@ -77,6 +80,10 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algorithm: str,
     """
     whitened = patches if whitener is None else np.matmul(whitener, patches)
     gram = np.matmul(whitened.conj().transpose(0, 2, 1), whitened)
+    if kept_only and not np.iscomplexobj(gram):
+        evals, reduced = tridiagonal_eigvalsh(gram)
+        rank, sigma_mppca = mp_threshold(evals, n_small, n_large, algorithm)
+        return whitened, evals, top_eigvecs(gram, evals, reduced, rank), rank, sigma_mppca
     if values_only:
         evals, evecs = eigvalsh_descending(gram), None
     else:
@@ -133,7 +140,7 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
     n_vox, n_vols = patches.shape[1], patches.shape[2]
 
     whitened, evals, evecs, rank, sigma_mppca = _whiten_split(
-        patches, whitener, n_small, n_large, algorithm)
+        patches, whitener, n_small, n_large, algorithm, kept_only=True)
 
     if full:
         r = int(rank.max())

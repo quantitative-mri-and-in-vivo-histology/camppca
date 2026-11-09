@@ -18,7 +18,6 @@ from camppca import denoise_mppca
 from camppca.denoiser import camppca as engine
 from camppca.denoiser.aggregate import check_aggregate, patch_centers
 from camppca.denoiser.camppca import denoise_whitened, sqrtm_psd
-from camppca.denoiser.spectrum import eigh_descending
 from camppca.patch import patch_offsets
 
 SHAPE = (14, 12, 8)
@@ -69,8 +68,10 @@ def reference_mean(dwi, mask, centers, C=None, d=None):
         if W is not None:
             Y = W @ Y
         patch32 = (X / levels[:, None]).astype(np.float32)[None]
-        Y32 = patch32[0] if W32 is None else W32 @ patch32[0]
-        V = eigh_descending((Y32.T @ Y32)[None])[1][0].astype(np.float64)
+        # The engine's own eigenvectors: at a cut near float32 rounding any two solvers
+        # differ by up to 0.1 here, and this checks the rebuild, not the solver.
+        V = engine._whiten_split(patch32, W32, n_small, n_large, "cordero-grande",
+                                 kept_only=True)[2][0].astype(np.float64)
         C32 = None if C is None else C.astype(np.float32)
         _, s, r = engine._denoise_tile(patch32, W32, root32, C32, n_small, n_large,
                                        "cordero-grande", "hard")
