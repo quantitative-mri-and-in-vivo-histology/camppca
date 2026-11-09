@@ -72,7 +72,7 @@ from scipy.ndimage import binary_erosion
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
 from ..patch import patch_offsets, table_index
-from ..pool import resolve_workers, worker_pool
+from ..pool import blas_threads, resolve_workers, worker_pool
 from . import (
     FALLBACK_REASON,
     MIN_EIGENVALUE,
@@ -155,8 +155,9 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
             patches = _gather(dwi, levels, centers, patch)
 
             def split(C):
-                return _assemble(C, [_split_chunk(patches[part], C, algorithm)
-                                     for part in parts])
+                with blas_threads(1):          # per-patch work, as in the workers
+                    chunks = [_split_chunk(patches[part], C, algorithm) for part in parts]
+                return _assemble(C, chunks)
 
         rho = rho_start
         C = _build_C(rho, patch, lag)

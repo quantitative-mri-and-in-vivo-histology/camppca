@@ -26,6 +26,7 @@ from scipy import ndimage
 from scipy.ndimage import uniform_filter
 
 from ..patch import check_patch, patch_offsets, required_lag, resolve_patch, table_index
+from ..pool import limit_blas
 from .masks import brain_mask
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask"]
@@ -249,6 +250,7 @@ def _pool_level(level, mask, size):
     return pooled
 
 
+@limit_blas
 def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
                          pool=3, algorithm="cordero-grande", noise_field=True, level_rounds=0,
                          workers=None):

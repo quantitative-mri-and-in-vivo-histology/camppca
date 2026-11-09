@@ -443,9 +443,17 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
     is 3 to 4 preconditioned steps of two bulk maps each, plus 0.25 s to build the
     preconditioner. The splits are slower in the pool than alone, about 1.5 times, from
     shared memory bandwidth and clock.
-  - ⚠ OpenBLAS in the main process starts one thread per hardware thread, 32 on 16
-    cores. Held to 16 threads, a bulk map took 24 ms against 49 ms and the estimate
-    18 s against 21 s, before the split moved to float32. Not set in the code yet.
+  - **BLAS threads in the main process are set inside camppca's calls only**
+    (`pool.blas_threads`, `pool.limit_blas` on `estimate_noise_model`,
+    `denoise_with_noise_model`, `denoise_whitened`, `whitened_level`), through
+    threadpoolctl, and restored after. OpenBLAS's default is a thread per hardware
+    thread, 32 on 16 cores. Per-patch work in this process, every pass with `workers=1`,
+    runs on one thread as in the workers. The rest, mostly the loop's fit, runs on at
+    most 8 (`MAIN_THREADS`), the CPUs allowed and the caller's own setting. Measured
+    2026-11-09: 0.9 mm fits 15.4 s at 32 threads, 4.6 at 8, 15.5 at 1; the estimate
+    44.6 s before, 40.9 after; a 2 mm crop's camppca run with `workers=1` 128.7 s at 32
+    threads, 14.3 s after. ⚠ The table moves with the thread count, up to 1e-4, so the
+    count must never follow `workers`.
 
 - **Tests run one worker and one BLAS thread each**, set in `tests/conftest.py`, and
   pytest runs them side by side (`-n auto` in `pyproject.toml`): 22 s against 85 s with a

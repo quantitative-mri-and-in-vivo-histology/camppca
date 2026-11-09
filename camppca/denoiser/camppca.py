@@ -37,7 +37,7 @@ from functools import partial
 import numpy as np
 
 from ..patch import patch_size, resolve_patch
-from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
+from ..pool import limit_blas, resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centers
 from .gather import TILE, as_data, check_range, patch_tiles, restore_nonfinite, zero_nonfinite
 from .mp_threshold import check_algorithm, mp_threshold
@@ -188,6 +188,7 @@ def _level_voxels(dwi, d_field, voxels, whitener, patch, algorithm, tile):
     return (level,)
 
 
+@limit_blas
 def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TILE,
                    d_field=None, workers=None):
     """The MP noise level of every mask voxel's whitened patch, without denoising.
@@ -288,6 +289,7 @@ def _mean_whitened_voxels(dwi, d_field, mask, centers, whitener, root, C, patch,
     return box.result()
 
 
+@limit_blas
 def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TILE,
                      d_field=None, shrink="hard", workers=None, aggregate="center",
                      stride=1):

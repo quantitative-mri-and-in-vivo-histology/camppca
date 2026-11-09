@@ -140,3 +140,47 @@ def test_an_environment_variable_sets_the_default_worker_count(monkeypatch):
     assert pool.default_workers() == 5
     monkeypatch.delenv("CAMPPCA_WORKERS")
     assert pool.default_workers() == min(pool._physical_cores(), pool.joblib.cpu_count())
+
+
+def _blas_counts():
+    from threadpoolctl import threadpool_info
+    return {i["num_threads"] for i in threadpool_info() if i["user_api"] == "blas"}
+
+
+def test_blas_threads_lowers_and_restores_but_never_raises():
+    from threadpoolctl import threadpool_limits
+
+    from camppca.pool import blas_threads
+
+    with threadpool_limits(4, user_api="blas"):
+        with blas_threads(2):
+            assert _blas_counts() == {2}
+        assert _blas_counts() == {4}
+        with blas_threads(16):
+            assert _blas_counts() == {4}, "the caller's 4 stays the ceiling"
+
+
+def test_camppca_calls_keep_the_callers_blas_setting_and_run_patches_on_one_thread():
+    from threadpoolctl import threadpool_limits
+
+    from camppca import pool
+
+    seen = []
+
+    def fn(voxels):
+        seen.append(_blas_counts())
+        return (np.zeros(voxels.size),)
+
+    @pool.limit_blas
+    def entry():
+        seen.append(_blas_counts())
+        pool.run_voxels(fn, (), np.arange(40), lambda sl, out: None, workers=1, tile=8)
+
+    rng = np.random.default_rng(0)
+    dwi = rng.standard_normal((8, 8, 6, 30)).astype(np.float32) + 100
+    with threadpool_limits(4, user_api="blas"):
+        entry()
+        denoise_mppca(dwi, patch=(3, 3, 3), workers=1)
+        assert _blas_counts() == {4}
+    assert seen[0] == {min(pool.MAIN_THREADS, 4)}
+    assert all(s == {1} for s in seen[1:]), "per-patch work runs on one thread"

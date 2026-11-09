@@ -15,7 +15,7 @@ whitened domain, where the Marchenko–Pastur assumption holds.
 pip install -e .
 ```
 
-Python ≥ 3.10. numpy, scipy, joblib and nibabel, on the CPU.
+Python ≥ 3.10. numpy, scipy, joblib, threadpoolctl and nibabel, on the CPU.
 
 ## Command line
 

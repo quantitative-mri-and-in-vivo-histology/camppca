@@ -20,6 +20,7 @@ import numpy as np
 from .. import __version__
 from ..noise_model import estimate_noise_model
 from ..patch import resolve_patch
+from ..pool import limit_blas
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
 from .mp_threshold import check_algorithm
@@ -51,6 +52,7 @@ def _flat_mode_factor(C, aggregate="center"):
     return float(np.sqrt(n_vox / (n_vox - 1) * diag))
 
 
+@limit_blas
 def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
                              algorithm="cordero-grande", shrink="hard", workers=None,
                              aggregate="center", stride=1, mask_only=False):
