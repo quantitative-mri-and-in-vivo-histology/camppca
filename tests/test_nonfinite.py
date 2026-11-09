@@ -82,3 +82,14 @@ def test_a_failed_eigendecomposition_raises():
         tridiagonal_eigvalsh(gram)
     with pytest.raises(ValueError):            # scipy's own LinAlgError, or the backstop
         eigh_descending(gram)
+
+
+def test_the_warning_points_at_the_callers_line(data):
+    """Not at the BLAS decorator every public function runs under, nor at the helper."""
+    dirty = data[0]
+    with pytest.warns(RuntimeWarning, match="NaN or inf") as caught:
+        denoise_mppca(dirty, patch=PATCH)
+    assert {w.filename for w in caught} == {__file__}
+    with pytest.warns(RuntimeWarning, match="NaN or inf") as caught:
+        estimate_noise_model(dirty, patch=PATCH)
+    assert {w.filename for w in caught if "NaN" in str(w.message)} == {__file__}

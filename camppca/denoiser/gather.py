@@ -8,22 +8,21 @@ built by index arithmetic on the original volume, so no padded copy is ever made
 come out in :func:`camppca.patch.patch_offsets` order, C order with z fastest, which is
 the order ``rho`` is indexed in. The two must agree.
 
-Tiles are small on purpose. A 256-patch tile at 297 volumes is about 100 MB, and 16 pool
-workers streaming such tiles fought over memory bandwidth: a whitened voxel cost 6.8 ms
-at 16 workers against 3.2 ms at 2. With 8-patch tiles it cost 3.2 ms at 16, flat from
-2 to 8.
+Tiles are small on purpose. Large ones, 100 MB at 256 patches, made the pool workers
+fight over memory bandwidth and doubled the cost per voxel at 16 workers. 8-patch tiles
+cost the same at 2 and at 16.
 """
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Iterator
 
 import numpy as np
 
 from ..patch import check_patch, patch_offsets, patch_size
+from ..warn import warn
 
-__all__ = ["TILE", "as_data", "box_centers", "check_range", "patch_tiles",
+__all__ = ["TILE", "as_data", "box_centers", "check_dwi", "check_range", "patch_tiles",
            "restore_nonfinite", "zero_nonfinite"]
 
 #: Patches per tile.
@@ -37,6 +36,17 @@ def as_data(dwi) -> np.ndarray:
     """``dwi`` as the denoisers hold it: complex64 if it is complex, float32 otherwise."""
     dwi = np.asarray(dwi)
     return dwi.astype(np.complex64 if np.iscomplexobj(dwi) else np.float32, copy=False)
+
+
+def check_dwi(dwi, spatial_shape=None):
+    """``dwi`` as an array, refused unless 4D and, when given, of ``spatial_shape``."""
+    dwi = np.asarray(dwi)
+    if dwi.ndim != 4:
+        raise ValueError(f"dwi must be 4D (X, Y, Z, N), got shape {dwi.shape}")
+    if spatial_shape is not None and dwi.shape[:3] != tuple(spatial_shape):
+        raise ValueError(f"dwi spatial shape {dwi.shape[:3]} does not match the mask's "
+                         f"{tuple(spatial_shape)}")
+    return dwi
 
 
 def zero_nonfinite(dwi):
@@ -55,8 +65,8 @@ def zero_nonfinite(dwi):
         bad[x] = ~np.isfinite(dwi[x]).all(-1)
     if not bad.any():
         return dwi, None, None
-    warnings.warn(f"{int(bad.sum())} voxels hold NaN or inf. They enter the fit as zero "
-                  "and keep their NaN or inf in the output.", RuntimeWarning, stacklevel=3)
+    warn(f"{int(bad.sum())} voxels hold NaN or inf. They enter the fit as zero "
+         "and keep their NaN or inf in the output.")
     values = dwi[bad]
     dwi = dwi.copy()
     dwi[bad] = np.where(np.isfinite(values), values, 0)

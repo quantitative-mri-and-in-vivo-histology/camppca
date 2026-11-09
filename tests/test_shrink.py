@@ -7,6 +7,7 @@ from camppca import NoiseModel, denoise_camppca, denoise_mppca, denoise_with_noi
 from camppca.denoiser.camppca import sqrtm_psd
 from camppca.denoiser.mp_threshold import mp_threshold
 from camppca.denoiser.shrink import shrink_weight, signal_alignment
+from camppca.noise_model import _white_rho
 
 PATCH = (5, 5, 3)
 
@@ -59,18 +60,8 @@ def test_lr_with_white_noise_is_gd():
 def test_lr_keeps_more_where_the_signal_lies_in_loud_noise():
     """Smooth signal under smooth correlated noise: q > 1, so mu_tau < 1 and "lr" keeps
     more of the top component than "gd"."""
-    rng = np.random.default_rng(2)
-    g = np.arange(5) - 2
-    off = np.stack(np.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3)
-    C = np.exp(-np.linalg.norm(off[:, None] - off[None], axis=-1) ** 2 / 2.0)
-    n_vox, n_vols = len(off), 90
-    smooth = np.exp(-np.linalg.norm(off, axis=1) ** 2 / 8.0)
-    root = sqrtm_psd(C, 0.5)
-    X = np.stack([np.outer(smooth, 6 * rng.standard_normal(n_vols))
-                  + root @ rng.standard_normal((n_vox, n_vols)) for _ in range(16)])
-    whitened = np.einsum("pq,bqn->bpn", sqrtm_psd(C, -0.5), X)
-    evals, evecs = np.linalg.eigh(np.einsum("bpn,bpm->bnm", whitened, whitened))
-    evals, evecs = np.maximum(evals[:, ::-1], 0.0), evecs[:, :, ::-1]
+    C, _, whitened, evals, evecs, _ = _smooth_case(seed=2, n_patches=16)
+    n_vox, n_vols = whitened.shape[1:]
     _, sigma = mp_threshold(evals, min(n_vox, n_vols), max(n_vox, n_vols))
 
     q = signal_alignment(whitened, evecs, evals, C)
@@ -132,8 +123,7 @@ def dataset():
 
 def _white_model(mask):
     lag = 4
-    rho = np.zeros((2 * lag + 1, 2 * lag + 1, PATCH[2]))
-    rho[lag, lag, 0] = 1.0
+    rho = _white_rho((2 * lag + 1, 2 * lag + 1, PATCH[2]))
     ones = np.ones(mask.shape, np.float32)
     return NoiseModel(rho=rho, d=ones, mask=mask, lag=lag)
 

@@ -7,6 +7,8 @@ from camppca import denoise_mppca
 from camppca.denoiser.camppca import _whiten_split, denoise_whitened, sqrtm_psd
 from camppca.patch import patch_offsets
 
+from helpers import separable_correlation
+
 SHAPE, N_VOLS, PATCH = (11, 10, 9), 60, (5, 5, 3)
 
 
@@ -15,12 +17,6 @@ def dwi():
     rng = np.random.default_rng(0)
     signal = rng.standard_normal(SHAPE + (3,)) @ rng.standard_normal((3, N_VOLS))
     return (signal * 30 + 200 + 5 * rng.standard_normal(SHAPE + (N_VOLS,))).astype(np.float32)
-
-
-def _correlation(patch, ax=0.5, ay=0.3):
-    off = patch_offsets(patch)
-    return (ax ** np.abs(off[:, 0][:, None] - off[:, 0][None, :])
-            * ay ** np.abs(off[:, 1][:, None] - off[:, 1][None, :]))
 
 
 def _by_hand(dwi, voxel, C=None, d=None):
@@ -49,7 +45,7 @@ EDGE_VOXELS = [(0, 0, 0), (0, 5, 4), (10, 9, 8), (1, 4, 0), (5, 0, 8)]
 
 @pytest.mark.parametrize("voxel", EDGE_VOXELS)
 def test_an_edge_voxel_is_denoised_from_its_inward_box(dwi, voxel):
-    C = _correlation(PATCH)
+    C = separable_correlation(PATCH, 0.5, 0.3, 0.15)
     d = np.linspace(1.0, 1.5, SHAPE[0], dtype=np.float32)[:, None, None] * np.ones(SHAPE,
                                                                                   np.float32)
     mask = np.zeros(SHAPE, bool)

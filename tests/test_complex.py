@@ -17,16 +17,12 @@ from camppca import (
 )
 from camppca.denoiser.camppca import denoise_whitened, whitened_level
 
+from helpers import interior_mask, low_rank_volume
+
 SHAPE = (10, 10, 10)
 N_VOLS = 60
 PATCH = (5, 5, 5)
 
-
-def interior_mask(shape=SHAPE, margin=2):
-    """Voxels whose whole patch fits inside the volume, so nothing wraps."""
-    mask = np.zeros(shape, bool)
-    mask[margin:-margin, margin:-margin, margin:-margin] = True
-    return mask
 
 
 def circular_noise(rng, sigma, shape=SHAPE, n_vols=N_VOLS):
@@ -35,17 +31,11 @@ def circular_noise(rng, sigma, shape=SHAPE, n_vols=N_VOLS):
                      + 1j * rng.standard_normal(shape + (n_vols,)))).astype(np.complex64)
 
 
-def low_rank_volume(rng, rank, shape=SHAPE, n_vols=N_VOLS, scale=100.0):
-    """A real volume whose every patch matrix has rank at most ``rank``."""
-    coeffs = rng.standard_normal(shape + (rank,))
-    basis = rng.standard_normal((rank, n_vols))
-    return (scale * coeffs @ basis).astype(np.float32)
-
 
 @pytest.mark.parametrize("sigma_true", [2.0, 12.0])
 def test_sigma_is_the_noise_level_of_one_channel(sigma_true):
     dwi = circular_noise(np.random.default_rng(0), sigma_true)
-    mask = interior_mask()
+    mask = interior_mask(SHAPE)
 
     result = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
 
@@ -56,8 +46,8 @@ def test_sigma_is_the_noise_level_of_one_channel(sigma_true):
 
 def test_a_zero_imaginary_part_gives_the_real_result():
     rng = np.random.default_rng(1)
-    dwi = low_rank_volume(rng, rank=3) + 20 * rng.standard_normal(SHAPE + (N_VOLS,))
-    mask = interior_mask()
+    dwi = low_rank_volume(rng, 3, SHAPE, N_VOLS) + 20 * rng.standard_normal(SHAPE + (N_VOLS,))
+    mask = interior_mask(SHAPE)
 
     real = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
     cplx = denoise_mppca(dwi.astype(np.complex64), mask, patch=PATCH, workers=1)
@@ -70,8 +60,8 @@ def test_a_zero_imaginary_part_gives_the_real_result():
 
 def test_a_global_phase_changes_nothing_but_the_phase():
     rng = np.random.default_rng(2)
-    dwi = low_rank_volume(rng, rank=3) + circular_noise(rng, 20.0)
-    mask = interior_mask()
+    dwi = low_rank_volume(rng, 3, SHAPE, N_VOLS) + circular_noise(rng, 20.0)
+    mask = interior_mask(SHAPE)
     turn = np.complex64(np.exp(0.7j))
 
     a = denoise_mppca(dwi, mask, patch=PATCH, workers=1)
@@ -86,9 +76,9 @@ def test_a_global_phase_changes_nothing_but_the_phase():
 @pytest.mark.parametrize("aggregate", ["center", "mean"])
 def test_a_real_signal_in_circular_noise_comes_back_closer_to_the_truth(aggregate):
     rng = np.random.default_rng(3)
-    signal = low_rank_volume(rng, rank=3)
+    signal = low_rank_volume(rng, 3, SHAPE, N_VOLS)
     dwi = signal + circular_noise(rng, 20.0)
-    mask = interior_mask()
+    mask = interior_mask(SHAPE)
 
     result = denoise_mppca(dwi, mask, patch=PATCH, workers=1, aggregate=aggregate)
 
@@ -102,8 +92,8 @@ def test_a_real_signal_in_circular_noise_comes_back_closer_to_the_truth(aggregat
                                                ("mean", "lr")])
 def test_an_identity_whitener_reproduces_standard_mppca(aggregate, shrink):
     rng = np.random.default_rng(4)
-    dwi = low_rank_volume(rng, rank=3) + circular_noise(rng, 20.0)
-    mask = interior_mask()
+    dwi = low_rank_volume(rng, 3, SHAPE, N_VOLS) + circular_noise(rng, 20.0)
+    mask = interior_mask(SHAPE)
 
     standard = denoise_mppca(dwi, mask, patch=PATCH, workers=1, aggregate=aggregate,
                              shrink=shrink)
@@ -120,7 +110,7 @@ def test_an_identity_whitener_reproduces_standard_mppca(aggregate, shrink):
 def test_camppca_denoises_complex_data_with_a_model_from_the_real_part():
     rng = np.random.default_rng(5)
     shape = (16, 16, 12)
-    signal = low_rank_volume(rng, rank=3, shape=shape) + 500
+    signal = low_rank_volume(rng, 3, shape, N_VOLS) + 500
     dwi = signal + circular_noise(rng, 20.0, shape=shape)
     mask = interior_mask(shape)
 
@@ -136,7 +126,7 @@ def test_camppca_denoises_complex_data_with_a_model_from_the_real_part():
 
 def test_the_level_pass_reads_one_channel_of_complex_data():
     dwi = circular_noise(np.random.default_rng(6), 7.0)
-    mask = interior_mask()
+    mask = interior_mask(SHAPE)
 
     level = whitened_level(dwi, mask, None, PATCH, workers=1)
 
@@ -146,7 +136,7 @@ def test_the_level_pass_reads_one_channel_of_complex_data():
 def test_complex_data_without_a_stabilized_phase_is_flagged():
     rng = np.random.default_rng(7)
     shape = (16, 16, 12)
-    stable = low_rank_volume(rng, rank=3, shape=shape) + 500 + circular_noise(rng, 20.0,
+    stable = low_rank_volume(rng, 3, shape, N_VOLS) + 500 + circular_noise(rng, 20.0,
                                                                               shape=shape)
     mask = interior_mask(shape)
     with warnings.catch_warnings():
@@ -175,7 +165,7 @@ def test_an_unstabilized_real_part_falls_back_instead_of_crashing():
     """
     rng = np.random.default_rng(7)
     shape = (16, 16, 12)
-    stable = low_rank_volume(rng, rank=3, shape=shape) + 500 + circular_noise(rng, 20.0,
+    stable = low_rank_volume(rng, 3, shape, N_VOLS) + 500 + circular_noise(rng, 20.0,
                                                                               shape=shape)
     x = np.linspace(0, 1, shape[0])[:, None, None, None]
     phase = 2 * np.pi * (rng.random(N_VOLS) + 0.6 * x * rng.random(N_VOLS))

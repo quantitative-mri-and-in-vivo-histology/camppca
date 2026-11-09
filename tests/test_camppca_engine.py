@@ -1,8 +1,9 @@
 """The covariance-aware engine, checked against paths we write out longhand.
 
-The engine never forms the whitened patch's full reconstruction. It carries only the
-center row of ``C^(1/2)`` and projects that. These tests write the long way out in plain
-numpy float64 and demand the same answer.
+The engine never forms the whitened patch's full reconstruction, and never multiplies by
+``C^(1/2)``: the identity ``e_c^T C^(1/2) Yw = e_c^T X`` lets it take the voxel's own row
+of the patch. These tests write the long way out in plain numpy float64 and demand the
+same answer.
 """
 
 import numpy as np
@@ -11,18 +12,13 @@ import pytest
 from camppca import denoise_mppca
 from camppca.denoiser.camppca import denoise_whitened, sqrtm_psd, whitened_level
 from camppca.denoiser.mp_threshold import mp_threshold
-from camppca.patch import patch_offsets, patch_size
+from camppca.patch import patch_size
+
+from helpers import separable_correlation
 
 SHAPE = (12, 12, 8)
 N_VOLS = 40
 PATCH = (5, 5, 3)
-
-
-def separable_correlation(patch, ax=0.6, ay=0.35, az=0.2):
-    """Unit-diagonal patch correlation from a separable AR(1) pattern, PSD by construction."""
-    offsets = patch_offsets(patch)
-    lags = [offsets[:, i][:, None] - offsets[:, i][None, :] for i in range(3)]
-    return (ax ** np.abs(lags[0])) * (ay ** np.abs(lags[1])) * (az ** np.abs(lags[2]))
 
 
 def patch_at(dwi, voxel, patch=PATCH):
@@ -70,7 +66,7 @@ def test_an_identity_whitener_reproduces_standard_mppca(dataset):
 def test_the_center_row_shortcut_matches_unwhitening_the_whole_patch(dataset):
     """The engine's whole reason for being cheap, checked against the long way."""
     dwi, _ = dataset
-    C = separable_correlation(PATCH)
+    C = separable_correlation(PATCH, 0.6, 0.35, 0.2)
     voxel = (6, 6, 4)
     mask = np.zeros(SHAPE, bool)
     mask[voxel] = True
@@ -85,7 +81,7 @@ def test_the_center_row_shortcut_matches_unwhitening_the_whole_patch(dataset):
 def test_every_masked_voxel_matches_the_long_way(dataset):
     """Not just one voxel: the shortcut has to hold everywhere the patch fits."""
     dwi, _ = dataset
-    C = separable_correlation(PATCH)
+    C = separable_correlation(PATCH, 0.6, 0.35, 0.2)
     mask = np.zeros(SHAPE, bool)
     mask[4:8, 4:8, 2:6] = True
 
@@ -102,7 +98,7 @@ def test_the_level_pass_matches_the_full_denoise(dataset):
     """whitened_level stops after the fit, so its sigma_mppca is the denoiser's, with and
     without a relative noise map. With C None it is standard MPPCA's."""
     dwi, mask = dataset
-    C = separable_correlation(PATCH)
+    C = separable_correlation(PATCH, 0.6, 0.35, 0.2)
     level = np.random.default_rng(1).uniform(0.5, 2.0, SHAPE).astype(np.float32)
 
     for corr, d_field in ((np.eye(patch_size(PATCH)), None), (C, None), (C, level)):
@@ -118,7 +114,7 @@ def test_the_level_pass_matches_the_full_denoise(dataset):
 def test_a_constant_level_field_changes_nothing(dataset):
     """d carries ratios only, so a flat field must be absorbed by the per-patch fit."""
     dwi, mask = dataset
-    C = separable_correlation(PATCH)
+    C = separable_correlation(PATCH, 0.6, 0.35, 0.2)
 
     without = denoise_whitened(dwi, mask, C, patch=PATCH)
     with_flat = denoise_whitened(dwi, mask, C, patch=PATCH, d_field=np.full(SHAPE, 3.0, np.float32))
@@ -130,7 +126,7 @@ def test_a_constant_level_field_changes_nothing(dataset):
 def test_a_varying_level_field_is_undone_at_the_center_voxel(dataset):
     """Scaling one voxel's noise up and the data with it must give back the same signal."""
     dwi, _ = dataset
-    C = separable_correlation(PATCH)
+    C = separable_correlation(PATCH, 0.6, 0.35, 0.2)
     voxel = (6, 6, 4)
     mask = np.zeros(SHAPE, bool)
     mask[voxel] = True

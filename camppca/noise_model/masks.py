@@ -24,8 +24,22 @@ ERODE = 3
 # rim un-denoised.
 
 
-def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
-    """Eroded brain interior from the mean b0: threshold, largest component, close, fill, erode."""
+def brain_mask(b0_mean, *, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
+    """Eroded brain interior from the mean b0: threshold, largest component, close, fill, erode.
+
+    Args:
+        b0_mean: (X, Y, Z) mean b0 image.
+        frac: the threshold, as a fraction of the image's 99th percentile.
+        close: closing iterations that seal pores before eroding, see the module
+            docstring. 0 skips it.
+        erode: erosion iterations. 0 keeps the filled mask as it is.
+
+    Returns:
+        (X, Y, Z) bool mask.
+
+    Raises:
+        ValueError: if the mask is empty after thresholding or after eroding.
+    """
     m = b0_mean > frac * np.percentile(b0_mean, 99)
     lab, n = label(m)
     if n == 0:

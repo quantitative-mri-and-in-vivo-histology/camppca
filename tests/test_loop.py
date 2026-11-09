@@ -13,8 +13,10 @@ from scipy.ndimage import distance_transform_cdt
 
 from camppca import estimate_noise_model
 from camppca.denoiser.camppca import sqrtm_psd
-from camppca.noise_model import _effective_d, loop
+from camppca.noise_model import _white_rho, loop
 from camppca.patch import table_index
+
+from helpers import colored_noise, filter_rho
 
 HX = np.array([0.3, 1.0, 0.3])          # in-plane correlation along x
 HY = np.array([0.15, 1.0, 0.15])        # and along y; z left uncorrelated
@@ -22,16 +24,9 @@ PATCH = np.array((5, 5, 3))
 LAG = 4
 
 
-def _filter_rho(h, lag):
-    full = np.correlate(h, h, mode="full")
-    mid = len(h) - 1
-    return np.array([full[mid + k] if abs(k) < len(h) else 0.0
-                     for k in range(-lag, lag + 1)]) / full[mid]
-
-
 def _true_rho():
     rho = np.zeros((2 * LAG + 1, 2 * LAG + 1, PATCH[2]))
-    rho[:, :, 0] = np.outer(_filter_rho(HX, LAG), _filter_rho(HY, LAG))
+    rho[:, :, 0] = np.outer(filter_rho(HX, LAG), filter_rho(HY, LAG))
     return rho
 
 
@@ -42,10 +37,7 @@ def dataset():
     shape, n_vols, rank = (40, 40, 12), 60, 4
     bvals = np.concatenate([np.zeros(6), np.full(n_vols - 6, 1000.0)])
     signal = rng.standard_normal(shape + (rank,)) @ rng.standard_normal((rank, n_vols))
-    w = rng.standard_normal(shape + (n_vols,))
-    noise = np.apply_along_axis(lambda v: np.convolve(v, HX, "same"), 0, w)
-    noise = np.apply_along_axis(lambda v: np.convolve(v, HY, "same"), 1, noise)
-    noise /= np.sqrt((HX ** 2).sum() * (HY ** 2).sum())
+    noise = colored_noise(rng, shape, n_vols, HX, HY)
     level = np.linspace(1.0, 2.0, shape[0])[:, None, None, None]
     dwi = signal * 25 + 400 + 10.0 * level * noise
     mask = np.zeros(shape, bool)
@@ -96,8 +88,7 @@ def test_the_loop_pattern_is_a_valid_correlation_for_its_patch(model):
 
 def test_the_loop_lands_on_the_same_pattern_from_a_white_start(dataset, model):
     dwi, _, mask = dataset
-    white = np.zeros_like(model.rho)
-    white[LAG, LAG, 0] = 1.0
+    white = _white_rho(model.rho.shape)
 
     from_white, info = loop.fit_rho(dwi, mask, model.d, white, PATCH, LAG)
 
@@ -150,7 +141,7 @@ def _spread(centers, n):
 def test_the_batched_split_is_the_per_patch_algebra(dataset, model):
     dwi, _, mask = dataset
     centers = _spread(loop._sample_centers(mask, PATCH)[0], 120)
-    patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)
+    patches = loop._gather(dwi, model.effective_d(), centers, PATCH)
     C = model.patch_correlation(PATCH)
     # Patches with a clear gap at the cut. Where the kept and dropped singular values are
     # within 20%, float32 and float64 disagree on the projector by up to 8e-3, which is
@@ -239,8 +230,7 @@ def test_the_convergence_warning_reports_the_last_change(dataset, model, monkeyp
     dwi, _, mask = dataset
     monkeypatch.setattr(loop, "MAX_ROUNDS", 1)
     monkeypatch.setattr(loop, "LOOP_TOL", 0.0)
-    white = np.zeros_like(model.rho)
-    white[LAG, LAG, 0] = 1.0
+    white = _white_rho(model.rho.shape)
     with pytest.warns(RuntimeWarning, match="did not converge") as caught:
         loop.fit_rho(dwi, mask, model.d, white, PATCH, LAG)
     assert "by 0.0000" not in str(caught[0].message)
@@ -252,8 +242,7 @@ def test_an_unusable_loop_pattern_falls_back_to_white_noise(dataset, monkeypatch
     dwi, bvals, mask = dataset
 
     def indefinite(S, factors, C, patch, lag, dzmax, start, threads=1):
-        rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
-        rho[lag, lag, 0] = 1.0
+        rho = _white_rho((2 * lag + 1, 2 * lag + 1, dzmax + 1))
         rho[lag - 1, lag, 0] = rho[lag + 1, lag, 0] = 0.7
         return rho
 
@@ -261,8 +250,7 @@ def test_an_unusable_loop_pattern_falls_back_to_white_noise(dataset, monkeypatch
     with pytest.warns(RuntimeWarning, match="not valid after round 1"):
         model = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, level_rounds=2)
 
-    white = np.zeros_like(model.rho)
-    white[LAG, LAG, 0] = 1.0
+    white = _white_rho(model.rho.shape)
     np.testing.assert_array_equal(model.rho, white)
     assert "unstabilized phase" in model.provenance["fallback"]
     assert model.provenance["level_rounds_run"] == 0
@@ -292,18 +280,12 @@ def test_denoising_with_other_settings_than_the_loop_fitted_warns(dataset, model
         denoise_with_noise_model(dwi, model, patch=PATCH)
 
 
-def test_an_unknown_algo_is_refused_before_the_estimate(dataset):
-    dwi, bvals, mask = dataset
-    with pytest.raises(ValueError, match="algorithm must be"):
-        estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, algorithm="exp3")
-
-
 def test_the_fit_is_the_pinned_least_squares(dataset, model):
     """The float32 conjugate-gradient fit against a dense float64 least squares built one
     patch at a time, in whitened units, with the far-class mean held at zero."""
     dwi, _, mask = dataset
     centers = _spread(loop._sample_centers(mask, PATCH)[0], 300)
-    patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)
+    patches = loop._gather(dwi, model.effective_d(), centers, PATCH)
     C = model.patch_correlation(PATCH)
     S, factors = loop._split(patches, C, "cordero-grande")
     table = loop._fit_table(S, factors, C, PATCH, LAG, PATCH[2] - 1, model.rho)
@@ -381,8 +363,7 @@ def test_the_loop_runs_when_no_patch_keeps_anything():
     X = np.random.default_rng(0).standard_normal((n_vox, n_vox)).astype(np.float32)
     np.testing.assert_allclose(loop._WhitenedBulk(factors, threads=1)(X), X)
 
-    white = np.zeros((2 * LAG + 1, 2 * LAG + 1, PATCH[2]))
-    white[LAG, LAG, 0] = 1.0
+    white = _white_rho((2 * LAG + 1, 2 * LAG + 1, PATCH[2]))
     table = loop._fit_table(np.eye(n_vox), factors, np.eye(n_vox), PATCH, LAG,
                             PATCH[2] - 1, white, threads=1)
     np.testing.assert_allclose(table, white, atol=1e-4)

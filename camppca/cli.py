@@ -36,9 +36,9 @@ from pathlib import Path
 import numpy as np
 
 from . import io
-from .denoiser.aggregate import check_aggregate
+from .denoiser.aggregate import AGGREGATES, check_aggregate
 from .denoiser.mp_threshold import ALGORITHMS
-from .denoiser.shrink import RULES
+from .denoiser.shrink import SHRINKERS
 from .noise_model import estimate_noise_model
 from .noise_model.qc import check_noise_model
 from .phase import RADIANS, phase_scale, stabilize_phase
@@ -98,13 +98,13 @@ def _parser():
     d.add_argument("--noise", metavar="PATH", help="write the sigma map here")
     d.add_argument("--no-noise-field", action="store_true",
                    help="ignore the per-voxel relative noise map d (whiten with the pattern only)")
-    d.add_argument("--aggregate", choices=("center", "mean"), default="center",
+    d.add_argument("--aggregate", choices=AGGREGATES, default="center",
                    help="write back each patch's center voxel (default), or the mean of "
                         "the overlapping patch reconstructions")
     d.add_argument("--stride", type=int, default=1, metavar="N",
                    help="with --aggregate mean, a patch center every N voxels per axis "
                         "(default: 1)")
-    d.add_argument("--shrink", choices=tuple(RULES), default="hard",
+    d.add_argument("--shrink", choices=SHRINKERS, default="hard",
                    help="weight on the kept components: hard threshold (default), or "
                         "gd or lr shrinkage")
     d.add_argument("--mask-only", action="store_true",

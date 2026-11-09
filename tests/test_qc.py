@@ -4,13 +4,12 @@ Stationary noise must give small changes everywhere. Noise whose correlation dif
 one half of the image must show up in that half's regions, beyond the random subsets.
 """
 
-import warnings
 
 import numpy as np
 import pytest
 
 from camppca import NoiseModel, check_noise_model, estimate_noise_model
-from camppca.noise_model import _good_level, loop
+from camppca.noise_model import _good_level, _white_rho, loop
 
 PATCH = (5, 5, 3)
 H_LEFT = np.array([0.3, 1.0, 0.3])      # correlation along x in the left half
@@ -72,14 +71,11 @@ def test_a_half_with_other_noise_stands_out_and_few_volumes_skip_the_halves():
 def test_given_centers_fit_as_the_sampled_ones(stationary):
     dwi, model, _ = stationary
     patch = np.asarray(PATCH)
-    start = np.zeros_like(model.rho)
-    start[model.lag, model.lag, 0] = 1.0
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        sampled, info = loop.fit_rho(dwi, model.mask, model.d, start, patch, model.lag)
-        centers, _ = loop._sample_centers(_good_level(model.d, model.mask), patch)
-        given, given_info = loop.fit_rho(dwi, model.mask, model.d, start, patch,
-                                         model.lag, centers=centers)
+    start = _white_rho(model.rho.shape)
+    sampled, info = loop.fit_rho(dwi, model.mask, model.d, start, patch, model.lag)
+    centers, _ = loop._sample_centers(_good_level(model.d, model.mask), patch)
+    given, given_info = loop.fit_rho(dwi, model.mask, model.d, start, patch, model.lag,
+                                     centers=centers)
     np.testing.assert_array_equal(given, sampled)
     assert given_info["stride"] is None and info["stride"] is not None
 

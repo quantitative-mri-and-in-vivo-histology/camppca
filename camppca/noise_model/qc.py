@@ -31,17 +31,17 @@ by 0.06% and 0.02%. The shells differed by up to 1.6%, which is the split's bias
 with the signal, not the noise. So the check has no shell split.
 """
 
-import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 from joblib import delayed
 
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
-from ..denoiser.gather import as_data, check_range, zero_nonfinite
+from ..denoiser.gather import check_range
 from ..pool import limit_blas, resolve_workers, worker_pool
-from . import MIN_VOLUMES, _good_level, _white_rho
-from .loop import _build_C, _sample_centers, fit_rho
+from ..warn import warn
+from . import MIN_VOLUMES, _build_C, _good_level, _real_data, _white_rho
+from .loop import _sample_centers, fit_rho
 
 __all__ = ["NoiseModelCheck", "check_noise_model"]
 
@@ -52,22 +52,23 @@ MIN_FLAGGED = 0.01      # and beyond this change in the level, 1%
 
 @dataclass
 class NoiseModelCheck:
-    """What :func:`check_noise_model` found. All changes are fractions, 0.01 is 1%.
-
-    ``regions``        one dict per region: ``region`` (its name, e.g. "x0 y1 z0"),
-                       ``n_centers``, ``change`` (noise drawn with the region's ``C``,
-                       whitened with the model's) and ``fallback``.
-    ``reference``      one dict per random subset of the centers, with the same keys.
-    ``volume_splits``  one dict per split: ``n_vols`` of each half, ``change`` as a pair
-                       (noise from half A whitened with B's ``C``, and the reverse) and
-                       ``fallback``. Empty when the volumes were too few to split.
-    ``provenance``     the settings, and why the volume splits were skipped if they were.
-    """
+    """What :func:`check_noise_model` found. All changes are fractions, 0.01 is 1%."""
 
     regions: list
+    """One dict per region: ``region`` (its name, e.g. "x0 y1 z0"), ``n_centers``,
+    ``change`` (noise drawn with the region's ``C``, whitened with the model's) and
+    ``fallback``."""
+
     reference: list
+    """One dict per random subset of the centers, with the same keys."""
+
     volume_splits: list
+    """One dict per split: ``n_vols`` of each half, ``change`` as a pair (noise from half
+    A whitened with B's ``C``, and the reverse) and ``fallback``. Empty when the volumes
+    were too few to split."""
+
     provenance: dict = field(default_factory=dict)
+    """The settings, and why the volume splits were skipped if they were."""
 
     def reference_spread(self):
         """The largest change among the random subsets: a region's yardstick."""
@@ -90,8 +91,9 @@ class NoiseModelCheck:
                  f" centers changed by up to {self.reference_spread():.2%}; flagged beyond "
                  f"twice that and {MIN_FLAGGED:.0%}"
                  if self.reference else "regions, against the model"]
+        flagged = self.flagged()
         for r in self.regions:
-            flag = "  flagged" if r["region"] in self.flagged() else ""
+            flag = "  flagged" if r["region"] in flagged else ""
             fell = "  fell back to white noise" if r["fallback"] else ""
             lines.append(f"  {r['region']}  {r['n_centers']:>5} centers  "
                          f"{r['change']:+.2%}{flag}{fell}")
@@ -111,25 +113,29 @@ def check_noise_model(dwi, model, *, grid=(2, 2, 2), random_splits=5, n_noise=20
                       seed=0, workers=None):
     """Refit the noise model on regions and on volume halves, and price the differences.
 
-    ``dwi``            the (X, Y, Z, N) data the model was estimated on. Complex data
-                       are checked on their real part, as they were estimated.
-    ``model``          a :class:`~camppca.noise_model.NoiseModel` from
-                       :func:`~camppca.noise_model.estimate_noise_model`. Its
-                       ``fitted_to`` gives the patch, the MP rule and whether rows were
-                       divided by ``d``. The refits use the same.
-    ``grid``           regions per axis. The default 2 x 2 x 2 gives 8.
-    ``random_splits``  how many random subsets of the centers the regions are judged
-                       against, and how many random volume halves are compared.
-    ``n_noise``        synthetic noise patches per comparison.
-    ``seed``           for the random subsets, the volume halves and the noise.
-    ``workers``        CPU processes for each refit's split, see :mod:`camppca.pool`.
-
     Every refit costs about one loop of the estimate. The default runs 23 of them.
     Volume halves need :data:`~camppca.noise_model.MIN_VOLUMES` volumes each, and are
     skipped with a warning below that.
 
+    Args:
+        dwi: the (X, Y, Z, N) data the model was estimated on. Complex data are checked
+            on their real part, as they were estimated.
+        model: a :class:`~camppca.noise_model.NoiseModel` from
+            :func:`~camppca.estimate_noise_model`. Its ``fitted_to`` gives the patch,
+            the MP rule and whether rows were divided by ``d``. The refits use the same.
+        grid: regions per axis. The default 2 x 2 x 2 gives 8.
+        random_splits: how many random subsets of the centers the regions are judged
+            against, and how many random volume halves are compared.
+        n_noise: synthetic noise patches per comparison.
+        seed: for the random subsets, the volume halves and the noise.
+        workers: CPU processes for each refit's split and for the synthetic noise, see
+            :mod:`camppca.pool`.
+
     Returns:
         A :class:`NoiseModelCheck`.
+
+    Raises:
+        ValueError: if the model records no fitted patch, or ``dwi`` is not on its grid.
     """
     fitted = model.fitted_to
     if "patch" not in fitted:
@@ -141,13 +147,7 @@ def check_noise_model(dwi, model, *, grid=(2, 2, 2), random_splits=5, n_noise=20
     random_splits = int(random_splits)
     if random_splits < 1:
         raise ValueError(f"random_splits must be >= 1, got {random_splits}")
-    dwi = np.asarray(dwi)
-    if dwi.ndim != 4 or dwi.shape[:3] != model.mask.shape:
-        raise ValueError(f"dwi must be 4D with the model's spatial shape "
-                         f"{model.mask.shape}, got {dwi.shape}")
-    if np.iscomplexobj(dwi):
-        dwi = np.ascontiguousarray(dwi.real, np.float32)
-    dwi = zero_nonfinite(as_data(dwi))[0]
+    dwi = _real_data(dwi, model.mask.shape)[0]
     patch = np.asarray(fitted["patch"], int)
     check_range(dwi, patch)
     algorithm = fitted.get("algorithm", "cordero-grande")
@@ -173,15 +173,16 @@ def check_noise_model(dwi, model, *, grid=(2, 2, 2), random_splits=5, n_noise=20
         edges = np.quantile(centers[axis], np.arange(1, g) / g)
         bins.append(np.searchsorted(edges, centers[axis], side="right"))
     region_of = np.ravel_multi_index(bins, grid)
-    regions = []
+    regions, pairs = [], []        # pairs: (C_true, C_used), priced after the fits
     for index in np.ndindex(*grid):
         pick = region_of == np.ravel_multi_index(index, grid)
         if not pick.any():
             continue
         C, fallback = refit(pick)
+        pairs.append((C, C_model))
         regions.append(dict(region=" ".join(f"{a}{i}" for a, i in zip("xyz", index,
                                                                          strict=True)),
-                            n_centers=int(pick.sum()), change=(C, C_model),
+                            n_centers=int(pick.sum()), change=None,
                             fallback=fallback))
 
     size = int(np.median([r["n_centers"] for r in regions]))
@@ -190,15 +191,15 @@ def check_noise_model(dwi, model, *, grid=(2, 2, 2), random_splits=5, n_noise=20
         pick = np.zeros(n_centers, bool)
         pick[rng.choice(n_centers, size, replace=False)] = True
         C, fallback = refit(pick)
-        reference.append(dict(region="random", n_centers=size, change=(C, C_model),
+        pairs.append((C, C_model))
+        reference.append(dict(region="random", n_centers=size, change=None,
                               fallback=fallback))
 
     volume_splits, skipped = [], None
     if n_vols // 2 < MIN_VOLUMES:
         skipped = (f"{n_vols} volumes, so a half has fewer than {MIN_VOLUMES}, where the "
                    f"Marchenko-Pastur fit degenerates")
-        warnings.warn(f"volume halves skipped: {skipped}", RuntimeWarning,
-                      stacklevel=3)              # past limit_blas, to the caller
+        warn(f"volume halves skipped: {skipped}")
     else:
         every = np.ones(n_centers, bool)
         for _ in range(random_splits):
@@ -206,13 +207,12 @@ def check_noise_model(dwi, model, *, grid=(2, 2, 2), random_splits=5, n_noise=20
             halves = [np.sort(order[:n_vols // 2]), np.sort(order[n_vols // 2:])]
             fits = [refit(every, np.ascontiguousarray(dwi[..., h])) for h in halves]
             (C_a, fell_a), (C_b, fell_b) = fits
+            pairs += [(C_a, C_b), (C_b, C_a)]
             volume_splits.append(dict(n_vols=(halves[0].size, halves[1].size),
-                                      change=[(C_a, C_b), (C_b, C_a)],
+                                      change=None,
                                       fallback=fell_a or fell_b))
 
-    # The synthetic noise in one pool after the fits: serial it took 120 s of 264 at 0.9 mm.
-    pairs = [r["change"] for r in regions + reference] + \
-        [pair for s in volume_splits for pair in s["change"]]
+    # The synthetic noise in one pool after the fits: serial it took 80 s of 264 at 0.9 mm.
     changes = iter(_sigma_changes(pairs, n_vols, algorithm, n_noise, noise_seed, workers))
     for r in regions + reference:
         r["change"] = next(changes)
@@ -239,7 +239,8 @@ def _sigma_changes(pairs, n_vols, algorithm, n_noise, seed, workers):
 
 def _sigma_change(C_true, C_used, n_vols, algorithm, n_noise, seed):
     """Median MP level of noise drawn with ``C_true`` and whitened with ``C_used``, over
-    the level whitened with ``C_true`` itself, minus one. The same draws for every seed."""
+    the level whitened with ``C_true`` itself, minus one. One seed gives the same draws
+    for every pair."""
     rng = np.random.default_rng(seed)
     n_vox = C_true.shape[0]
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)

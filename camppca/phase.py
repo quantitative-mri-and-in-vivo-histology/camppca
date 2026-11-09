@@ -39,7 +39,6 @@ References:
 
 from __future__ import annotations
 
-import warnings
 from functools import partial
 
 import numpy as np
@@ -47,6 +46,7 @@ from joblib import delayed
 from scipy import ndimage
 
 from .pool import resolve_workers, worker_pool
+from .warn import warn
 
 __all__ = ["stabilize_phase", "phase_scale"]
 
@@ -75,9 +75,8 @@ def phase_scale(phase, phase_range=RADIANS) -> float:
     ``phase_range`` is the pair of values that spans one full turn: radians by default,
     ``(-4096, 4096)`` for Siemens integers, ``(-180, 180)`` for degrees. Only its width
     matters, since a constant offset is removed with the rest of the phase, so radians
-    from 0 to 2 pi pass too. The format is declared, not guessed: until 2026-11-09 the
-    range of the values was taken as one turn, and a phase in radians that was unwrapped
-    or offset came out scaled wrong without a word.
+    from 0 to 2 pi pass too. The format is declared, not guessed from the range of the
+    values, which scales an unwrapped or offset phase wrong without a word.
 
     Raises:
         ValueError: if the values span more than the declared turn, by over
@@ -98,13 +97,12 @@ def phase_scale(phase, phase_range=RADIANS) -> float:
             f"line, phase_range=(low, high) in Python, e.g. -4096 4096 for Siemens integers "
             f"or -180 180 for degrees.")
     if high - low < turn / 2:
-        warnings.warn(f"the phase runs from {low:g} to {high:g}, less than half the declared "
-                      f"turn of {lo:g} to {hi:g}. Check its format.", RuntimeWarning,
-                      stacklevel=2)
+        warn(f"the phase runs from {low:g} to {high:g}, less than half the declared "
+             f"turn of {lo:g} to {hi:g}. Check its format.")
     return 2 * np.pi / turn
 
 
-def stabilize_phase(magnitude, phase, slice_axis=2, imag=False, workers=None,
+def stabilize_phase(magnitude, phase, *, slice_axis=2, imag=False, workers=None,
                     phase_range=RADIANS):
     """Rotate complex 4D data onto the real axis and return the real part.
 

@@ -39,9 +39,9 @@ from .. import __version__
 from ..patch import resolve_patch
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
-from .gather import as_data
+from .gather import as_data, check_dwi
 from .result import DenoiseResult
-from .shrink import RULES, check_shrink
+from .shrink import check_shrink, rule_text
 
 __all__ = ["denoise_mppca"]
 
@@ -83,26 +83,20 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, *, patch=None
     shrink = check_shrink(shrink)
     aggregate, stride = check_aggregate(aggregate, stride)
     tile_shrink = "gd" if shrink == "lr" else shrink   # C = I: the correction is exactly 1
-    dwi = as_data(dwi)
-    if dwi.ndim != 4:
-        raise ValueError(f"dwi must be 4D (X, Y, Z, N), got shape {dwi.shape}")
+    dwi = as_data(check_dwi(dwi))
     patch = resolve_patch(patch, dwi.shape)
     if mask is None:
         mask = np.ones(dwi.shape[:3], bool)
     else:
         mask = np.asarray(mask, bool)
-        if mask.shape != dwi.shape[:3]:
-            raise ValueError(
-                f"mask shape {mask.shape} does not match dwi spatial shape {dwi.shape[:3]}")
+        check_dwi(dwi, mask.shape)
 
     denoised, sigma_mppca, rank = denoise_whitened(
         dwi, mask, None, patch=patch, algorithm=algorithm, shrink=tile_shrink,
         workers=workers, aggregate=aggregate, stride=stride)
-    where = "center-voxel only" if aggregate == "center" else \
-        f"mean over overlapping patches, stride {stride}"
     return DenoiseResult(
         denoised=denoised, sigma=sigma_mppca, rank=rank,
         provenance=dict(method="mppca", version=__version__,
                         patch=tuple(int(v) for v in patch),
                         algorithm=algorithm, shrink=shrink, aggregate=aggregate,
-                        stride=stride, rule=f"{RULES[tile_shrink]}, {where}"))
+                        stride=stride, rule=rule_text(algorithm, tile_shrink, aggregate, stride)))

@@ -17,10 +17,10 @@ So the voxel's own row of the patch, projected, is its denoised signal, and unwh
 needs no product at all: no root of ``C`` is ever multiplied. ``Pi`` is the projection the
 whitened spectrum picks.
 
-WHITENER FACTORIZATION. The paper applies ``W = (DCD)^(-1/2)`` in one symmetric step. This
-code divides rows by ``d`` and then applies ``C^(-1/2)``, i.e. ``W = C^(-1/2) D^(-1)``.
-``W^T W = (DCD)^(-1)`` either way, so the Gram, the spectrum, the threshold, the retained
-subspace and the reconstruction are all identical. Do NOT "fix" one to match the other.
+THE WHITENER. Rows are divided by ``d``, then ``C^(-1/2)`` is applied:
+``W = C^(-1/2) D^(-1)``, as in the paper. ``W^T W = (DCD)^(-1)``, so the symmetric
+``(DCD)^(-1/2)`` of older drafts gives the same Gram, spectrum, threshold, retained
+subspace and reconstruction.
 
 STANDARD MPPCA IS THE CASE C = None. The whitening multiply is skipped and the center row
 is the patch's own, so :func:`~camppca.denoiser.mppca.denoise_mppca` runs this same engine.
@@ -111,8 +111,8 @@ def _tile_patches(dwi, d_field, index):
 
 def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algorithm: str,
                   shrink: str, full: bool = False, levels=None, rows=None):
-    """Denoise a batch of whitened patches, returning the center voxel of each, or with
-    ``full`` each whole rebuilt patch.
+    """Whiten, split and rebuild a batch of d-divided patches, returning each voxel's
+    row, or with ``full`` each whole rebuilt patch.
 
     The whole patch unwhitens without ``C^(1/2)``: ``W^(-1) (W X) V diag(w) V^T`` is
     ``X V diag(w) V^T`` for the whitener ``W`` applied. ``V`` are the whitened Gram's
@@ -136,7 +136,7 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
             :func:`~camppca.denoiser.gather.patch_tiles`. None is the center row.
 
     Returns:
-        ``(signal, sigma_mppca, rank)``: (B, n_vols) denoised center spectra, or with
+        ``(signal, sigma_mppca, rank)``: (B, n_vols) the voxels' denoised rows, or with
         ``full`` (B, n_vox, n_vols) rebuilt patches, in the units of ``patches``, (B,)
         fitted noise level, (B,) retained component count.
     """

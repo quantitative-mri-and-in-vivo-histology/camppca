@@ -3,11 +3,11 @@
 The engine reconstructs the center voxel as
 
     x_hat_c = e_c^T C^(1/2) ( Yw V diag(f) V^T )
-            = ( e_c^T C^(1/2) ) Yw V diag(f) V^T          <- what the engine computes
+            = ( e_c^T C^(1/2) Yw ) V diag(f) V^T  =  ( e_c^T X ) V diag(f) V^T
 
-which is plain associativity. It never uses idempotency of the projector, so `f` being a
-0/1 keep-mask is irrelevant to exactness. A continuous shrinkage profile, or an arbitrary
-one, is equally exact.
+which is plain associativity. The engine computes the last form, the voxel's own row.
+It never uses idempotency of the projector, so `f` being a 0/1 keep-mask is irrelevant to
+exactness. A continuous shrinkage profile, or an arbitrary one, is equally exact.
 
 Hard thresholding is therefore a METHOD choice, made for sigma sensitivity and because
 shrinkage would optimize in the whitened metric while the output lands in data units. It
@@ -19,19 +19,18 @@ Run with the row scale d in play, since that is the other half of the whitener.
 import numpy as np
 import pytest
 
+from camppca import NoiseModel
 from camppca.denoiser.camppca import sqrtm_psd
-from camppca.noise_model import NoiseModel
 from camppca.patch import patch_size
+
+from helpers import separable_rho
 
 PATCH = (5, 5, 3)
 N_VOLS = 24
 
 
 def _patch_correlation(ax, ay, lag):
-    rho = np.zeros((2 * lag + 1, 2 * lag + 1, lag + 1))
-    for i in range(-lag, lag + 1):
-        for j in range(-lag, lag + 1):
-            rho[i + lag, j + lag, 0] = ax ** abs(i) * ay ** abs(j)
+    rho = separable_rho(lag, lag, ax, ay)
     shape = (4, 4, 4)
     model = NoiseModel(rho=rho, d=np.ones(shape, np.float32),
                        mask=np.ones(shape, bool), lag=lag)
@@ -73,7 +72,7 @@ def test_center_row_shortcut_is_exact_for_any_profile(setup, profile_idx):
     # LITERAL: unwhiten the whole n_vox x N patch, then take the center row.
     literal = (unwhitener @ Xw * d[:, None])[center]
 
-    # FUSED: carry only the center ROW of C^(1/2) -- what the engine does.
+    # FUSED: carry only the center row of C^(1/2), the algebra behind the engine's shortcut.
     fused = ((unwhitener[center] @ Yw) @ (V * f)) @ V.T * d[center]
 
     rel = np.abs(literal - fused).max() / np.abs(literal).max()

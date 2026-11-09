@@ -20,11 +20,11 @@ noise. Above the edge ``1 + sqrt(gamma)``::
     c_k^2  = (1 - gamma / l_k^2) / (1 + gamma / l_k)       voxel-side cosine
     ct_k^2 = (1 - gamma / l_k^2) / (1 + 1 / l_k)           volume-side cosine
     t_k    = sqrt(l_k) c_k ct_k                            "gd"
-    t_k    = sqrt(l_k) c_k ct_k / (c_k^2 + s_k^2 mu_tau_k)  "lr"
+    t_k    = sqrt(l_k) c_k ct_k / (c_k^2 + sn_k^2 mu_tau_k) "lr"
 
-with ``s_k^2 = 1 - c_k^2``, ``mu_tau_k = c_k^2 / (q_k - s_k^2)`` and
+with the sine ``sn_k^2 = 1 - c_k^2``, ``mu_tau_k = c_k^2 / (q_k - sn_k^2)`` and
 ``q_k = u_k^T C u_k / (tr C / n_vox)``, ``u_k`` the k-th left singular vector of the
-whitened patch. Where ``q_k <= s_k^2`` there is no valid ``tau_k`` and "lr" falls back to
+whitened patch. Where ``q_k <= sn_k^2`` there is no valid ``tau_k`` and "lr" falls back to
 "gd". The weight on the component is ``t_k / sw_k``, and 0 below the edge.
 
 With the center voxel as output, ``q_k`` measures noise loudness with ``C`` alone. The
@@ -40,7 +40,8 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["RULES", "SHRINKERS", "check_shrink", "shrink_weight", "signal_alignment"]
+__all__ = ["RULES", "SHRINKERS", "check_shrink", "rule_text", "shrink_weight",
+           "signal_alignment"]
 
 SHRINKERS = ("hard", "gd", "lr")
 
@@ -48,6 +49,13 @@ SHRINKERS = ("hard", "gd", "lr")
 RULES = {"hard": "hard threshold, no shrinkage",
          "gd": "MP rank, Gavish-Donoho shrinkage",
          "lr": "MP rank, Leeb-Romanov shrinkage"}
+
+
+def rule_text(algorithm, shrink, aggregate, stride):
+    """The rule a denoiser applied, in words, for provenance."""
+    where = "center-voxel only" if aggregate == "center" else \
+        f"mean over overlapping patches, stride {stride}"
+    return f"MP cut {algorithm}, {RULES[shrink]}, {where}"
 
 
 def check_shrink(shrink: str) -> str:

@@ -243,6 +243,7 @@ subspace and reconstruction. Older paper drafts used it.
       phase.py             phase stabilization: complex data onto the real axis, before
                            denoising
       pool.py              CPU worker processes through joblib — both halves use it
+      warn.py              warnings that point at the caller's line
       io.py                nibabel edge
       cli.py               camppca denoise | estimate
       __init__.py          public names
@@ -349,6 +350,13 @@ Breaking any of these corrupts results without an error:
   rank and change only the weights. Standard MPPCA maps `"lr"` to `"gd"` (white noise).
 
 ## API rules
+
+- **Docstrings are Google style** (`Args:`, `Returns:`, `Raises:`), and dataclass fields
+  carry their own docstrings, as in `DenoiseResult`. Measurements and dates belong here,
+  not in docstrings, which `help()` shows and which drifted from this file.
+- **Every warning goes through `camppca.warn.warn`.** It points at the first frame
+  outside the package. A fixed `stacklevel` pointed at `limit_blas`'s wrapper for every
+  public function.
 
 - **`sigma` is returned in data units.** The engine rescales the denoised image by
   `d` at the center voxel but *not* `sigma_mppca`, so the API must apply that multiply by

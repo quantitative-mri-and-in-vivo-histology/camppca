@@ -2,40 +2,37 @@
 
 Each patch is split on its own, so the work divides over voxels. Threads do not help:
 scipy's eigendecomposition holds the GIL, and OpenBLAS called from several threads at
-once queues them (5.9x at 8 threads, 2.7x at 16, through ctypes). Separate processes,
-each with OpenBLAS limited to one thread, scale about 12x on 16 cores.
+once queues them. Separate processes, each with OpenBLAS limited to one thread, scale
+across the cores.
 
 The processes are joblib's reusable loky workers: started on first use, kept warm
 between calls, and able to run functions defined in a user's script. A worker that dies
 raises an error instead of hanging, and the next call starts fresh ones. They are not
-pinned to cores; on the EDDEN 0.9 mm image that cost nothing against the former pinned
-pool (151.5 s against 154.1 s for the MPPCA pass).
+pinned to cores, which cost nothing.
 
-Large arrays, the volume and the relative noise map, reach the workers as joblib memory maps:
-written once per pass to a file the workers map read-only. The file goes to the temp
-directory, so ``TMPDIR`` or ``JOBLIB_TEMP_FOLDER`` moves it, to local scratch on a
-cluster say. joblib's own default would be ``/dev/shm``, which pins the whole volume in
-RAM: 10.8 GB at the peak against 5.7 GB on disk for that pass, at the same speed.
+Large arrays, the volume and the relative noise map, reach the workers as joblib memory
+maps: written once per pass to a file the workers map read-only. The file goes to the
+temp directory, so ``TMPDIR`` or ``JOBLIB_TEMP_FOLDER`` moves it, to local scratch on a
+cluster say. joblib's own default, ``/dev/shm``, would pin the whole volume in RAM for no
+gain in speed.
 
 Each task returns only its own voxels' results, so no worker holds a full-slab output.
 
 BLAS THREADS. The workers run OpenBLAS with one thread. This process sets its own only
 inside camppca's calls, through :func:`blas_threads`, and restores it after, so a script
 that imports camppca keeps its settings. OpenBLAS's default is one thread per hardware
-thread, 32 on 16 cores, for numpy's and scipy's copies alike. Measured 2026-11-09:
+thread, for numpy's and scipy's copies alike.
 
 - Per-patch work run in this process, every pass with ``workers=1``, gets one thread,
-  as in the workers. A 2 mm crop's camppca estimate and denoise took 128.7 s at 32
-  threads against 14.3 s at one.
+  as in the workers. Small matrices on many threads were ten times slower.
 - The rest, mostly the loop's fit, gets :func:`main_threads`, at most
-  :data:`MAIN_THREADS`. On EDDEN 0.9 mm the fits took 15.4 s at 32 threads, 5.2 at 16,
-  4.6 at 8, 5.8 at 4 and 15.5 at 1; the estimate 52.4 s against 41.0 at 8.
+  :data:`MAIN_THREADS`, where the fit was fastest.
 - Neither raises the count above what the caller set: an ``OPENBLAS_NUM_THREADS`` or an
   outer limit stays in force.
 
-The fitted table moves with the thread count, by up to 1e-4 on EDDEN 2 mm between 16 and
-32 threads. So the count follows neither ``workers`` nor the pool: the loop stays the
-same for any number of workers.
+The fitted table moves with the thread count, by up to 1e-4. So the count follows
+neither ``workers`` nor the pool: the loop stays the same for any number of workers.
+The measurements are in CLAUDE.md, under Gotchas.
 """
 
 from __future__ import annotations
@@ -75,7 +72,7 @@ def _physical_cores():
 
 def default_workers() -> int:
     """``CAMPPCA_WORKERS`` if set, else the physical cores this process may run on, at
-    most its CPU quota. 32 workers on 16 cores were 4% faster.
+    most its CPU quota. One per hardware thread gained only a few percent.
 
     joblib's count reads the container's CPU quota, so a job limited to 4 CPUs on a
     32-core host starts 4 workers, not 16 throttled ones.

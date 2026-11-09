@@ -13,8 +13,10 @@ import pytest
 
 from camppca import NoiseModel, denoise_mppca, denoise_with_noise_model
 from camppca.denoiser.camppca import whitened_level
-from camppca.noise_model import _build_C, _effective_d, loop
+from camppca.noise_model import _build_C, _white_rho, loop
 from camppca.pool import default_workers, resolve_workers, voxel_chunks
+
+from helpers import separable_rho
 
 SHAPE = (24, 20, 12)
 N_VOLS = 60
@@ -36,10 +38,7 @@ def dataset():
 def model(dataset):
     """A correlated pattern and a relative noise map that varies, so both whitening steps act."""
     _, mask = dataset
-    rho = np.zeros((2 * LAG + 1, 2 * LAG + 1, PATCH[2]))
-    for i in range(-LAG, LAG + 1):
-        for j in range(-LAG, LAG + 1):
-            rho[i + LAG, j + LAG, 0] = 0.4 ** abs(i) * 0.2 ** abs(j)
+    rho = separable_rho(LAG, PATCH[2] - 1, 0.4, 0.2)
     d = np.where(mask, np.linspace(1.0, 2.0, SHAPE[0])[:, None, None], 0).astype(np.float32)
     return NoiseModel(rho=rho, d=d, mask=mask, lag=LAG)
 
@@ -89,7 +88,7 @@ def test_pooled_camppca_is_the_serial_pass(dataset, model):
 def test_pooled_level_pass_is_the_serial_pass(dataset, model, white):
     dwi, mask = dataset
     C = None if white else model.patch_correlation(PATCH)
-    d_eff = None if white else _effective_d(model.d, mask)
+    d_eff = None if white else model.effective_d()
     serial = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=1)
     pooled = whitened_level(dwi, mask, C, PATCH, d_field=d_eff, workers=3)
     np.testing.assert_array_equal(pooled, serial)
@@ -99,8 +98,7 @@ def test_the_pooled_loop_is_the_serial_loop(dataset, model):
     """Bit for bit: the sampled patches go in fixed chunks, pooled in chunk order. When
     the chunks followed the worker count, a near-tied rank moved the pattern by 1e-4."""
     dwi, mask = dataset
-    white = np.zeros_like(model.rho)
-    white[LAG, LAG, 0] = 1.0
+    white = _white_rho(model.rho.shape)
     serial, _ = loop.fit_rho(dwi, mask, model.d, white, np.array(PATCH), LAG,
                                  workers=1)
     for workers in (2, 3):
