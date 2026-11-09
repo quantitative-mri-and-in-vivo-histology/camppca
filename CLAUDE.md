@@ -136,7 +136,7 @@ picks the b0s the default mask is drawn from.
 The patches lie on a grid (`_sample_centers`), each wholly inside the mask, with stride
 equal to the patch, so they tile the mask without overlap. The grid's phase is the one
 with the most centers. Above 5000 the stride widens, below 500 it narrows to overlap,
-down to every voxel. No seed. EDDEN 0.9 mm gets 4579 patches, 2 mm 1563. Measured
+down to every voxel, every axis by the same factor so the grid keeps the patch's shape. No seed. EDDEN 0.9 mm gets 4579 patches, 2 mm 1563. Measured
 2026-11-09 (`docs/local/2026-11-09_loop_sampling.md`): σ moved by at most 0.1% above a
 few hundred patches, ρ stopped improving at about 700 patches of 7³, and at 2 mm
 overlapping centers up to 7060 came no closer than the tiling. A grid was no more

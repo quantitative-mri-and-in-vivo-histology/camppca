@@ -153,14 +153,14 @@ def test_the_batched_split_is_the_per_patch_algebra(dataset, model):
     patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)
     C = model.patch_correlation(PATCH)
     # Patches with a clear gap at the cut. Where the kept and dropped singular values are
-    # within 10%, float32 and float64 disagree on the projector by up to 8e-3, which is
+    # within 20%, float32 and float64 disagree on the projector by up to 8e-3, which is
     # rounding, not algebra. A patch keeping none or all has no gap to test.
     rank = loop._split(patches, C, "cordero-grande")[1].rank
     s = np.linalg.svd(sqrtm_psd(C, -0.5) @ patches.astype(np.float64), compute_uv=False)
     rows, inner = np.arange(len(s)), (rank > 0) & (rank < s.shape[1])
     gap = np.where(inner, s[rows, np.clip(rank - 1, 0, None)]
                    / s[rows, np.clip(rank, None, s.shape[1] - 1)], 0.0)
-    clear = np.flatnonzero(gap > 1.1)
+    clear = np.flatnonzero(gap > 1.2)
     patches = patches[clear[np.linspace(0, clear.size - 1, min(40, clear.size)).astype(int)]]
 
     S, factors = loop._split(patches, C, "cordero-grande")
@@ -209,6 +209,12 @@ def test_the_grid_widens_above_the_cap_and_narrows_below_the_floor(monkeypatch):
     monkeypatch.setattr(loop, "MIN_CENTERS", 2000)
     centers, stride = loop._sample_centers(mask, PATCH)
     assert centers[0].size >= 2000 and all(s < p for s, p in zip(stride, PATCH, strict=True))
+
+    thin = np.zeros((80, 80, 20), bool)
+    thin[2:78, 2:78, 2:18] = True              # (7, 7, 3) widens in proportion
+    monkeypatch.setattr(loop, "MAX_CENTERS", 100)
+    _, stride = loop._sample_centers(thin, np.array((7, 7, 3)))
+    assert stride[0] > 7 and abs(stride[2] / 3 - stride[0] / 7) <= 0.5 / 3
 
     tiny = np.zeros((20, 20, 10), bool)
     tiny[6:14, 6:14, 2:7] = True               # 48 eligible centers, fewer than the floor

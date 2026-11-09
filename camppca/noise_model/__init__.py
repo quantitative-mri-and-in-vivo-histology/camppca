@@ -249,7 +249,7 @@ def _pool_level(level, mask, size):
     return pooled
 
 
-def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, seed=0,
+def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
                          pool=3, algorithm="cordero-grande", noise_field=True, level_rounds=0,
                          workers=None):
     """Estimate the noise model from the data itself. No noise-only scan required.
@@ -263,8 +263,6 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     ``patch``  the patch this model must be able to serve; sets the lag rho covers.
                None picks dwidenoise's default, see :func:`~camppca.patch.default_patch`.
     ``lowb``   b-value at or below which a volume counts as a b0.
-    ``seed``   picks the voxels the phase check of complex data samples.  The loop's
-               patch centers lie on a grid, so re-estimating gives an identical model.
     ``pool``   box width, in voxels, the relative noise map ``d`` is averaged over.  Averaged in
                variance, over mask voxels only; see :func:`_pool_level`.  1 disables it.
     ``algorithm``, ``noise_field``  the denoiser settings the model is fitted to: the MP rule,
@@ -350,7 +348,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     else:
         d = mask.astype(np.float32)
     if complex_input:
-        _check_phase_stabilized(imag, dwi, mask, level, seed, patch, algorithm, workers)
+        _check_phase_stabilized(imag, dwi, mask, level, patch, algorithm, workers)
     sample = _good_level(d, mask)          # the same patches in every level round
     rho, info = fit_rho(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
                             noise_field=noise_field, workers=workers, sample=sample)
@@ -378,7 +376,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
 
     prov = dict(version=__version__,
                 patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
-                seed=int(seed), lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
+                lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
                 sphericity=info["sphericity"], n_centers=info["n_centers"],
@@ -413,12 +411,14 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
 PHASE_RATIO = 3.0
 
 
-def _check_phase_stabilized(imag, real, mask, level, seed, patch, algorithm, workers):
+def _check_phase_stabilized(imag, real, mask, level, patch, algorithm, workers):
     """Warn when the imaginary part carries far more than noise.
 
     The estimator works on the real part, which holds the signal only once the phase is
     stabilized. Otherwise the real part is a random projection of the signal, and the
-    model fits that. 10000 mask voxels are enough and need no copy of the volume.
+    model fits that. 10000 mask voxels, evenly spaced in C order, are enough and need no
+    copy of the volume. Spaced, not drawn, so the estimate takes no seed: the loop's
+    centers lie on a grid too.
 
     ``level`` is standard MPPCA's level of the real part, or None without a noise field,
     and then it is computed at the sampled voxels only. The check used to run only with
@@ -429,8 +429,8 @@ def _check_phase_stabilized(imag, real, mask, level, seed, patch, algorithm, wor
     from ..denoiser.camppca import whitened_level
 
     voxels = np.flatnonzero(mask)
-    pick = np.random.default_rng(seed).choice(voxels, min(10000, voxels.size), replace=False)
-    where = np.unravel_index(np.sort(pick), mask.shape)
+    pick = voxels[np.linspace(0, voxels.size - 1, min(10000, voxels.size)).astype(int)]
+    where = np.unravel_index(pick, mask.shape)
     if level is None:
         picked = np.zeros(mask.shape, bool)
         picked[where] = True

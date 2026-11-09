@@ -206,8 +206,11 @@ def _sample_centers(mask, patch):
 
     The stride is the patch, so the patches tile the mask without overlap and each brings
     its own noise. Of the grid's phases the one with the most centers is taken. Above
-    :data:`MAX_CENTERS` the stride widens by one voxel per axis until under it. Below
-    :data:`MIN_CENTERS` it narrows until over it, down to every voxel.
+    :data:`MAX_CENTERS` the stride widens until under it, below :data:`MIN_CENTERS` it
+    narrows until over it, down to every voxel. Every axis scales by the same factor, in
+    steps of one voxel on the longest, so the grid keeps the patch's shape. Adding one
+    voxel per axis instead grew the z stride of a 7 x 7 x 3 patch by a third against a
+    seventh in plane, and skipped slices.
 
     Measured 2026-11-09 on EDDEN 0.9, 1.5 and 2 mm (``docs/local/2026-11-09_loop_sampling.md``):
     sigma moved by at most 0.1% above a few hundred patches, and rho stopped improving at
@@ -223,15 +226,24 @@ def _sample_centers(mask, patch):
     if not eligible.any():
         raise ValueError(f"no mask voxel has its whole {tuple(int(v) for v in patch)} "
                          "patch inside the mask, so the loop has no patch to fit")
-    stride = tuple(int(v) for v in patch)
+    longest = int(max(patch))
+
+    def scaled(k):                    # the stride with k voxels added on the longest axis
+        return tuple(max(1, int(np.floor(int(p) * (longest + k) / longest + 0.5)))
+                     for p in patch)
+
+    k = 0
+    stride = scaled(k)
     centers = _grid(eligible, stride)
     if centers.sum() > MAX_CENTERS:
         while centers.sum() > MAX_CENTERS:
-            stride = tuple(s + 1 for s in stride)
+            k += 1
+            stride = scaled(k)
             centers = _grid(eligible, stride)
         return np.nonzero(centers), stride
     while centers.sum() < MIN_CENTERS and max(stride) > 1:
-        stride = tuple(max(s - 1, 1) for s in stride)
+        k -= 1
+        stride = scaled(k)
         centers = _grid(eligible, stride)
     return np.nonzero(centers), stride
 
