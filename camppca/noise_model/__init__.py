@@ -44,8 +44,10 @@ LEVEL_TOL = 5e-3
 #: Smallest eigenvalue a patch correlation may have. A correlation pattern can be valid for one
 #: patch and indefinite for a larger one. `_build_C` then projects it to a C with
 #: eigenvalues near zero, whitening divides by them, and sigma collapses to ~1e-7
-#: everywhere without an error.
-MIN_EIGENVALUE = 1e-3
+#: everywhere without an error. A guard, not a model limit: noise filtered by a Hann
+#: window over all of k-space has a true C at 1.2e-4 at 7^3, and the loop's likelihood
+#: reaches it. Until 2026-11-09 it was 1e-3, which that truth could not pass.
+MIN_EIGENVALUE = 1e-6
 
 
 #: Levels below this fraction of the median over the mask count as bad. Whitening divides
@@ -201,9 +203,14 @@ def _white_rho(shape):
 #: Why the loop fell back to white noise. Signal below the MP edge is smooth and
 #: alike in every patch, so pooled it reads as strong correlation that no stationary
 #: table explains. An unstabilized phase leaves such signal in the real part.
-FALLBACK_REASON = ("the noise bulk most likely holds signal, as an unstabilized phase "
+FALLBACK_REASON = ("The noise bulk most likely holds signal, as an unstabilized phase "
                    "leaves in the real part. The noise model falls back to white noise: "
                    "camppca then denoises like MPPCA with the relative noise map.")
+
+#: Why the loop fell back when the arithmetic, not the data, gave out.
+NUMERICAL_REASON = ("This is a numerical failure of the fit. The noise model falls back "
+                    "to white noise: camppca then denoises like MPPCA with the relative "
+                    "noise map.")
 
 
 def _build_C(rho, patch, lag):
@@ -357,7 +364,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
                 sphericity=info["sphericity"], n_centers=info["n_centers"],
-                loop_stride=info["stride"],
+                loop_stride=info["stride"], loop_steps=info["steps"],
                 loop_algorithm=algorithm, loop_noise_field=bool(noise_field),
                 level_rounds=level_rounds, level_rounds_run=rounds_run,
                 fallback=info["fallback"])

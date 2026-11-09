@@ -97,35 +97,41 @@ def test_the_loop_lands_on_the_same_pattern_from_a_white_start(dataset, model):
 
 
 def _reference_split(patches, C, ranks):
-    """One patch at a time, in numpy, at the ranks given."""
+    """One patch at a time, in numpy, at the ranks given: the whitened residual scatter
+    at each patch's profiled level, summed, and each patch's kept projector."""
     W, L = sqrtm_psd(C, -0.5), sqrtm_psd(C, 0.5)
     n_vox, n_vols = patches.shape[1:]
-    n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
     S, Q = np.zeros((n_vox, n_vox)), []
     for x, r in zip(patches, ranks, strict=True):
         xw = W @ x
         lam, V = np.linalg.eigh(xw.T @ xw)
-        lam, V = lam[::-1], V[:, ::-1]
-        v = lam[r:n_small].sum() / ((n_small - r) * (n_large - r))
-        U = xw @ V[:, :r] / np.sqrt(lam[:r])
-        resid = xw - xw @ V[:, :r] @ V[:, :r].T
-        S += L @ (resid @ resid.T / (n_vols * v)) @ L
+        V = V[:, ::-1]
+        U = np.linalg.qr(xw @ V[:, :r])[0]
+        resid = xw - U @ (U.T @ xw)
+        S += resid @ resid.T * (n_vols - r) * (n_vox - r) / np.sum(resid ** 2)
         Q.append((L @ U, W @ U))
-    return S / len(patches), Q
+    return S, Q
 
 
-def _bulk_map(sigma, Q):
-    """mean_b (I - Q_b) sigma (I - Q_b)^T, one patch at a time."""
-    Qm = sum(a @ b.T for a, b in Q) / len(Q)
-    cross = sum(a @ (b.T @ sigma @ b) @ a.T for a, b in Q) / len(Q)
-    return sigma - Qm @ sigma - sigma @ Qm.T + cross
+def _fisher_map(X, factors):
+    """``sum_b nu_b [P_b X P_b - tr(P_b X) P_b / d_b] / total``, one patch at a time."""
+    out = np.zeros_like(X)
+    for b in range(factors.n_b):
+        k = factors.rank[b]
+        U = np.zeros((len(X), 0))
+        for _, kk, members, Ug in factors.groups:
+            if kk == k:
+                U = Ug[list(members).index(b)].astype(np.float64)
+        P = np.eye(len(X)) - U @ U.T
+        out += factors.weights[b] * (P @ X @ P - np.trace(P @ X) * P / (len(X) - k))
+    return out / factors.total
 
 
 def _patch_projectors(factors, C):
     """Each patch's kept projector (A_b, Bm_b), in the original patch order."""
     root, W = sqrtm_psd(C, 0.5), sqrtm_psd(C, -0.5)
     Q = [None] * factors.n_b
-    for _, k, Ug in factors.groups:
+    for _, k, _, Ug in factors.groups:
         for i, b in enumerate(np.flatnonzero(factors.rank == k)):
             Q[b] = (root @ Ug[i], W @ Ug[i])
     return Q
@@ -156,6 +162,8 @@ def test_the_batched_split_is_the_per_patch_algebra(dataset, model):
 
     S, factors = loop._split(patches, C, "cordero-grande")
     S_ref, Q_ref = _reference_split(patches, C, factors.rank)
+    n = patches.shape[0] * patches.shape[2] * patches.shape[1]        # per entry
+    S, S_ref = S / n, S_ref / n
 
     assert factors.rank.min() > 0, "every patch keeps its signal"
     np.testing.assert_allclose(S, S_ref, rtol=1e-4, atol=1e-5)
@@ -236,25 +244,219 @@ def test_the_convergence_warning_reports_the_last_change(dataset, model, monkeyp
     assert "by 0.0000" not in str(caught[0].message)
 
 
-def test_an_unusable_loop_pattern_falls_back_to_white_noise(dataset, monkeypatch):
-    """Lag-1 correlation 0.7 alone is indefinite on 5 voxels. Whitening by its projection
-    overflowed float32; the loop now stops at the first such round."""
+@pytest.mark.parametrize("bend, why", [
+    (lambda delta: -delta, "the step does not point uphill"),
+    (lambda delta: np.full_like(delta, np.nan), "the Fisher step is not finite"),
+])
+def test_a_broken_step_falls_back_without_blaming_the_data(dataset, monkeypatch, bend, why):
+    """A solved Fisher step points uphill and is finite. Anything else is the arithmetic,
+    and the fallback must not blame an unstabilized phase."""
     dwi, bvals, mask = dataset
+    step = loop._fisher_step
 
-    def indefinite(S, factors, C, patch, lag, dzmax, start, threads=1):
-        rho = _white_rho((2 * lag + 1, 2 * lag + 1, dzmax + 1))
-        rho[lag - 1, lag, 0] = rho[lag + 1, lag, 0] = 0.7
-        return rho
+    def bent(*args, **kwargs):
+        delta, residual = step(*args, **kwargs)
+        return bend(delta), residual
 
-    monkeypatch.setattr(loop, "_fit_table", indefinite)
-    with pytest.warns(RuntimeWarning, match="not valid after round 1"):
+    monkeypatch.setattr(loop, "_fisher_step", bent)
+    with pytest.warns(RuntimeWarning, match=f"round 1: {why}"):
         model = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH, level_rounds=2)
 
     white = _white_rho(model.rho.shape)
     np.testing.assert_array_equal(model.rho, white)
-    assert "unstabilized phase" in model.provenance["fallback"]
+    assert "numerical failure" in model.provenance["fallback"]
+    assert "unstabilized phase" not in model.provenance["fallback"]
     assert model.provenance["level_rounds_run"] == 0
     assert model.provenance["sphericity"] == 0.0
+
+
+def _scaled_steps(factor, first_call):
+    """A Fisher step stretched by ``factor`` from call ``first_call`` on."""
+    step, calls = loop._fisher_step, []
+
+    def stretched(*args, **kwargs):
+        calls.append(None)
+        delta, residual = step(*args, **kwargs)
+        return (factor * delta if len(calls) >= first_call else delta), residual
+    return stretched
+
+
+def test_a_step_too_long_is_shortened_and_the_loop_still_converges(dataset, monkeypatch):
+    """Round 1 asks for three times the Fisher step. The line search halves it until the
+    likelihood rises, and later full steps converge as before."""
+    dwi, bvals, mask = dataset
+    stretched, plain, calls = _scaled_steps(3.0, 1), loop._fisher_step, []
+
+    def first_only(*args, **kwargs):
+        calls.append(None)
+        return (stretched if len(calls) == 1 else plain)(*args, **kwargs)
+
+    monkeypatch.setattr(loop, "_fisher_step", first_only)
+    model = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
+    steps = model.provenance["loop_steps"]
+    assert steps[0] < 1 and steps[-1] == 1
+    assert model.provenance["loop_converged"]
+
+
+def test_unconverged_with_steps_cut_by_the_likelihood_keeps_the_table(dataset, monkeypatch):
+    """Late steps three times too long are halved by the likelihood, not by the valid
+    correlations: the table is kept, with a warning."""
+    dwi, bvals, mask = dataset
+    monkeypatch.setattr(loop, "MAX_ROUNDS", 4)
+    monkeypatch.setattr(loop, "_fisher_step", _scaled_steps(3.0, 3))
+    with pytest.warns(RuntimeWarning, match="did not converge in 4 rounds"):
+        model = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
+    assert model.provenance["fallback"] is None
+    assert model.provenance["loop_steps"][-1] < 1
+    assert model.rho[LAG + 1, LAG, 0] > 0.1
+
+
+def test_unconverged_with_steps_cut_by_the_valid_correlations_falls_back(dataset, monkeypatch):
+    """Every full step fifty times too long leaves the valid correlations: the pattern is
+    pressing against them, the misfit an unstabilized phase leaves."""
+    dwi, bvals, mask = dataset
+    monkeypatch.setattr(loop, "MAX_ROUNDS", 3)
+    monkeypatch.setattr(loop, "_fisher_step", _scaled_steps(50.0, 1))
+    with pytest.warns(RuntimeWarning, match="last full step left the valid correlations"):
+        model = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
+    assert "unstabilized phase" in model.provenance["fallback"]
+    np.testing.assert_array_equal(model.rho, _white_rho(model.rho.shape))
+
+
+def test_an_unsolved_fisher_step_warns_once_and_not_after_a_fallback(dataset, monkeypatch):
+    """The solve's limit is reported once for a kept table. After a fallback it is a
+    symptom of the misfit the fallback already reports."""
+    dwi, bvals, mask = dataset
+    monkeypatch.setattr(loop, "MAX_FIT_STEPS", 1)
+    with pytest.warns(RuntimeWarning) as caught:
+        model = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
+    unsolved = [w for w in caught if "conjugate-gradient" in str(w.message)]
+    assert len(unsolved) == 1
+    assert model.provenance["fallback"] is None
+
+    step = loop._fisher_step
+    monkeypatch.setattr(loop, "_fisher_step",
+                        lambda *a, **k: (-step(*a, **k)[0], 0.5))
+    with pytest.warns(RuntimeWarning) as caught:
+        estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
+    messages = [str(w.message) for w in caught]
+    assert any("does not point uphill" in m for m in messages)
+    assert not any("conjugate-gradient" in m for m in messages)
+
+
+def _round_inputs(dataset, model):
+    """One round's split on the test data, at the model's correlation."""
+    dwi, _, mask = dataset
+    centers = _spread(loop._sample_centers(mask, PATCH)[0], 200)
+    patches = loop._gather(dwi, model.effective_d(), centers, PATCH)
+    C = model.patch_correlation(PATCH)
+    bulk, parts, rank, nu = loop._split_chunk(patches, C, "cordero-grande")
+    return patches, sqrtm_psd(C, -0.5), bulk, loop._Factors(parts, rank, nu), parts, nu
+
+
+def test_the_likelihood_rise_is_the_direct_profile_likelihood(dataset, model):
+    """Against the profile likelihood written out on each patch's bulk basis, float64."""
+    from scipy.linalg import null_space
+
+    patches, W, bulk, factors, parts, nu = _round_inputs(dataset, model)
+    cls, lags = loop._lag_classes(PATCH)
+    current = loop._class_values(model.rho, lags, LAG)
+    rhs = (bulk - factors.total * (np.eye(len(W)) - factors.Um)) / factors.total
+    delta, _ = loop._fisher_step(rhs, factors, W, PATCH, threads=1)
+    trial = current + 0.5 * delta
+
+    def direct(M):
+        total = 0.0
+        for x, U, weight in zip(patches, parts, nu, strict=True):
+            U = np.linalg.qr(U.astype(np.float64))[0]
+            V = null_space(U.T) if U.shape[1] else np.eye(len(W))
+            R = V.T @ (W @ x.astype(np.float64))
+            B = V.T @ M @ V
+            total -= 0.5 * weight * (np.linalg.slogdet(B)[1] + V.shape[1] * np.log(
+                np.trace(np.linalg.solve(B, R @ R.T))))
+        return total
+
+    want = direct(W @ trial[cls] @ W) - direct(np.eye(len(W)))
+    got = loop._gain_chunk(patches, W, W @ trial[cls] @ W, parts, nu)
+    assert got == pytest.approx(want, rel=1e-6)
+
+
+def test_the_slope_is_the_derivative_of_the_likelihood_rise(dataset, model):
+    patches, W, bulk, factors, parts, nu = _round_inputs(dataset, model)
+    cls, lags = loop._lag_classes(PATCH)
+    current = loop._class_values(model.rho, lags, LAG)
+    rhs = bulk - factors.total * (np.eye(len(W)) - factors.Um)
+    delta, _ = loop._fisher_step(rhs / factors.total, factors, W, PATCH, threads=1)
+    slope = 0.5 * float(np.sum((W @ delta[cls] @ W) * rhs))
+    eps = 1e-5
+    rise = loop._gain_chunk(patches, W, W @ (current + eps * delta)[cls] @ W, parts, nu)
+    assert rise / eps == pytest.approx(slope, rel=1e-3)
+
+
+def test_weak_correlation_converges_to_the_truth():
+    """The stop is on the largest change in the table. The old one, a change in
+    sphericity below 1e-3, cannot see a change orthogonal to C: from white a step to
+    lag-1 0.015 moves it by 7e-4, and it stopped after round 1 at lag-1 0.02. Measured,
+    that round was already within 0.0003 of where two more rounds end, so this test
+    guards the accuracy, not the difference."""
+    rng = np.random.default_rng(3)
+    shape, n_vols, h = (40, 40, 12), 60, np.array([0.03, 1.0, 0.03])
+    signal = rng.standard_normal(shape + (4,)) @ rng.standard_normal((4, n_vols))
+    dwi = signal * 25 + 400 + 10.0 * colored_noise(rng, shape, n_vols, h, np.array([1.0]))
+    mask = np.zeros(shape, bool)
+    mask[4:36, 4:36, 2:10] = True
+    model = estimate_noise_model(dwi, mask, patch=PATCH)
+    lag = model.lag
+    assert model.provenance["loop_converged"]
+    assert model.rho[lag + 1, lag, 0] == pytest.approx(filter_rho(h, lag)[lag + 1], abs=0.01)
+
+
+def test_the_float64_fisher_step_agrees_and_is_used_when_c_is_near_singular(dataset,
+                                                                            monkeypatch):
+    dwi, bvals, mask = dataset
+    used, step = [], loop._fisher_step
+
+    def spy(*args, **kwargs):
+        used.append(kwargs.get("dtype"))
+        return step(*args, **kwargs)
+
+    monkeypatch.setattr(loop, "_fisher_step", spy)
+    monkeypatch.setattr(loop, "PRECISE_BELOW", 2.0)          # every C counts as near singular
+    precise = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
+    assert used and all(d is np.float64 for d in used)
+    monkeypatch.setattr(loop, "PRECISE_BELOW", 0.0)
+    plain = estimate_noise_model(dwi, mask, bvals=bvals, patch=PATCH)
+    assert np.abs(precise.rho - plain.rho).max() < 1e-4
+
+
+def test_strong_correlation_from_a_white_start_converges_to_it():
+    """Noise filtered by a Hann window over all of k-space, 105 volumes, 5^3. From white
+    the split keeps most components. The least-squares fit then went indefinite and fell
+    back to white noise, or, on a volume this small, crashed. The likelihood converges."""
+    from scipy.ndimage import gaussian_filter
+    from scipy.signal.windows import tukey
+
+    rng = np.random.default_rng(0)
+    shape, n_vols = (24, 24, 10), 105
+    window = np.fft.ifftshift(tukey(shape[0], 1.0))
+    white = rng.standard_normal(shape + (n_vols,))
+    noise = np.real(np.fft.ifft2(np.fft.fft2(white, axes=(0, 1))
+                                 * (window[:, None] * window[None, :])[:, :, None, None],
+                                 axes=(0, 1)))
+    signal = gaussian_filter(rng.standard_normal(shape + (6,)), (2, 2, 2, 0)) \
+        @ rng.standard_normal((6, n_vols))
+    dwi = (400 + 40 * signal / signal.std() + 10 * noise / noise.std()).astype(np.float32)
+    mask = np.zeros(shape, bool)
+    mask[2:-2, 2:-2, 1:-1] = True
+
+    model = estimate_noise_model(dwi, mask, patch=(5, 5, 5))
+    acf = np.real(np.fft.ifft(window ** 2))
+    lag = model.lag
+
+    assert model.provenance["fallback"] is None and model.provenance["loop_converged"]
+    assert model.rho[lag + 1, lag, 0] == pytest.approx(acf[1] / acf[0], abs=0.02)
+    assert model.rho[lag, lag + 1, 0] == pytest.approx(acf[1] / acf[0], abs=0.02)
+    assert abs(model.rho[lag, lag, 1]) < 0.02, "z was never correlated"
 
 
 def test_the_loop_fits_to_the_denoisers_settings(dataset, model):
@@ -280,34 +482,32 @@ def test_denoising_with_other_settings_than_the_loop_fitted_warns(dataset, model
         denoise_with_noise_model(dwi, model, patch=PATCH)
 
 
-def test_the_fit_is_the_pinned_least_squares(dataset, model):
-    """The float32 conjugate-gradient fit against a dense float64 least squares built one
-    patch at a time, in whitened units, with the far-class mean held at zero."""
+def test_the_fit_is_the_pinned_fisher_step(dataset, model):
+    """The float32 conjugate-gradient step against a dense float64 solve built one patch
+    at a time, in whitened units, with the zero lag and the far-class mean held fixed."""
     dwi, _, mask = dataset
     centers = _spread(loop._sample_centers(mask, PATCH)[0], 300)
     patches = loop._gather(dwi, model.effective_d(), centers, PATCH)
     C = model.patch_correlation(PATCH)
-    S, factors = loop._split(patches, C, "cordero-grande")
-    table = loop._fit_table(S, factors, C, PATCH, LAG, PATCH[2] - 1, model.rho)
-
+    bulk, factors = loop._split(patches, C, "cordero-grande")
     W = sqrtm_psd(C, -0.5)
     cls, lags = loop._lag_classes(PATCH)
-    Q = _patch_projectors(factors, C)
-    design = np.stack([(W @ _bulk_map((cls == c).astype(float), Q) @ W).ravel()
-                       for c in range(len(lags))], axis=1)
+    rhs = (bulk - factors.total * (np.eye(len(W)) - factors.Um)) / factors.total
+    delta, residual = loop._fisher_step(rhs, factors, W, PATCH, threads=1)
+
+    basis = [W @ (cls == c).astype(float) @ W for c in range(len(lags))]
+    mapped = [_fisher_map(b, factors) for b in basis]
+    normal = np.array([[np.sum(a * m) for m in mapped] for a in basis])
+    gradient = np.array([np.sum(a * rhs) for a in basis])
     reach = np.abs(lags).max(0)
     far = np.any((np.abs(lags) == reach) & (reach > 0), axis=1).astype(float)
-    pin = np.eye(len(lags)) - np.outer(np.ones(len(lags)), far) / far.sum()
-    values = pin @ np.linalg.lstsq(design @ pin, (W @ S @ W).ravel(), rcond=None)[0]
-    ref = np.zeros_like(table)
-    for v, (dx, dy, dz) in zip(values, lags, strict=True):
-        ref[dx + LAG, dy + LAG, dz] = v
-        if dz == 0:
-            ref[-dx + LAG, -dy + LAG, 0] = v
-    ref /= ref[LAG, LAG, 0]
+    zero = (lags == 0).all(1).astype(float)
+    tangent = np.linalg.svd(np.stack([far, zero]))[2][2:].T
+    ref = tangent @ np.linalg.solve(tangent.T @ normal @ tangent, tangent.T @ gradient)
 
-    assert abs(far @ values) < 1e-10
-    assert np.abs(table - ref).max() < 1e-4
+    assert residual is None
+    assert abs(far @ delta) < 1e-8 and abs(zero @ delta) < 1e-8
+    assert np.abs(delta - ref).max() < 1e-4 * np.abs(ref).max()
 
 
 def _relative_error(d, mask):
@@ -359,11 +559,19 @@ def test_the_loop_runs_when_no_patch_keeps_anything():
     """On pure noise most patches keep rank 0, and with few patches all may. Gathering
     their kept bases then crashed: "need at least one array to concatenate"."""
     n_vox = int(np.prod(PATCH))
-    factors = loop._Factors([np.zeros((n_vox, 0), np.float32)] * 3, np.zeros(3, int))
+    factors = loop._Factors([np.zeros((n_vox, 0), np.float32)] * 3, np.zeros(3, int),
+                            np.full(3, 40.0))
     X = np.random.default_rng(0).standard_normal((n_vox, n_vox)).astype(np.float32)
-    np.testing.assert_allclose(loop._WhitenedBulk(factors, threads=1)(X), X)
+    level = np.trace(X) / n_vox * np.eye(n_vox)            # each patch's level, profiled
+    np.testing.assert_allclose(loop._WhitenedBulk(factors, threads=1)(X), X - level,
+                               rtol=1e-5, atol=1e-5)
 
-    white = _white_rho((2 * LAG + 1, 2 * LAG + 1, PATCH[2]))
-    table = loop._fit_table(np.eye(n_vox), factors, np.eye(n_vox), PATCH, LAG,
-                            PATCH[2] - 1, white, threads=1)
-    np.testing.assert_allclose(table, white, atol=1e-4)
+    # With nothing kept the Fisher operator is the identity on tables with zero lag 0,
+    # so the step is the gradient's own table.
+    cls, lags = loop._lag_classes(PATCH)
+    reach = np.abs(lags).max(0)
+    far = np.any((np.abs(lags) == reach) & (reach > 0), axis=1).astype(float)
+    tangent = np.linalg.svd(np.stack([far, (lags == 0).all(1).astype(float)]))[2][2:].T
+    want = tangent @ (tangent.T @ np.random.default_rng(1).standard_normal(len(lags)))
+    delta, _ = loop._fisher_step(want[cls], factors, np.eye(n_vox), PATCH, threads=1)
+    np.testing.assert_allclose(delta, want, atol=1e-4 * np.abs(want).max())
