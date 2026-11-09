@@ -82,3 +82,21 @@ def test_a_mask_with_a_trailing_dimension_of_one_loads_as_3d(tmp_path):
     nib.save(nib.Nifti1Image(mask, np.eye(4)), tmp_path / "mask.nii")
     loaded = io.load_mask(tmp_path / "mask.nii")
     assert loaded.shape == (4, 5, 3) and loaded.sum() == 1
+
+
+def test_only_nifti_is_read(tmp_path):
+    """A .mgz loaded and then crashed the first 3D write, after the whole denoise."""
+    path = tmp_path / "dwi.mgz"
+    nib.save(nib.MGHImage(np.zeros((4, 4, 4, 3), np.float32), np.eye(4)), path)
+    with pytest.raises(ValueError, match="expected a NIfTI"):
+        io.load_dwi(path)
+    with pytest.raises(ValueError, match="expected a NIfTI"):
+        io.load_mask(path)
+
+
+def test_a_mask_on_another_grid_is_refused(tmp_path):
+    flipped = np.diag([-2.0, 2.0, 2.0, 1.0])
+    nib.save(nib.Nifti1Image(np.ones((4, 5, 3), np.uint8), flipped), tmp_path / "mask.nii")
+    with pytest.raises(ValueError, match="do not line up"):
+        io.load_mask(tmp_path / "mask.nii", np.diag([2.0, 2.0, 2.0, 1.0]))
+    assert io.load_mask(tmp_path / "mask.nii", flipped + 1e-5).all(), "rounding passes"

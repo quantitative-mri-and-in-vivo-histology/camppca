@@ -166,6 +166,16 @@ def test_cli_writes_real_and_imaginary_parts(tmp_path):
     assert (tmp_path / "imag.nii.gz").exists()
 
 
+def test_cli_refuses_a_phase_on_another_grid(tmp_path):
+    magnitude = blob()[..., None] * np.ones(SHAPE[3])
+    nib.save(nib.Nifti1Image(magnitude.astype(np.float32), np.eye(4)), tmp_path / "mag.nii")
+    nib.save(nib.Nifti1Image(np.zeros(SHAPE, np.float32), np.diag([1.0, -1, 1, 1])),
+             tmp_path / "phase.nii")
+    with pytest.raises(ValueError, match="do not line up"):
+        main(["phase", str(tmp_path / "mag.nii"), str(tmp_path / "phase.nii"),
+              str(tmp_path / "real.nii"), "-q"])
+
+
 def test_the_pooled_result_is_the_serial_one():
     rng = np.random.default_rng(5)
     magnitude = blob()[..., None] * np.ones(SHAPE[3]) + rng.random(SHAPE)

@@ -331,6 +331,11 @@ Breaking any of these corrupts results without an error:
   whitening would divide by it. The loop also skips patches holding such a voxel.
   ideas01 sub-103 hit this in its top two slices: pooling returned NaN, and sub-01
   finished with a suspect correction of 16.8%.
+- **Files are NIfTI only, and every image of a run shares one voxel grid** (`io.py`). A
+  .mgz loaded and then crashed the first 3D write, after the whole denoise. A mask or
+  phase image whose affine differs from the input's by more than 1e-3 raises
+  (`check_same_space`). Only shapes were compared before, so a flipped mask would have
+  placed the model on a mirrored brain.
 - NaN and inf are zeroed for the fit and put back in the output (`gather.zero_nonfinite`),
   in `denoise_mppca`, `denoise_whitened` and `estimate_noise_model`. One NaN would
   otherwise poison every patch that holds it, and `eigh` runs with `check_finite=False`.

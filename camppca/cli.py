@@ -132,7 +132,7 @@ def _load(args):
     bvals = io.load_bvals(args.fslgrad[1]) if args.fslgrad else None
     mask = None
     if args.mask:
-        mask = io.load_mask(args.mask)
+        mask = io.load_mask(args.mask, affine)
     return dwi, bvals, mask, affine, header
 
 
@@ -182,7 +182,8 @@ def _plot_rho(path, model):
 
 def _phase(args, say):
     magnitude, affine, header = io.load_dwi(args.magnitude)
-    phase, _, _ = io.load_dwi(args.phase)
+    phase, phase_affine, _ = io.load_dwi(args.phase)
+    io.check_same_space(phase_affine, affine, args.phase, args.magnitude)
     phase_range = RADIANS if args.phase_range is None else tuple(args.phase_range)
     scale = phase_scale(phase, phase_range)    # checked before any work is done
     slice_axis = header.get_dim_info()[2]
