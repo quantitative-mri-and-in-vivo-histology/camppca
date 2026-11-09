@@ -420,6 +420,18 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
   test with OpenBLAS at its default took 158 s, from a thread per hardware thread on
   small matrices. `test_pool.py` tests the pool with explicit worker counts.
 
+- **The denoiser computes only the eigenvectors each patch keeps** (`spectrum.py`,
+  `_whiten_split(kept_only=True)`). One tridiagonal reduction per Gram, all eigenvalues
+  from it, the MP cut, then the top P vectors by inverse iteration, mapped back by
+  `ormtr` through ctypes, since scipy has no wrapper. P is a median 9 of 199 on EDDEN
+  0.9 mm. The whole-image denoise went from 673 s to 497 s (2026-11-09). A patch keeping
+  more than a quarter of its components gets the full `eigh`: inverse iteration fails on
+  a large cluster of equal eigenvalues, as in noiseless data. The loop needs the bulk
+  vectors and complex data has no such route yet, so both use the full `eigh`.
+  ⚠ Test references take the engine's own vectors. At a cut near float32 rounding any
+  two solvers differ by up to 0.1 on the test volumes, and both are that far from
+  float64. 32 workers on the 16-core host gained only 5%.
+
 - **Exp2 degenerates at small N.** Its width normalizer collapses as retained rank
   approaches `min(P, N)`. At 125 voxels, 34 volumes the noise estimate blew up (52% vs a
   true 5%). Keep ≳ 50 volumes in the pooled patch. `estimate_noise_model` warns below 50

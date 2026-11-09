@@ -4,9 +4,7 @@ import numpy as np
 import pytest
 
 from camppca import denoise_mppca
-from camppca.denoiser.camppca import denoise_whitened, sqrtm_psd
-from camppca.denoiser.mp_threshold import mp_threshold
-from camppca.denoiser.spectrum import eigh_descending
+from camppca.denoiser.camppca import _whiten_split, denoise_whitened, sqrtm_psd
 from camppca.patch import patch_offsets
 
 SHAPE, N_VOLS, PATCH = (11, 10, 9), 60, (5, 5, 3)
@@ -33,10 +31,13 @@ def _by_hand(dwi, voxel, C=None, d=None):
     row = int(np.flatnonzero((np.array(idx).T == voxel).all(1))[0])
     levels = np.ones(len(idx[0]), np.float32) if d is None else d[idx]
     X = dwi[idx] / levels[:, None]
-    Y = X if C is None else sqrtm_psd(C, -0.5).astype(np.float32) @ X
-    evals, V = eigh_descending((Y.T @ Y)[None])
+    whitener = None if C is None else sqrtm_psd(C, -0.5).astype(np.float32)
     n_vox = len(idx[0])
-    r = int(mp_threshold(evals, min(n_vox, N_VOLS), max(n_vox, N_VOLS))[0][0])
+    # The engine's own eigenvectors. This C is singular, so the cut can fall in float32
+    # rounding, where any two solvers differ. The test is about the box, not the solver.
+    _, _, V, rank, _ = _whiten_split(X[None], whitener, min(n_vox, N_VOLS), max(n_vox, N_VOLS),
+                                     "cordero-grande", kept_only=True)
+    r = int(rank[0])
     V = V[0, :, :r].astype(np.float64)
     # Unwhitened with C^(1/2) C^(-1/2) = I: the voxel's own row of X, projected. Through
     # C^(1/2) times the float32 whitener the hand calculation itself was off by 0.5.
