@@ -2,7 +2,7 @@
 
     camppca denoise  in.nii out.nii [--noise n.nii] [--qc DIR] -fslgrad in.bvec in.bval
     camppca estimate in.nii --qc DIR                           -fslgrad in.bvec in.bval
-    camppca phase    mag.nii phase.nii real.nii [--imag PATH]
+    camppca phase    mag.nii phase.nii real.nii [--imag PATH] [--phase-range LOW HIGH]
 
 Outputs split by AUDIENCE, not by kind:
 
@@ -37,7 +37,7 @@ from .denoiser.aggregate import check_aggregate
 from .denoiser.mp_threshold import ALGORITHMS
 from .denoiser.shrink import RULES
 from .noise_model import estimate_noise_model
-from .phase import phase_scale, stabilize_phase
+from .phase import RADIANS, phase_scale, stabilize_phase
 
 __all__ = ["main"]
 
@@ -111,9 +111,13 @@ def _parser():
     s = sub.add_parser("phase", help="rotate complex data onto the real axis; the real "
                                      "part then denoises like a magnitude image")
     s.add_argument("magnitude", help="4D magnitude image")
-    s.add_argument("phase", help="4D phase image, in radians or in any unit whose range "
-                                 "is one full turn, as scanners store it")
+    s.add_argument("phase", help="4D phase image, in radians unless --phase-range says "
+                                 "otherwise")
     s.add_argument("output", help="4D real part")
+    s.add_argument("--phase-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
+                   default=None, help="the phase values that span one full turn, e.g. "
+                                      "-4096 4096 for Siemens integers or -180 180 for "
+                                      "degrees (default: radians, -pi pi)")
     s.add_argument("--imag", metavar="PATH",
                    help="also write the imaginary part, which should hold noise only")
     s.add_argument("--workers", type=int, default=None, metavar="N",
@@ -179,13 +183,14 @@ def _plot_rho(path, model):
 def _phase(args, say):
     magnitude, affine, header = io.load_dwi(args.magnitude)
     phase, _, _ = io.load_dwi(args.phase)
-    scale = phase_scale(phase)             # for the message: stabilize_phase applies it
+    phase_range = RADIANS if args.phase_range is None else tuple(args.phase_range)
+    scale = phase_scale(phase, phase_range)    # checked before any work is done
     slice_axis = header.get_dim_info()[2]
     slice_axis = 2 if slice_axis is None else slice_axis
     say(f"  {Path(args.magnitude).name}  {magnitude.shape}, phase x {scale:.6g} to radians, "
         f"slices along axis {slice_axis}")
     out = stabilize_phase(magnitude, phase, slice_axis=slice_axis, imag=bool(args.imag),
-                          workers=args.workers)
+                          workers=args.workers, phase_range=phase_range)
     real, imag = out if args.imag else (out, None)
     del magnitude, phase
     io.save_like(args.output, real, affine, header)

@@ -19,35 +19,45 @@ def blob(shape=SHAPE[:3]):
 
 
 def phases(rng, shape=SHAPE):
-    """A rough fixed phase, the same in every volume, plus a smooth one per volume."""
+    """A rough fixed phase, the same in every volume, plus a smooth one per volume, wrapped
+    to radians."""
     x, y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
     fixed = rng.uniform(-np.pi, np.pi, shape[:3])
     smooth = np.stack([(a * x + b * y)[:, :, None] * np.ones(shape[2])
                        for a, b in rng.uniform(-0.05, 0.05, (shape[3], 2))], axis=-1)
-    return fixed[..., None] + smooth
+    return np.angle(np.exp(1j * (fixed[..., None] + smooth)))
 
 
-def test_phase_scale_takes_the_range_as_one_turn():
-    assert phase_scale(np.array([-4096.0, 0.0, 4094.0])) == pytest.approx(np.pi / 4096,
-                                                                           rel=1e-3)
-    assert phase_scale(np.array([0.0, 4095.0])) == pytest.approx(2 * np.pi / 4096, rel=1e-3)
-    assert phase_scale(np.array([-180.0, 179.0])) == pytest.approx(np.pi / 180, rel=1e-2)
-    assert phase_scale(np.array([-3142.0, 3141.0])) == pytest.approx(1e-3, rel=1e-3)
-    assert phase_scale(np.array([-4096.0, np.nan, 4094.0])) == pytest.approx(np.pi / 4096,
-                                                                             rel=1e-3)
+def test_phase_scale_takes_the_declared_turn():
+    siemens = np.array([-4096.0, 0.0, np.nan, 4094.0])
+    assert phase_scale(siemens, (-4096, 4096)) == pytest.approx(np.pi / 4096)
+    assert phase_scale(np.array([0.0, 4095.0]), (0, 4096)) == pytest.approx(np.pi / 2048)
+    assert phase_scale(np.array([-180.0, 179.0]), (-180, 180)) == pytest.approx(np.pi / 180)
 
 
-def test_phase_scale_refuses_a_constant_or_empty_phase():
-    with pytest.raises(ValueError, match="phase unit"):
-        phase_scale(np.full(4, 4000.0))
-    with pytest.raises(ValueError, match="phase unit"), pytest.warns(RuntimeWarning):
-        phase_scale(np.full(4, np.nan))
-
-
-def test_phase_scale_keeps_radians():
+def test_phase_scale_takes_radians_by_default():
     assert phase_scale(np.array([-3.1, 3.14])) == 1.0
-    assert phase_scale(np.array([0.0, 6.28])) == 1.0
-    assert phase_scale(np.array([-0.5, 0.5])) == 1.0, "less than a turn is not stretched"
+    assert phase_scale(np.array([0.0, 6.28])) == 1.0, "only the width of the turn matters"
+
+
+def test_phase_scale_refuses_a_phase_wider_than_the_turn():
+    """Siemens integers read as radians, and radians that were unwrapped, were scaled by
+    their range until 2026-11-09: [-4, 4] rad came out at 0.785 of the truth."""
+    with pytest.raises(ValueError, match="--phase-range"):
+        phase_scale(np.array([-4096.0, 4094.0]))
+    with pytest.raises(ValueError, match="wider than the declared turn"):
+        phase_scale(np.array([-4.0, 4.0]))
+    with pytest.raises(ValueError, match="no finite"), pytest.warns(RuntimeWarning):
+        phase_scale(np.full(4, np.nan))
+    with pytest.raises(ValueError, match="low to high"):
+        phase_scale(np.array([0.0, 1.0]), (180, -180))
+
+
+def test_phase_scale_warns_on_less_than_half_a_turn():
+    with pytest.warns(RuntimeWarning, match="less than half"):
+        assert phase_scale(np.array([-0.5, 0.5])) == 1.0
+    with pytest.warns(RuntimeWarning, match="less than half"):
+        phase_scale(np.array([-3.1, 3.1]), (-4096, 4096))
 
 
 def test_stabilize_phase_reads_degrees_like_radians():
@@ -56,7 +66,7 @@ def test_stabilize_phase_reads_degrees_like_radians():
     phase = np.angle(np.exp(1j * phases(rng)))
     phase[0, 0, 0, 0], phase[0, 0, 0, 1] = -np.pi, np.pi      # the full turn, as noise gives
     radians = stabilize_phase(magnitude, phase)
-    degrees = stabilize_phase(magnitude, np.degrees(phase))
+    degrees = stabilize_phase(magnitude, np.degrees(phase), phase_range=(-180, 180))
     np.testing.assert_allclose(degrees, radians, atol=1e-3 * magnitude.max())
 
 
@@ -83,6 +93,23 @@ def test_the_reference_is_the_first_bright_volume():
     assert reference_volume(magnitude) == 2
     magnitude[0, 0, 0, 1] = np.nan
     assert reference_volume(magnitude) == 2
+
+
+def test_a_nan_leaves_its_neighbours_turned():
+    """One NaN spread through the smoothing and left its 5 x 5 neighbours unturned."""
+    magnitude = np.full((16, 16, 3, 4), 100.0)
+    phase = np.zeros(magnitude.shape)
+    phase[..., 1:] = 0.8                       # a constant phase on every volume but one
+    phase[3, 3, 1, 0] = np.nan                 # in the reference volume
+    phase[0, 0, 0, 1:3] = -np.pi, np.pi        # the full turn, as noise gives
+    magnitude[8, 8, 1, 2] = np.nan
+    real = stabilize_phase(magnitude, phase)
+    # The reference phase's NaN makes that voxel NaN in every volume, and nothing else.
+    assert np.isnan(real[8, 8, 1, 2]) and np.isnan(real[3, 3, 1]).all()
+    finite = np.isfinite(real)
+    assert finite.sum() == real.size - 1 - magnitude.shape[3]
+    finite[:3, :3, 0] = False                  # the corner holding the full turn
+    np.testing.assert_allclose(real[finite], 100.0, rtol=1e-5)
 
 
 def test_the_real_part_carries_no_noise_floor():
@@ -125,8 +152,12 @@ def test_cli_writes_real_and_imaginary_parts(tmp_path):
     nib.save(img, tmp_path / "phase.nii.gz")
     nib.save(nib.Nifti1Image(magnitude.astype(np.float32), np.eye(4)), tmp_path / "mag.nii.gz")
 
-    rc = main(["phase", str(tmp_path / "mag.nii.gz"), str(tmp_path / "phase.nii.gz"),
-               str(tmp_path / "real.nii.gz"), "--imag", str(tmp_path / "imag.nii.gz"), "-q"])
+    args = ["phase", str(tmp_path / "mag.nii.gz"), str(tmp_path / "phase.nii.gz"),
+            str(tmp_path / "real.nii.gz"), "--imag", str(tmp_path / "imag.nii.gz"), "-q"]
+    with pytest.raises(ValueError, match="--phase-range"):
+        main(args)
+    assert not (tmp_path / "real.nii.gz").exists(), "refused before any work"
+    rc = main(args + ["--phase-range", "-4096", "4096"])
     assert rc == 0
     real = np.asanyarray(nib.load(tmp_path / "real.nii.gz").dataobj)
     assert real.shape == SHAPE and real.dtype == np.float32

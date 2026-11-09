@@ -60,8 +60,10 @@ The real part keeps Gaussian noise, so it has no Rician noise floor. The recipe 
 EDDEN preprocessing (Manzano-Patrón et al. 2024) with a different filter. The raw phase of
 one bright reference volume, in practice a b0, is removed from every volume. Then in each
 slice and volume a smooth estimate of the phase is removed. It comes from the decorrelated
-filter of Sprenger et al. (2017), where EDDEN used a k-space low-pass. The phase is read in
-radians or in any unit whose range is one full turn, such as -4096 to 4094 on Siemens.
+filter of Sprenger et al. (2017), where EDDEN used a k-space low-pass. The phase is read
+in radians. For any other format, `--phase-range LOW HIGH` gives the values that span one
+full turn, such as `-4096 4096` for Siemens integers or `-180 180` for degrees. A phase
+wider than the declared turn stops the run before any work is done.
 `--imag` writes the imaginary part, which should hold noise only.
 
 ### Complex data: denoising both channels

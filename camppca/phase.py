@@ -39,6 +39,7 @@ References:
 
 from __future__ import annotations
 
+import warnings
 from functools import partial
 
 import numpy as np
@@ -62,34 +63,60 @@ def _dk_weights():
     return k / k.sum()
 
 
-def phase_scale(phase) -> float:
+#: Radians, the phase format unless the caller declares another.
+RADIANS = (-np.pi, np.pi)
+#: How far the data may span past the declared turn, as a fraction of it.
+SPAN_MARGIN = 0.01
+
+
+def phase_scale(phase, phase_range=RADIANS) -> float:
     """The factor that turns a stored phase image into radians.
 
-    1 when the values fit in one turn of radians, within [-pi, 2pi]. Otherwise the range
-    from the smallest to the largest value is taken as one full turn. That fits any
-    unit: Siemens integers from -4096 to 4094, degrees, milliradians. A real phase image
-    covers a full turn, since its noisy background does. A constant offset is harmless,
-    since the stabilization removes it with the rest of the phase. NaN is ignored.
+    ``phase_range`` is the pair of values that spans one full turn: radians by default,
+    ``(-4096, 4096)`` for Siemens integers, ``(-180, 180)`` for degrees. Only its width
+    matters, since a constant offset is removed with the rest of the phase, so radians
+    from 0 to 2 pi pass too. The format is declared, not guessed: until 2026-11-09 the
+    range of the values was taken as one turn, and a phase in radians that was unwrapped
+    or offset came out scaled wrong without a word.
+
+    Raises:
+        ValueError: if the values span more than the declared turn, by over
+            :data:`SPAN_MARGIN`, or hold no finite value. A real phase image spans close to
+            a full turn, since its noisy background does, so less than half a turn warns.
     """
-    lo, hi = float(np.nanmin(phase)), float(np.nanmax(phase))
-    if lo >= -np.pi - 1e-3 and hi <= 2 * np.pi + 1e-3 and hi - lo <= 2 * np.pi + 1e-3:
-        return 1.0
-    if not np.isfinite(hi - lo) or hi == lo:
-        raise ValueError(f"cannot read the phase unit: its values run from {lo} to {hi}")
-    return 2 * np.pi / (hi - lo)
+    lo, hi = (float(v) for v in phase_range)
+    if not hi > lo:
+        raise ValueError(f"phase_range must run from low to high, got {phase_range}")
+    turn = hi - lo
+    low, high = float(np.nanmin(phase)), float(np.nanmax(phase))
+    if not np.isfinite(high - low):
+        raise ValueError("the phase holds no finite value")
+    if high - low > turn * (1 + SPAN_MARGIN):
+        raise ValueError(
+            f"the phase runs from {low:g} to {high:g}, wider than the declared turn of "
+            f"{lo:g} to {hi:g}. Declare its format: --phase-range LOW HIGH on the command "
+            f"line, phase_range=(low, high) in Python, e.g. -4096 4096 for Siemens integers "
+            f"or -180 180 for degrees.")
+    if high - low < turn / 2:
+        warnings.warn(f"the phase runs from {low:g} to {high:g}, less than half the declared "
+                      f"turn of {lo:g} to {hi:g}. Check its format.", RuntimeWarning,
+                      stacklevel=2)
+    return 2 * np.pi / turn
 
 
-def stabilize_phase(magnitude, phase, slice_axis=2, imag=False, workers=None):
+def stabilize_phase(magnitude, phase, slice_axis=2, imag=False, workers=None,
+                    phase_range=RADIANS):
     """Rotate complex 4D data onto the real axis and return the real part.
 
     Args:
         magnitude: (X, Y, Z, N) magnitude.
-        phase: (X, Y, Z, N) phase, in radians or in any unit whose range is one full
-            turn, as scanners store it. See :func:`phase_scale`.
+        phase: (X, Y, Z, N) phase, in the format ``phase_range`` declares.
         slice_axis: the spatial axis across slices. The filter works in the other two.
         imag: also return the imaginary part, which should hold noise only.
         workers: CPU processes the volumes are split over, see :mod:`camppca.pool`. The
             volumes are independent, so the result does not depend on it.
+        phase_range: the values that span one full turn, radians by default. See
+            :func:`phase_scale`.
 
     Returns:
         (X, Y, Z, N) float32 real part, or ``(real, imag)``.
@@ -101,7 +128,7 @@ def stabilize_phase(magnitude, phase, slice_axis=2, imag=False, workers=None):
         raise ValueError(f"magnitude and phase must be 4D and alike, got {magnitude.shape} "
                          f"and {phase.shape}")
     n_vols = magnitude.shape[3]
-    scale = phase_scale(phase)             # per volume: no scaled copy of the phase
+    scale = phase_scale(phase, phase_range)    # per volume: no scaled copy of the phase
     workers = resolve_workers(workers)
 
     reference = reference_volume(magnitude)
@@ -153,8 +180,12 @@ def _rotate_volumes(magnitude, phase, fixed, volumes, scale, slice_axis, imag):
     im = np.empty_like(real) if imag else None
     for k, n in enumerate(volumes):
         z = _volume(magnitude, phase, n, scale) * fixed
-        smooth = (ndimage.convolve(z.real, weights, mode="constant")
-                  + 1j * ndimage.convolve(z.imag, weights, mode="constant"))
+        # A zero adds nothing to the weighted sum whose angle is the smooth phase, so
+        # zeroing NaN and inf leaves them out exactly. Left in, one NaN spread to its
+        # 5 x 5 neighbours, which then went unturned. They stay NaN in the output.
+        finite = np.where(np.isfinite(z), z, 0)
+        smooth = (ndimage.convolve(finite.real, weights, mode="constant")
+                  + 1j * ndimage.convolve(finite.imag, weights, mode="constant"))
         size = np.abs(smooth)
         # The unit phasor of the smooth phase, conjugated: exp(-i angle) without the
         # angle. Where the estimate is zero, outside the head, nothing is turned.

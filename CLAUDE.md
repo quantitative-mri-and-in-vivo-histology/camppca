@@ -372,6 +372,13 @@ removed from every volume. Then per slice and volume the phase of the dk smooth 
   result does not depend on the number of workers. On EDDEN 0.9 mm the step took about
   125 s on one core before and 22 s on 16 workers after (2026-11-05), the phasor now
   taken as `conj(s) / |s|` without `angle`.
+- **The phase format is declared, never guessed** (`phase_range`, `--phase-range LOW HIGH`,
+  radians by default). Only the width of the turn matters. A phase wider than it raises,
+  narrower than half warns. Until 2026-11-09 `phase_scale` took the data's range as one
+  turn, so radians that were unwrapped or offset came out scaled wrong without a word.
+- NaN and inf are zeroed before the smoothing: a zero adds nothing to the complex sum
+  whose angle is the smooth phase. Left in, one NaN left its 5 x 5 neighbours unturned.
+  They stay NaN in the output.
 - The phase is removed with a smooth estimate, which leaves neighbours' noise correlation
   in the real part close to the complex one. The estimator measures it from the real
   part anyway.
