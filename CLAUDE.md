@@ -173,8 +173,36 @@ voxel's level. On synthetic data the rim of half a patch at the mask edge then s
 within a median 0.8% of the true level, up to 5%. The old fill, the median over the mask,
 pushed it off by a median 2.9%, up to 32%.
 
-Each round fits one value per lag class (364 at 5³, 1098 at 7³) to the pooled bulk, in whitened
-units, by conjugate gradients. ⚠ **The hole.** Every patch keeps its patch-mean pattern
+Each round takes one Fisher scoring step on the likelihood of the patches' bulk
+residuals, one value per lag class (364 at 5³, 1098 at 7³), with a backtracking line
+search (2026-11-09). Each patch's level is profiled out, so MPPCA's level for a patch is
+not used, only its rank and kept directions, and the zero lag is held at 1. The step
+needs one Fisher operator per conjugate-gradient step, the bulk map minus each patch's
+level direction. The likelihood is minus infinity at a singular `C`, and the line
+search only accepts a step that raises it, so every table is a valid correlation. The
+rise is computed per patch from the trial `C` against `I`, never as the difference of
+two large values: near convergence it is a millionth of the likelihood. Write-up:
+`docs/local/2026-11-09_loop_valid_table.md`, scripts `profiling/likelihood_*.py`.
+- Why. The least-squares fit before it passed the misfit through the bulk map twice,
+  which magnifies the directions the bulk barely sees. On a phantom filtered by a Hann
+  window over all of k-space, 105 volumes, 5³, the split from white keeps a median 68
+  of 105 components, and the least-squares table came out at smallest eigenvalue −5.3
+  and fell back to white noise: σ 0.19 of the truth. The likelihood reaches ρ(1) 0.675
+  against 0.677, σ 0.96. At 7³ the true `C` has smallest eigenvalue 1.2e-4, and it
+  reaches that too, σ 0.99. EDDEN 2 mm and 0.9 mm: tables within 0.0022, σ by a
+  median 0.02% at most, 99th percentile 0.03%, all six rounds full steps.
+- ⚠ Each patch's kept directions are orthonormalized by QR in float64. Taken by the
+  eigenvalues, a patch keeping 104 of 105 components had columns far from unit length,
+  its projector was no projector, and the Fisher operator went indefinite in round 1.
+  With MPPCA's level plugged in, the same patches had a level near zero and a scatter
+  1e10 times too large.
+- Tried and dropped (`profiling/constrained_patch.py`, `hann_fallback.py`): least
+  squares restricted to valid tables drifts along smooth patterns the bulk barely sees,
+  `C` turns weak along them, whitening lifts the signal until the noise falls below
+  float32 resolution, and the denoiser returned σ 0. Damped steps, mixing with white
+  noise and a margin above the floor each failed one of the phantoms.
+
+⚠ **The hole.** Every patch keeps its patch-mean pattern
 as signal, so the bulk cannot see one direction: the same value added to every lag. It
 is fixed by holding the mean over the far lag classes, those on the edge of the patch's
 lag box, at zero. Do not go back to a free solve of `Sigma` with lag averaging: there the
@@ -191,8 +219,8 @@ split's limit, not the fit's. Estimating from the volume side (project every vox
 a global signal subspace) was tried and fails on real data: the signal subspace is local.
 
 The split runs in float32, its bulk summed in float64. It needed float64 only while the
-free solve left `C` near singular. Against float64 the table moved by at most 2.4e-5.
-The fit runs in float32 too, within 1e-4 of a float64 least squares.
+free solve left `C` near singular. Against float64 the least-squares table moved by at
+most 2.4e-5. The Fisher step runs in float32 too, within 1e-4 of a dense float64 solve.
 
 ### The check
 
@@ -290,18 +318,26 @@ Breaking any of these corrupts results without an error:
 - `LAG = max(patch[0], patch[1]) - 1` in-plane, and `dzmax = patch[2] - 1`. Smaller, and
   lag lookup wraps around. `dzmax` used to equal `LAG`, which crashed a one-slice patch
   on a thin volume.
-- **The loop falls back to white noise** when a round's fitted table is not a valid
-  correlation, smallest eigenvalue of its `C` below `MIN_EIGENVALUE`, checked before
-  projecting. It warns, and provenance records `fallback`. Cause seen: in the real part
-  of data whose phase was never stabilized, the signal is higher rank, part of it falls
-  below the MP edge, and pooled over the loop's patches that smooth signal reads as strong
-  correlation no table explains. `_build_C` then projected to a C with eigenvalue 1e-9,
-  the next round whitened by up to 3e4, and float32 overflowed (EDDEN 2 mm raw real
-  part, 2026-11-05). camppca with a white model is MPPCA with the relative noise map.
-- `C` must have smallest eigenvalue ≥ 1e-3 (`MIN_EIGENVALUE`). A table valid for one
+- **The loop falls back to white noise when the stationary model does not explain the
+  bulk**: no step down to 2^-10 (`MIN_STEP`) raises the likelihood, the step does not
+  point uphill, the split is not finite, or 20 rounds end without convergence and the
+  last step was still shortened. Near a regular optimum Fisher scoring takes full
+  steps. It warns, and provenance records `fallback`; `loop_steps` records every
+  round's step. A loop that has not converged on full steps keeps its table and warns.
+  Cause seen: in the real part of data whose phase was never stabilized, the signal is
+  higher rank, part of it falls below the MP edge, and pooled over the loop's patches
+  that smooth signal reads as strong correlation no table explains. The likelihood
+  then climbs toward a sphericity of 25 where the truth is 0, pressing against the
+  valid correlations. Under least squares `_build_C` projected such a table to a C with
+  eigenvalue 1e-9, the next round whitened by up to 3e4, and float32 overflowed (EDDEN
+  2 mm raw real part, 2026-11-05). camppca with a white model is MPPCA with the
+  relative noise map.
+- `C` must have smallest eigenvalue ≥ 1e-6 (`MIN_EIGENVALUE`). A table valid for one
   patch can be indefinite for a larger one, and whitening by a near-singular `C` sends
-  σ to ~1e-7. `patch_correlation` raises. `_build_C` still projects silently, because
-  the loop needs that each round.
+  σ to ~1e-7. `patch_correlation` raises. `_build_C` still projects silently. A guard,
+  not a model limit: it was 1e-3 until 2026-11-09, and the Hann phantom's true `C` at
+  7³, 1.2e-4, could not pass it. The denoiser whitened by that `C` without trouble, as
+  its weak directions are ones where the data has little energy.
 - **`NoiseModel` checks its table, and `patch_correlation` checks the patch** (2026-11-09).
   `rho` must be `(2·lag+1, 2·lag+1, dzmax+1)` with 1 at zero lag: off-center tables were
   read wrong, and C's diagonal hid a covariance. A patch wider on any axis than
@@ -493,7 +529,11 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
   - What the 17 s is: the level pass 3 s, six splits at 1.0 s, six fits at 1.2 s. A fit
     is 3 to 4 preconditioned steps of two bulk maps each, plus 0.25 s to build the
     preconditioner. The splits are slower in the pool than alone, about 1.5 times, from
-    shared memory bandwidth and clock.
+    shared memory bandwidth and clock. Measured with the least-squares fit. The
+    likelihood loop on EDDEN 0.9 mm (2026-11-09): estimate 27.4 s against 25.1 s, of
+    which six Fisher steps 3.8 s and six line-search passes 3.2 s. A pass gathers and
+    whitens the patches again in the workers, and needs per patch only products with
+    the trial `C`'s inverse and an r x r solve.
   - **BLAS threads in the main process are set inside camppca's calls only**
     (`pool.blas_threads`, `pool.limit_blas` on `estimate_noise_model`,
     `denoise_with_noise_model`, `denoise_whitened`, `whitened_level`), through
