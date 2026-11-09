@@ -20,6 +20,8 @@ from camppca.denoiser.aggregate import check_aggregate, patch_centers
 from camppca.denoiser.camppca import denoise_whitened, sqrtm_psd
 from camppca.patch import patch_offsets
 
+from helpers import separable_correlation
+
 SHAPE = (14, 12, 8)
 N_VOLS = 40
 PATCH = (3, 3, 3)
@@ -37,12 +39,6 @@ def dataset():
     d = np.linspace(1.0, 1.6, SHAPE[0], dtype=np.float32)[:, None, None] * np.ones(
         SHAPE, np.float32)
     return dwi, mask, d
-
-
-def correlation(patch, ax=0.5, ay=0.3, az=0.15):
-    off = patch_offsets(patch)
-    lags = [off[:, i][:, None] - off[:, i][None, :] for i in range(3)]
-    return (ax ** np.abs(lags[0])) * (ay ** np.abs(lags[1])) * (az ** np.abs(lags[2]))
 
 
 def reference_mean(dwi, mask, centers, C=None, d=None):
@@ -109,7 +105,7 @@ def test_mppca_mean_is_the_long_way(dataset, stride):
 @pytest.mark.parametrize("stride", [1, 2])
 def test_camppca_mean_is_the_long_way_with_explicit_unwhitening(dataset, stride):
     dwi, mask, d = dataset
-    C = correlation(PATCH)
+    C = separable_correlation(PATCH, 0.5, 0.3, 0.15)
     got = denoise_whitened(dwi, mask, C, patch=PATCH, d_field=d, aggregate="mean",
                            stride=stride, workers=1)
     want = reference_mean(dwi, mask, patch_centers(mask, PATCH, stride), C=C, d=d)
@@ -121,7 +117,7 @@ def test_camppca_mean_is_the_long_way_with_explicit_unwhitening(dataset, stride)
 
 def test_pooled_mean_is_the_serial_mean(dataset):
     dwi, mask, d = dataset
-    C = correlation(PATCH)
+    C = separable_correlation(PATCH, 0.5, 0.3, 0.15)
     for stride in (1, 2):
         serial = denoise_mppca(dwi, mask, patch=PATCH, aggregate="mean", stride=stride,
                                workers=1)
@@ -173,7 +169,7 @@ def test_mean_lr_weighs_the_whole_patch_and_pools_bit_for_bit(dataset):
     """In mean mode "lr" runs with each patch's levels. It differs from "gd", and the
     pool still changes nothing."""
     dwi, mask, d = dataset
-    C = correlation(PATCH)
+    C = separable_correlation(PATCH, 0.5, 0.3, 0.15)
     args = dict(patch=PATCH, d_field=d, aggregate="mean", stride=2)
     serial = denoise_whitened(dwi, mask, C, shrink="lr", workers=1, **args)
     pooled = denoise_whitened(dwi, mask, C, shrink="lr", workers=3, **args)

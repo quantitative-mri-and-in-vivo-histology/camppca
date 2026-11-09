@@ -18,7 +18,7 @@ different way and feeds the same engine, so nothing downstream may assume this o
 The loop runs MPPCA's own split, so it uses the denoiser's internals.
 """
 
-import warnings
+import hashlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -27,6 +27,7 @@ from scipy.ndimage import uniform_filter
 
 from ..patch import check_patch, patch_offsets, required_lag, resolve_patch, table_index
 from ..pool import limit_blas
+from ..warn import warn
 from .masks import brain_mask
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask"]
@@ -85,28 +86,31 @@ def _effective_d(d, mask):
 
 @dataclass
 class NoiseModel:
-    """Spatial noise model: correlation pattern ``rho`` plus relative noise map ``d``.
-
-    ``rho``        (2*lag+1, 2*lag+1, dzmax+1) correlation pattern, unit at zero lag.
-                   PATTERN ONLY -- carries no level.
-    ``d``          (X, Y, Z) relative noise map, defined up to scale: an MPPCA noise level
-                   pooled over a ``pool``^3 box.  Only ratios matter.  Zero outside
-                   ``mask``.
-    ``mask``       (X, Y, Z) bool, the voxels the model was estimated on.
-    ``lag``        max in-plane lag ``rho`` covers; with ``rho.shape[2] - 1``, the
-                   through-slice one, it bounds the patch this model can serve.
-    ``fitted_to``  the denoiser settings ``rho`` was fitted to, which the denoiser reads:
-                   ``patch``, ``algorithm`` and ``noise_field``. Any key may be missing,
-                   for a model whose ``rho`` came from elsewhere.
-    ``provenance`` the record of how the model was made. The denoiser never reads it.
-    """
+    """Spatial noise model: correlation pattern ``rho`` plus relative noise map ``d``."""
 
     rho: np.ndarray
+    """(2*lag+1, 2*lag+1, dzmax+1) correlation pattern, unit at zero lag. Pattern only,
+    it carries no level."""
+
     d: np.ndarray
+    """(X, Y, Z) relative noise map, defined up to scale: standard MPPCA's
+    ``sigma_mppca`` pooled over a ``pool``^3 box. Only ratios matter. Zero outside
+    ``mask``."""
+
     mask: np.ndarray
+    """(X, Y, Z) bool, the voxels the model was estimated on."""
+
     lag: int
+    """Largest in-plane lag ``rho`` covers. With ``rho.shape[2] - 1``, the through-slice
+    one, it bounds the patch this model can serve."""
+
     provenance: dict = field(default_factory=dict)
+    """The record of how the model was made. The denoiser never reads it."""
+
     fitted_to: dict = field(default_factory=dict)
+    """The denoiser settings ``rho`` was fitted to, which the denoiser reads: ``patch``,
+    ``algorithm`` and ``noise_field``. Any key may be missing, for a model whose ``rho``
+    came from elsewhere."""
 
     def __post_init__(self):
         # A uint8 mask (what `nib.load(...).get_fdata().astype(...)` hands you) would turn
@@ -131,8 +135,9 @@ class NoiseModel:
     def patch_correlation(self, patch):
         """Derive ``C`` (n_vox, n_vox), the unit-diagonal patch correlation.
 
-        ``C`` is ``rho`` re-indexed into the geometry of this patch, PSD-projected to unit
-        diagonal.  Raises if the patch needs lags this model never measured: beyond the
+        ``C`` is ``rho`` re-indexed into the geometry of this patch. A table that is not
+        a valid correlation for it raises, so ``C`` is never a projected stand-in.
+        Raises if the patch needs lags this model never measured: beyond the
         table, the index runs off it and numpy wraps around silently. Within the table,
         a model fitted to a patch fills only the lags that patch spans, so a patch wider
         on any axis than ``fitted_to["patch"]`` raises too: the other lags hold the white
@@ -176,10 +181,10 @@ def _table_C(rho, patch, lag):
     dx = o[:, 0][:, None] - o[:, 0][None, :]
     dy = o[:, 1][:, None] - o[:, 1][None, :]
     dz = o[:, 2][:, None] - o[:, 2][None, :]
-    R = rho[table_index(dx, dy, dz, lag)]
-    R = 0.5 * (R + R.T)
-    np.fill_diagonal(R, 1.0)
-    return R
+    C = rho[table_index(dx, dy, dz, lag)]
+    C = 0.5 * (C + C.T)
+    np.fill_diagonal(C, 1.0)
+    return C
 
 
 def _white_rho(shape):
@@ -200,17 +205,31 @@ FALLBACK_REASON = ("the noise bulk most likely holds signal, as an unstabilized 
 def _build_C(rho, patch, lag):
     """Patch correlation from a correlation pattern, read by :func:`~camppca.patch.table_index`.
 
-    Projected to the nearest PSD matrix with unit diagonal if the measured table is
-    indefinite.  The bounds check that guards it lives in
-    :meth:`NoiseModel.patch_correlation`.
+    If the table is indefinite for this patch, the eigenvalues are clipped at 1e-9 and
+    the diagonal rescaled to 1, silently. The loop needs that every round. The public
+    path, :meth:`NoiseModel.patch_correlation`, refuses such a table instead.
     """
-    R = _table_C(rho, patch, lag)
-    w, V = np.linalg.eigh(R)
+    C = _table_C(rho, patch, lag)
+    w, V = np.linalg.eigh(C)
     if w.min() < 1e-9:
-        R = (V * np.maximum(w, 1e-9)) @ V.T
-        d = np.sqrt(np.diag(R))
-        R = R / np.outer(d, d)
-    return R
+        C = (V * np.maximum(w, 1e-9)) @ V.T
+        scale = np.sqrt(np.diag(C))
+        C = C / np.outer(scale, scale)
+    return C
+
+
+def _real_data(dwi, spatial_shape=None):
+    """``dwi`` as the noise model is estimated on it: 4D, the real part of complex data,
+    float32 with NaN and inf zeroed. Also returns the imaginary part as a view, or None.
+    The estimator and the check both read the data this way."""
+    from ..denoiser.gather import as_data, check_dwi, zero_nonfinite
+
+    dwi = check_dwi(dwi, spatial_shape)
+    imag = None
+    if np.iscomplexobj(dwi):
+        imag = dwi.imag
+        dwi = np.ascontiguousarray(dwi.real, np.float32)
+    return zero_nonfinite(as_data(dwi))[0], imag
 
 
 def _pool_level(level, mask, size):
@@ -256,53 +275,56 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
                          workers=None):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
-    ``dwi``    (X, Y, Z, N) diffusion data.  Every volume enters, b0s included, because the
-               denoiser whitens them all.  Complex data are estimated on their real part,
-               which holds the signal once the phase is stabilized (:mod:`camppca.phase`).
-               The noise has the same correlation and level in both channels.
-    ``bvals``  (N,) b-values, used only to find the b0s the default mask is drawn from.
-    ``mask``   (X, Y, Z) bool.  Estimated from the mean b0 when omitted.
-    ``patch``  the patch this model must be able to serve; sets the lag rho covers.
-               None picks dwidenoise's default, see :func:`~camppca.patch.default_patch`.
-    ``lowb``   b-value at or below which a volume counts as a b0.
-    ``pool``   box width, in voxels, the relative noise map ``d`` is averaged over.  Averaged in
-               variance, over mask voxels only; see :func:`_pool_level`.  1 disables it.
-    ``algorithm``, ``noise_field``  the denoiser settings the model is fitted to: the MP rule,
-               and whether rows are divided by ``d``.  Pass the ones you will denoise with.
-    ``level_rounds``  how many times ``d`` is re-estimated from the whitened patches.
-               0, the default, keeps standard MPPCA's level.
-    ``workers``  CPU processes for the passes over every voxel and the loop's
-               split, see :mod:`camppca.pool`. The default is one per physical core.
-               1 runs everything in this process.
-
-    The relative noise map ``d`` is standard MPPCA's ``sigma`` at every mask voxel, pooled
-    ``pool``^3.  Unpooled, its rank grain made ``C`` near singular on strongly correlated
-    data.  rho is the loop's (:mod:`camppca.noise_model.loop`), started from white
-    noise: 1 at lag 0, 0 elsewhere.
+    The relative noise map ``d`` is standard MPPCA's ``sigma_mppca`` at every mask voxel,
+    pooled ``pool``^3. Unpooled, its rank grain made ``C`` near singular on strongly
+    correlated data. rho is the loop's (:mod:`camppca.noise_model.loop`), started from
+    white noise: 1 at lag 0, 0 elsewhere.
 
     Each level round splits every mask voxel's whitened patch, which gives ``s``, the
-    level in d-normalized units.  The new ``d`` is ``d * s`` pooled, and the loop is
-    refitted from the previous table.  The rounds stop when ``d`` moves by less than
-    :data:`LEVEL_TOL`.  At the fixed point ``s`` is flat: every whitened patch carries the
-    same noise level.  On real data this changed the sphericity by at most 0.006 and ``sigma`` by
-    at most 0.3%, at three to four times the cost, hence the default of 0.
+    level in d-normalized units. The new ``d`` is ``d * s`` pooled, and the loop is
+    refitted from the previous table. The rounds stop when ``d`` moves by less than
+    :data:`LEVEL_TOL`. At the fixed point ``s`` is flat: every whitened patch carries the
+    same noise level. They cost three to four times the estimate for little change on
+    real data, hence the default of 0.
 
     With ``noise_field=False``, ``d`` is 1 in the mask and only the loop runs.
+
+    Args:
+        dwi: (X, Y, Z, N) diffusion data. Every volume enters, b0s included, because the
+            denoiser whitens them all. Complex data are estimated on their real part,
+            which holds the signal once the phase is stabilized (:mod:`camppca.phase`).
+            The noise has the same correlation and level in both channels.
+        mask: (X, Y, Z) bool. Estimated from the mean b0 when omitted.
+        bvals: (N,) b-values, used only to find the b0s the default mask is drawn from.
+        patch: the patch this model must be able to serve, which sets the lag rho
+            covers. None picks dwidenoise's default, see
+            :func:`~camppca.patch.default_patch`.
+        lowb: b-value at or below which a volume counts as a b0.
+        pool: box width, in voxels, the relative noise map ``d`` is averaged over.
+            Averaged in variance, over mask voxels only, see :func:`_pool_level`. 1
+            disables it.
+        algorithm: the MP rule the denoiser will cut with.
+        noise_field: whether the denoiser will divide rows by ``d``. Pass the settings
+            you will denoise with: the loop fits to them.
+        level_rounds: how many times ``d`` is re-estimated from the whitened patches.
+            0, the default, keeps standard MPPCA's level.
+        workers: CPU processes for the passes over every voxel and the loop's split, see
+            :mod:`camppca.pool`. The default is one per physical core. 1 runs everything
+            in this process.
+
+    Returns:
+        A :class:`NoiseModel`.
     """
     # Imported here: the denoiser imports this package, so a top-level import is circular.
     from .. import __version__  # the package sets it after importing this module
-    from ..denoiser.gather import as_data, check_range, zero_nonfinite
+    from ..denoiser.camppca import whitened_level
+    from ..denoiser.gather import check_dwi, check_range
     from ..denoiser.mp_threshold import check_algorithm
+    from .loop import fit_rho
 
     check_algorithm(algorithm)
-    dwi = np.asarray(dwi)
-    if dwi.ndim != 4:
-        raise ValueError(f"dwi must be 4D (X,Y,Z,N), got shape {dwi.shape}")
-    complex_input = np.iscomplexobj(dwi)
-    if complex_input:
-        imag = dwi.imag                    # a view, for the phase check below
-        dwi = np.ascontiguousarray(dwi.real, np.float32)
-    dwi = zero_nonfinite(as_data(dwi))[0]  # float32 once: every pass and map reuses it
+    dwi, imag = _real_data(dwi)      # float32 once: every pass and map reuses it
+    complex_input = imag is not None
     n_vols = dwi.shape[3]
     patch = resolve_patch(patch, dwi.shape)
     check_range(dwi, patch)
@@ -315,9 +337,9 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
     if level_rounds < 0:
         raise ValueError(f"level_rounds must be >= 0, got {level_rounds}")
     if n_vols < MIN_VOLUMES:
-        warnings.warn(f"{n_vols} volumes, fewer than {MIN_VOLUMES}: the Marchenko-Pastur "
-                      "fit degenerates as the rank approaches the volume count, and the "
-                      "noise level can come out far too high.", RuntimeWarning, stacklevel=2)
+        warn(f"{n_vols} volumes, fewer than {MIN_VOLUMES}: the Marchenko-Pastur "
+             "fit degenerates as the rank approaches the volume count, and the "
+             "noise level can come out far too high.")
 
     if bvals is None:
         bvals = np.zeros(n_vols)
@@ -333,19 +355,12 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
         # WRITES, so eroding here would leave an un-denoised rim.
         mask = brain_mask(b0_mean, erode=0)
     mask = np.asarray(mask, bool)
-    if mask.shape != dwi.shape[:3]:
-        raise ValueError(f"mask shape {mask.shape} != dwi spatial shape {dwi.shape[:3]}")
+    check_dwi(dwi, mask.shape)
 
-    # Imported here: these use denoiser internals, and the denoiser imports this package,
-    # so a top-level import would be circular.
-    from ..denoiser.camppca import whitened_level
-    from .loop import fit_rho
-
-    rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
-    rho[lag, lag, 0] = 1.0
+    rho = _white_rho((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     level = None
     if noise_field:
-        level = _strided_level(whitened_level, dwi, mask, patch, algorithm, workers)
+        level = _strided_level(dwi, mask, patch, algorithm, workers)
         d = _level_field(level, mask, pool)
     else:
         d = mask.astype(np.float32)
@@ -401,7 +416,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
         model.patch_correlation(patch)
     except ValueError as err:
         reason = f"the loop's correlation pattern is not usable: {err} {FALLBACK_REASON}"
-        warnings.warn(reason, RuntimeWarning, stacklevel=2)
+        warn(reason)
         model.rho = _white_rho(rho.shape)
         model.provenance.update(fallback=reason, sphericity=0.0)
     return model
@@ -428,7 +443,7 @@ def _check_phase_stabilized(imag, real, mask, level, patch, algorithm, workers):
     cleaned before estimating, the imaginary part is not, and one NaN made the ratio NaN,
     which never exceeds the threshold.
     """
-    from ..denoiser.camppca import whitened_level
+    from ..denoiser.camppca import whitened_level  # circular at the top level
 
     voxels = np.flatnonzero(mask)
     pick = voxels[np.linspace(0, voxels.size - 1, min(10000, voxels.size)).astype(int)]
@@ -445,13 +460,13 @@ def _check_phase_stabilized(imag, real, mask, level, patch, algorithm, workers):
     ratio = float(np.sqrt(np.mean(np.square(values, dtype=np.float64)))
                   / np.median(level[mask]))
     if ratio > PHASE_RATIO:
-        warnings.warn(f"the imaginary part is {ratio:.1f} times the real part's noise level "
-                      "inside the mask. The noise model is estimated on the real part, "
-                      "which holds the signal only once the phase is stabilized: run "
-                      "`camppca phase` first.", RuntimeWarning, stacklevel=3)
+        warn(f"the imaginary part is {ratio:.1f} times the real part's noise level "
+             "inside the mask. The noise model is estimated on the real part, "
+             "which holds the signal only once the phase is stabilized: run "
+             "`camppca phase` first.")
 
 
-def _strided_level(whitened_level, dwi, mask, patch, algorithm, workers):
+def _strided_level(dwi, mask, patch, algorithm, workers):
     """Standard MPPCA's level on a stride-2 grid of patch centers, filled in between.
 
     MPPCA's level is a patch mean, and the field is pooled 3^3 after, so the full grid
@@ -466,10 +481,9 @@ def _strided_level(whitened_level, dwi, mask, patch, algorithm, workers):
     and the level often climbs steeply inward there. Without the rim, edge voxels of
     EDDEN 0.9 mm had d up to 79% too high. Two layers, because the fill reaches one
     voxel and the 3^3 pooling one more.
-
-    ``whitened_level`` is passed in: the denoiser imports this package, so a top-level
-    import would be circular.
     """
+    from ..denoiser.camppca import whitened_level  # circular at the top level
+
     x, y, z = np.indices(mask.shape, sparse=True)
     grid = mask & (x % 2 == 0) & (y % 2 == 0) & (z % 2 == 0)
     box = np.ones((3, 3, 3), np.int32)
@@ -502,5 +516,4 @@ def _level_field(level, mask, pool):
 
 
 def _bvals_hash(bvals):
-    import hashlib
     return hashlib.sha256(np.ascontiguousarray(bvals, np.float64).tobytes()).hexdigest()[:16]

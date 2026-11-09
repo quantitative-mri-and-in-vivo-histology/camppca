@@ -11,31 +11,21 @@ import pytest
 from camppca import denoise_mppca
 from camppca.denoiser.camppca import denoise_whitened
 
+from helpers import interior_mask, low_rank_volume
+
 SHAPE = (10, 10, 10)
 N_VOLS = 36
 PATCH = (5, 5, 5)
 CENTER_ROW = 125 // 2          # center of a 5x5x5 box flattened in C order
 
 
-def interior_mask(shape=SHAPE, margin=2):
-    """Voxels whose full patch fits inside the volume, so no wrap padding is involved."""
-    mask = np.zeros(shape, bool)
-    mask[margin:-margin, margin:-margin, margin:-margin] = True
-    return mask
-
-
-def low_rank_volume(rng, rank, shape=SHAPE, n_vols=N_VOLS, scale=100.0):
-    """A volume whose every patch matrix has rank at most ``rank``."""
-    coeffs = rng.standard_normal(shape + (rank,))
-    basis = rng.standard_normal((rank, n_vols))
-    return (scale * coeffs @ basis).astype(np.float32)
 
 
 def test_recovers_the_noise_level_of_a_pure_noise_volume():
     rng = np.random.default_rng(0)
     sigma_true = 12.0
     dwi = (rng.standard_normal(SHAPE + (N_VOLS,)) * sigma_true).astype(np.float32)
-    mask = interior_mask()
+    mask = interior_mask(SHAPE)
 
     result = denoise_mppca(dwi, mask, patch=PATCH)
 
@@ -49,8 +39,8 @@ def test_a_noiseless_low_rank_volume_survives_intact():
     nothing to measure.
     """
     rng = np.random.default_rng(1)
-    dwi = low_rank_volume(rng, rank=3)
-    mask = interior_mask()
+    dwi = low_rank_volume(rng, 3, SHAPE, N_VOLS)
+    mask = interior_mask(SHAPE)
 
     result = denoise_mppca(dwi, mask, patch=PATCH)
 
@@ -61,9 +51,9 @@ def test_a_noiseless_low_rank_volume_survives_intact():
 @pytest.mark.parametrize("sigma_true", [2.0, 8.0, 20.0])
 def test_the_retained_rank_and_the_noise_level_match_the_signal_they_came_from(sigma_true):
     rng = np.random.default_rng(2)
-    signal = low_rank_volume(rng, rank=3)
+    signal = low_rank_volume(rng, 3, SHAPE, N_VOLS)
     noisy = (signal + rng.standard_normal(signal.shape) * sigma_true).astype(np.float32)
-    mask = interior_mask()
+    mask = interior_mask(SHAPE)
 
     result = denoise_mppca(noisy, mask, patch=PATCH)
 
@@ -74,9 +64,9 @@ def test_the_retained_rank_and_the_noise_level_match_the_signal_they_came_from(s
 
 def test_denoising_moves_a_noisy_volume_closer_to_its_signal():
     rng = np.random.default_rng(2)
-    signal = low_rank_volume(rng, rank=3)
+    signal = low_rank_volume(rng, 3, SHAPE, N_VOLS)
     noisy = (signal + rng.standard_normal(signal.shape) * 8.0).astype(np.float32)
-    mask = interior_mask()
+    mask = interior_mask(SHAPE)
 
     result = denoise_mppca(noisy, mask, patch=PATCH)
 
@@ -92,7 +82,7 @@ def test_the_center_voxel_matches_a_full_svd_of_its_own_patch():
     slicing and reconstructed with numpy's SVD at the rank the denoiser reported.
     """
     rng = np.random.default_rng(3)
-    signal = low_rank_volume(rng, rank=4)
+    signal = low_rank_volume(rng, 4, SHAPE, N_VOLS)
     dwi = (signal + rng.standard_normal(signal.shape) * 6.0).astype(np.float32)
     voxel = (5, 5, 5)
     mask = np.zeros(SHAPE, bool)
@@ -112,7 +102,7 @@ def test_the_center_voxel_matches_a_full_svd_of_its_own_patch():
 def test_voxels_outside_the_mask_are_left_alone():
     rng = np.random.default_rng(4)
     dwi = (rng.standard_normal(SHAPE + (N_VOLS,)) * 10.0).astype(np.float32)
-    mask = interior_mask()
+    mask = interior_mask(SHAPE)
 
     result = denoise_mppca(dwi, mask, patch=PATCH)
 
@@ -123,9 +113,9 @@ def test_voxels_outside_the_mask_are_left_alone():
 
 
 def test_every_voxel_can_be_denoised_including_the_corners():
-    """Wrap padding means a border voxel still gets a full box."""
+    """At the image edge the box moves inward, so a border voxel still gets a full box."""
     rng = np.random.default_rng(5)
-    signal = low_rank_volume(rng, rank=3)
+    signal = low_rank_volume(rng, 3, SHAPE, N_VOLS)
     dwi = (signal + rng.standard_normal(signal.shape) * 10.0).astype(np.float32)
 
     result = denoise_mppca(dwi, patch=PATCH)
@@ -138,7 +128,7 @@ def test_every_voxel_can_be_denoised_including_the_corners():
 def test_tiling_does_not_change_the_answer():
     rng = np.random.default_rng(7)
     dwi = (rng.standard_normal(SHAPE + (N_VOLS,)) * 10.0).astype(np.float32)
-    mask = interior_mask()
+    mask = interior_mask(SHAPE)
 
     one_tile = denoise_whitened(dwi, mask, None, patch=PATCH, tile=10_000, workers=1)
     many_tiles = denoise_whitened(dwi, mask, None, patch=PATCH, tile=7, workers=1)
@@ -152,7 +142,7 @@ def test_the_input_is_not_modified():
     dwi = (rng.standard_normal(SHAPE + (N_VOLS,)) * 10.0).astype(np.float32)
     untouched = dwi.copy()
 
-    denoise_mppca(dwi, interior_mask(), patch=PATCH)
+    denoise_mppca(dwi, interior_mask(SHAPE), patch=PATCH)
 
     np.testing.assert_array_equal(dwi, untouched)
 
@@ -161,7 +151,7 @@ def test_the_result_describes_what_was_run():
     rng = np.random.default_rng(9)
     dwi = (rng.standard_normal(SHAPE + (N_VOLS,)) * 10.0).astype(np.float32)
 
-    result = denoise_mppca(dwi, interior_mask(), patch=PATCH, algorithm="veraart")
+    result = denoise_mppca(dwi, interior_mask(SHAPE), patch=PATCH, algorithm="veraart")
 
     assert result.denoised.shape == dwi.shape
     assert result.sigma.shape == SHAPE
@@ -190,5 +180,5 @@ def test_a_volume_that_is_not_4d_is_rejected():
 
 def test_a_mask_of_the_wrong_shape_is_rejected():
     dwi = np.zeros((6, 6, 6, 8), np.float32)
-    with pytest.raises(ValueError, match="does not match dwi spatial shape"):
+    with pytest.raises(ValueError, match="does not match the mask"):
         denoise_mppca(dwi, np.ones((5, 5, 5), bool))

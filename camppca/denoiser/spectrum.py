@@ -53,9 +53,8 @@ def _checked(evals, failed=False):
 # vectors, P often near 10 of 199. So each Gram is reduced to tridiagonal form once
 # (sytrd), its eigenvalues come from that (sterf), and after the cut its top P vectors
 # come by inverse iteration (stein), mapped back to the Gram by ormtr. scipy has no
-# wrapper for ormtr, so it is called through ctypes from scipy's own LAPACK. EDDEN 0.9 mm
-# at 7^3 and 199 volumes: 0.60 ms per voxel against 0.98 ms, the ranks equal and the
-# center row within 7e-4 relative (2026-11-08). Real data only.
+# wrapper for ormtr, so it is called through ctypes from scipy's own LAPACK. It cut the
+# denoise by about a quarter, see CLAUDE.md. Real data only.
 
 ctypes.pythonapi.PyCapsule_GetPointer.restype = ctypes.c_void_p
 ctypes.pythonapi.PyCapsule_GetPointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
@@ -85,7 +84,8 @@ def _back_transform(prefix, a, tau, z):
     n, m = z.shape
     ni, mi, info = ctypes.c_int(n), ctypes.c_int(m), ctypes.c_int()
     work = np.empty(1, z.dtype)
-    lwork = ctypes.c_int(-1)
+    lwork = ctypes.c_int(-1)                   # -1 asks for the workspace size only
+    # Q from the left, from upper reflectors as sytrd stored them, not transposed.
     args = (b"L", b"U", b"N", ctypes.byref(ni), ctypes.byref(mi), a.ctypes.data_as(real),
             ctypes.byref(ni), tau.ctypes.data_as(real), z.ctypes.data_as(real),
             ctypes.byref(ni))
@@ -125,12 +125,15 @@ def top_eigvecs(gram, evals, reduced, counts):
     stein = getattr(lapack, prefix + "stein")
     n = gram.shape[1]
     evecs = np.zeros(gram.shape, gram.dtype)
+    # stein's iblock and isplit: every eigenvalue in block 1, which ends at row n. True
+    # only for a tridiagonal that does not split, hence the e.all() test below.
     block, split = np.ones(n, np.int32), np.full(n, n, np.int32)
     for b, (a, d, e, tau) in enumerate(reduced):
         p = int(counts[b])
         if p == 0:
             continue
-        if p <= n // 4 and e.all():
+        if p <= n // 4 and e.all():            # no zero off-diagonal: no split
+            # stein takes the eigenvalues ascending, so the top p go in reversed.
             z, info = stein(d, e, np.ascontiguousarray(evals[b, :p][::-1]), block, split)
         else:
             info = 1
@@ -138,7 +141,7 @@ def top_eigvecs(gram, evals, reduced, counts):
             z = np.asfortranarray(z, gram.dtype)
             info = _back_transform(prefix, a, tau, z)
         if info == 0:
-            evecs[b, :, :p] = z[:, ::-1]
+            evecs[b, :, :p] = z[:, ::-1]       # back to descending
         else:
             evecs[b] = eigh_descending(gram[b:b + 1])[1][0]
     return evecs

@@ -23,12 +23,11 @@ largest, the next weakest 4.8e-2. It is fixed by an assumption, noise correlatio
 off with distance, so the mean over the far classes, those on the edge of the patch's lag
 box, is held at zero.
 
-The fit used to solve for a free ``Sigma`` and average it over lags. There the hole is an
-eigenvalue of 1.1e-4 along the patch mean, and a converged solve divides by it: the
-pattern ran away on the crop, sphericity 0.16 to 9 in eleven rounds. 30 Richardson steps hid that
-by stopping early. With the far classes pinned, the loop converges, and on the paper's
-phantom with a signal MPPCA separates perfectly (one flat value per volume) it lands
-within 0.005 of the true correlation, against 0.014 for the converged free solve.
+Do not go back to a free solve of ``Sigma`` averaged over lags. There the hole is a
+near-null eigenvalue along the patch mean, a converged solve divides by it, and the
+pattern runs away. With the far classes pinned the loop converges, and on the paper's
+phantom with a signal MPPCA separates perfectly it lands within 0.005 of the true
+correlation.
 
 ⚠ The split itself is biased, and no fit undoes it. Signal components near the MP edge
 are kept with patterns tilted toward the noise, and weaker ones stay in the bulk. Both
@@ -39,8 +38,7 @@ of 0.037 where the truth is 0, and the converged loop 0.051. Patch2Self overshot
 The rounds stop when the sphericity of the patch correlation changes by less than
 :data:`LOOP_TOL`. It closes about half its remaining gap each round, and a start far
 from the answer can dip and turn, so a looser tolerance stops early on a single small
-step. The table of the last
-round is returned.
+step. The table of the last round is returned.
 
 Patch rows are divided by the guarded relative noise map before whitening, exactly as the
 denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens. The
@@ -50,16 +48,12 @@ denoiser's settings, passed in, so the pattern is fitted to the split it will se
 Lags the patch never spans, such as ``|dx| > 2`` for a 3 x 7 patch whose table reaches
 lag 6, carry no information from the bulk. They keep the starting table's values.
 
-The split runs in float32, with each tile's bulk product in float64. It used to need
-float64: with the free solve the patch-mean direction of the next ``C`` was near
-singular, and float32 rounding spilled into the bulk and ran the ranks to the maximum.
-The pinned fit keeps the smallest eigenvalue of ``C`` near 0.2 to 0.4. Against a float64
-split the table moved by at most 2.4e-5 on the crop and 1.3e-5 on the paper's phantom,
-with the sphericity the same to four digits; 1% of patch ranks flipped on near-tied MP
-cuts. The fit runs in float32 too, within 1e-4 of a float64 least squares.
+The split runs in float32, with each tile's bulk product in float64, and the fit runs
+in float32 too. The pinned fit keeps the smallest eigenvalue of ``C`` near 0.2 to 0.4,
+far from where float32 rounding would matter. Against float64 the table moved by at most
+2.4e-5.
 """
 
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from functools import partial
@@ -73,6 +67,7 @@ from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
 from ..patch import patch_offsets, table_index
 from ..pool import blas_threads, resolve_workers, worker_pool
+from ..warn import warn
 from . import (
     FALLBACK_REASON,
     MIN_EIGENVALUE,
@@ -179,7 +174,7 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
                 fallback = (f"the loop's correlation pattern is not valid after round "
                             f"{rounds}: the smallest eigenvalue of C is {smallest:.1e}, "
                             f"below {MIN_EIGENVALUE:g}. {FALLBACK_REASON}")
-                warnings.warn(fallback, RuntimeWarning, stacklevel=3)
+                warn(fallback)
                 rho = _white_rho(rho.shape)
                 break
             C = _build_C(rho, patch, lag)
@@ -190,10 +185,10 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
                 break
             u_prev = u
         if not converged and fallback is None:
-            warnings.warn(f"the loop did not converge in {MAX_ROUNDS} rounds; the "
-                          f"sphericity changed by {change:.4f} in the last one, against a "
-                          f"tolerance "
-                          f"of {LOOP_TOL}", RuntimeWarning, stacklevel=3)
+            warn(f"the loop did not converge in {MAX_ROUNDS} rounds; the "
+                 f"sphericity changed by {change:.4f} in the last one, against a "
+                 f"tolerance "
+                 f"of {LOOP_TOL}")
     rho = rho.copy()
     unspanned = ~_spanned(patch, lag, dzmax)
     rho[unspanned] = rho_start[unspanned]
@@ -219,12 +214,9 @@ def _sample_centers(mask, patch, min_centers=None):
     voxel per axis instead grew the z stride of a 7 x 7 x 3 patch by a third against a
     seventh in plane, and skipped slices.
 
-    Measured 2026-11-09 on EDDEN 0.9, 1.5 and 2 mm (``docs/local/2026-11-09_loop_sampling.md``):
-    sigma moved by at most 0.1% above a few hundred patches, and rho stopped improving at
-    about 700 patches of 7^3. At 2 mm and 5^3 overlapping centers beyond the tiling, up
-    to 7060, came no closer than the tiling's 1508. A grid was no more precise than random
-    centers at the same count. It ties the count to the mask and needs no seed. Patches
-    reaching outside the mask lowered the sphericity a little and gained nothing.
+    A grid was as precise as random centers at the same count, ties the count to the
+    mask and needs no seed. More patches than a few hundred, or overlapping ones, gained
+    nothing. CLAUDE.md has the measurements.
 
     ``min_centers`` None is :data:`MIN_CENTERS`. 0 keeps the tiling however few centers
     it has. The QC needs that: overlapping patches share noise, so a region of them counts
@@ -320,8 +312,8 @@ def _split_chunk(patches, C, algorithm, tile=TILE):
 
     Returns:
         ``(bulk, parts, rank)``: (n_vox, n_vox) whitened bulk summed over the batch, each
-        ``Rw Rw^T / (N sigma_mppca^2)``; a list of each patch's kept basis ``U_b``
-        (n_vox, rank_b); (B,) ranks.
+        ``resid resid^T / (n_vols sigma_mppca^2)`` with ``resid`` its whitened residual;
+        a list of each patch's kept basis ``U_b`` (n_vox, rank_b); (B,) ranks.
     """
     n_b, n_vox, n_vols = patches.shape
     n_small, n_large = min(n_vox, n_vols), max(n_vox, n_vols)
@@ -455,8 +447,8 @@ def _fit_table(S, factors, C, patch, lag, dzmax, start, threads=PRODUCT_THREADS)
     def forward(y):
         return op(whitener @ (basis @ y).astype(np.float32)[cls] @ whitener)
 
-    def adjoint(R):
-        X = whitener @ op(R) @ whitener
+    def adjoint(resid):
+        X = whitener @ op(resid) @ whitener
         return basis.T @ np.bincount(flat, weights=X.ravel(), minlength=n_cls)
 
     removed = np.eye(len(C)) - op.Um.astype(np.float64)
@@ -469,8 +461,8 @@ def _fit_table(S, factors, C, patch, lag, dzmax, start, threads=PRODUCT_THREADS)
 
     rhs = whitener @ S.astype(np.float32) @ whitener
     y = basis.T @ start[lags[:, 0] + lag, lags[:, 1] + lag, lags[:, 2]]
-    R = rhs - forward(y)
-    g = adjoint(R)
+    resid = rhs - forward(y)
+    g = adjoint(resid)
     h = cho_solve(pre, g)
     p, gh = h.copy(), float(g @ h)
     norm0 = float(np.linalg.norm(adjoint(rhs)))
@@ -480,16 +472,15 @@ def _fit_table(S, factors, C, patch, lag, dzmax, start, threads=PRODUCT_THREADS)
         q = forward(p)
         alpha = gh / float(np.sum(q * q, dtype=np.float64))
         y += alpha * p
-        R -= alpha * q
-        g = adjoint(R)
+        resid -= alpha * q
+        g = adjoint(resid)
         h = cho_solve(pre, g)
         gh_new = float(g @ h)
         p = h + (gh_new / gh) * p
         gh = gh_new
     else:
-        warnings.warn(f"loop fit stopped at {MAX_FIT_STEPS} steps, gradient "
-                      f"{np.linalg.norm(g) / norm0:.1e} against {FIT_TOL}",
-                      RuntimeWarning, stacklevel=3)
+        warn(f"loop fit stopped at {MAX_FIT_STEPS} steps, gradient "
+             f"{np.linalg.norm(g) / norm0:.1e} against {FIT_TOL}")
     values = basis @ y
     table = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     for val, (dx, dy, dz) in zip(values, lags, strict=True):

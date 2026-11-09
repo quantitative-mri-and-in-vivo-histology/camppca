@@ -23,13 +23,11 @@ def load_dwi(path, dtype=np.float32):
     A complex image is read as complex64 whatever ``dtype`` says.
 
     A NIfTI is read one volume at a time into the result, so only the result and one
-    volume are ever in memory. ``np.asanyarray`` on nibabel's proxy held the unpacked
-    file, the stored integers and the float copy at once: 16 GB for the 5.5 GB float32
-    EDDEN 0.9 mm image, against 5.5 GB this way. A NIfTI whose volumes are not stored one
-    after another falls back to it.
+    volume are ever in memory. Reading it whole through nibabel held about three copies.
+    A NIfTI whose volumes are not stored one after another is read whole.
 
-    Only NIfTI is read: the outputs are NIfTI and reuse the input's header. A .mgz loaded
-    fine and crashed the first 3D write, after the whole denoise.
+    Only NIfTI is read: the outputs are NIfTI and reuse the input's header, which another
+    format would break at the first write.
     """
     img = _load_nifti(path)
     if img.ndim != 4:
@@ -96,8 +94,8 @@ def load_mask(path, affine=None):
 def check_same_space(affine, reference, path, reference_name):
     """Raise unless two images lie on the same voxel grid.
 
-    Only shapes were compared before: a mask of the right shape with a flipped axis
-    would have placed the noise model on a mirrored brain without an error.
+    Comparing shapes is not enough: a mask of the right shape with a flipped axis would
+    place the noise model on a mirrored brain without an error.
     """
     diff = float(np.abs(np.asarray(affine) - np.asarray(reference)).max())
     if diff > AFFINE_TOL:

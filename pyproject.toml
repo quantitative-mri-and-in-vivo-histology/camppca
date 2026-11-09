@@ -141,6 +141,9 @@ ignore = [
     "B008",  # function call in default argument
 ]
 
+[tool.ruff.lint.isort]
+known-local-folder = ["helpers"]   # tests/helpers.py, imported by the test files
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true

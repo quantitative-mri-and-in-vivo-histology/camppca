@@ -11,29 +11,19 @@ import warnings
 import numpy as np
 import pytest
 
-from camppca import denoise_camppca, denoise_mppca, estimate_noise_model
-from camppca.denoiser import denoise_with_noise_model
+from camppca import (
+    denoise_camppca,
+    denoise_mppca,
+    denoise_with_noise_model,
+    estimate_noise_model,
+)
 from camppca.patch import patch_offsets
+
+from helpers import colored_noise, filter_rho
 
 SIGMA_TRUE = 10.0
 HX = np.array([0.5, 1.0, 0.5])          # in-plane correlation along x
 HY = np.array([0.25, 1.0, 0.25])        # and along y; z left uncorrelated
-
-
-def _filter_rho(h, lag):
-    full = np.correlate(h, h, mode="full")
-    mid = len(h) - 1
-    return np.array([full[mid + k] if abs(k) < len(h) else 0.0
-                     for k in range(-lag, lag + 1)]) / full[mid]
-
-
-def _colored_noise(rng, shape, n_vols, sigma):
-    """Noise with correlation rho = acf(HX) x acf(HY), and marginal std exactly `sigma`."""
-    w = rng.standard_normal(shape + (n_vols,))
-    out = np.apply_along_axis(lambda v: np.convolve(v, HX, "same"), 0, w)
-    out = np.apply_along_axis(lambda v: np.convolve(v, HY, "same"), 1, out)
-    gain = np.sqrt((HX ** 2).sum() * (HY ** 2).sum())
-    return out / gain * sigma
 
 
 @pytest.fixture(scope="module")
@@ -42,7 +32,7 @@ def dataset():
     shape, n_vols, rank = (40, 40, 12), 60, 4
     bvals = np.concatenate([np.zeros(6), np.full(n_vols - 6, 1000.0)])
     signal = rng.standard_normal(shape + (rank,)) @ rng.standard_normal((rank, n_vols))
-    dwi = signal * 25 + 400 + _colored_noise(rng, shape, n_vols, SIGMA_TRUE)
+    dwi = signal * 25 + 400 + colored_noise(rng, shape, n_vols, HX, HY) * SIGMA_TRUE
     mask = np.zeros(shape, bool)
     mask[4:36, 4:36, 2:10] = True
     return dwi, bvals, mask
@@ -57,7 +47,7 @@ def model(dataset):
 def test_estimator_recovers_the_injected_correlation(model):
     lag = model.lag
     rho = model.rho
-    want_x, want_y = _filter_rho(HX, lag), _filter_rho(HY, lag)
+    want_x, want_y = filter_rho(HX, lag), filter_rho(HY, lag)
 
     assert rho[lag, lag, 0] == pytest.approx(1.0)
     for k in (1, 2):
@@ -77,7 +67,7 @@ def test_whitening_collapses_the_patch_off_diagonals(model, dataset):
 
     rng = np.random.default_rng(1)
     n_cols = 200
-    noise = _colored_noise(rng, dwi.shape[:3], n_cols, SIGMA_TRUE)
+    noise = colored_noise(rng, dwi.shape[:3], n_cols, HX, HY) * SIGMA_TRUE
     offs = patch_offsets(patch)
     kk = np.asarray(patch) // 2
     centers = np.argwhere(mask)[rng.permutation(int(mask.sum()))[:60]]
@@ -85,12 +75,12 @@ def test_whitening_collapses_the_patch_off_diagonals(model, dataset):
                                 for dx, dy, dz in offs]) for x, y, z in centers])
 
     def patch_corr(patches):
-        """Empirical P x P correlation, pooled over patches and columns."""
+        """Empirical n_vox x n_vox correlation, pooled over patches and columns."""
         flat = patches.transpose(1, 0, 2).reshape(patches.shape[1], -1)
         return np.corrcoef(flat)
 
-    P = stack.shape[1]
-    off = ~np.eye(P, dtype=bool)
+    n_vox = stack.shape[1]
+    off = ~np.eye(n_vox, dtype=bool)
     before = patch_corr(stack)
     after = patch_corr(np.einsum("pq,bqn->bpn", W, stack))
     floor = 1.0 / np.sqrt(stack.shape[0] * n_cols)      # i.i.d. sampling floor
@@ -99,7 +89,7 @@ def test_whitening_collapses_the_patch_off_diagonals(model, dataset):
     adjacent = (np.abs(offs[:, 0][:, None] - offs[:, 0][None, :]) == 1) & \
                (offs[:, 1][:, None] == offs[:, 1][None, :]) & \
                (offs[:, 2][:, None] == offs[:, 2][None, :])
-    want_x1 = _filter_rho(HX, 1)[2]
+    want_x1 = filter_rho(HX, 1)[2]
 
     assert np.abs(before[adjacent]).mean() == pytest.approx(want_x1, abs=0.05)
     collapsed = np.abs(after[adjacent]).mean()
@@ -179,7 +169,7 @@ def test_denoise_refuses_a_patch_the_model_cannot_serve(dataset, model):
 
 def test_denoise_refuses_a_mismatched_spatial_shape(dataset, model):
     dwi, _, _ = dataset
-    with pytest.raises(ValueError, match="model mask"):
+    with pytest.raises(ValueError, match="does not match the mask"):
         denoise_with_noise_model(dwi[:-1], model, patch=(5, 5, 3))
 
 

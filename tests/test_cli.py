@@ -31,7 +31,7 @@ def _grad(d):
     return ["-fslgrad", str(d / "in.bvec"), str(d / "in.bval")]
 
 
-def test_denoise_writes_image_noise_map_and_qc(dataset, capsys):
+def test_denoise_writes_image_noise_map_and_qc(dataset):
     out, noise, qc = dataset / "out.nii.gz", dataset / "noise.nii.gz", dataset / "qc"
     rc = main(["denoise", str(dataset / "in.nii.gz"), str(out), "--noise", str(noise),
                "--qc", str(qc), "--patch", "5", "5", "3", *_grad(dataset)])
