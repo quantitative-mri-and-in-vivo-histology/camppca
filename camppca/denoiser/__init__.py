@@ -149,8 +149,7 @@ def denoise_camppca(dwi, mask=None, *, bvals=None, patch=None, noise_field=True,
         mask: where the noise model is estimated, see
             :func:`~camppca.estimate_noise_model`. Every voxel is denoised unless
             ``mask_only``.
-        **estimate_kwargs: the estimator's other options, ``lowb``, ``pool`` and
-            ``level_rounds``.
+        **estimate_kwargs: the estimator's other options, ``lowb`` and ``level_rounds``.
 
     The other arguments are those of :func:`~camppca.estimate_noise_model` and
     :func:`denoise_with_noise_model`. ``algorithm`` and ``noise_field`` go to both, so the
