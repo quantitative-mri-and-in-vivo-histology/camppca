@@ -143,20 +143,30 @@ overlapping centers up to 7060 came no closer than the tiling. A grid was no mor
 precise than random centers at the same count. Patches reaching outside the mask lowered
 the sphericity a little and gained nothing. Until then the loop drew 3000 random centers.
 
-`d` is standard MPPCA's σ pooled 3³ (`whitened_level` with `C=None`, eigenvalues only).
-⚠ The pooling is needed: unpooled, the rank grain under strong correlation made the final
-`C` near singular on ideas02 (smallest eigenvalue 1e-9).
+`d` is standard MPPCA's σ averaged over patch footprints (`_footprint_average`), NORDIC's
+construction for its noise map (Moeller et al. 2021) with our 3D patch and stride. The
+level pass computes the patch at every mask voxel on a stride-2 grid (`_level_centers`,
+plus any mask voxel no grid patch reaches), `whitened_level` with `C=None`, eigenvalues
+only. Each center's σ², if it passes the floor, goes to every voxel of its patch, and
+each mask voxel takes the root of the mean over the patches covering it. A patch's MP
+level is the noise of all its voxels, so it belongs to all of them. No option.
+⚠ Some smoothing is needed: unpooled, the rank grain under strong correlation made the
+final `C` near singular on ideas02 (smallest eigenvalue 1e-9). The footprint is it.
 
-The level pass runs on a stride-2 grid of patch centers (`_strided_level`), filled in
-between by a tent interpolation in variance, then pooled. MPPCA's level is a patch mean
-and the pooling blurs at that scale anyway. Fixed, no option. EDDEN 0.9 mm: 26 s against
-92 s, table within 5e-5, median d 0.3%, σ 0.1%, no voxel's d over 10%. ⚠ The two outer
-mask layers are computed in full. Filled, the edge saw only inner grid points, and edge
-voxels' d came out up to 79% too high where the level climbs steeply inward. It needs no flat-mode correction: no
+Until 2026-11-09 the level sat at the center voxel only: stride-2 grid, a tent fill in
+variance, the outer two mask layers computed in full, then a 3³ pool (`pool`). That is
+the same construction with a 3³ tent footprint plus a box. The footprint replaced all of
+it (`profiling/footprint_level.py`): EDDEN 0.9 mm level pass 39 s to 19 s, 2 mm 2.2 s to
+1.1 s. Table within 6.5e-4, sphericity within 0.0004, σ median −0.04%, median |change|
+0.5%, 99th percentile 6%. Relative `d` moved by a median 0.5% at 2 mm and 1.2% at 0.9 mm,
+more at the rim (99th percentile 31% at 0.9 mm), and its scatter fell a little. On
+synthetic data with a known level (`profiling/footprint_synthetic.py`) both were off by
+5 to 11% in median, the footprint 2 points more at 5×5×3 and 1 at 7³: the wider average
+blurs real change more. No rim failure either way. It needs no flat-mode correction: no
 `C` is involved, and only ratios of `d` matter.
 
-`level_rounds` (default 0) re-estimates `d` as `pool(d * s)`, with `s` the whitened σ
-of every mask voxel's patch, then refits the loop. The fixed point is a flat `s`. It
+`level_rounds` (default 0) re-estimates `d` as the footprint average of `d * s`, with `s`
+the whitened σ of the patches on the same grid, then refits the loop. The fixed point is a flat `s`. It
 changed the sphericity by at most 0.006 and σ by at most 0.3% at three to four times the cost, hence
 the default. Edge patches include outside-mask voxels, where `d` takes the nearest mask
 voxel's level. On synthetic data the rim of half a patch at the mask edge then stays

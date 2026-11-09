@@ -2,16 +2,16 @@
 
 import numpy as np
 import pytest
-from scipy.ndimage import binary_erosion
 
-from camppca import brain_mask, denoise_mppca, denoise_with_noise_model
+from camppca import brain_mask, denoise_with_noise_model
 from camppca.denoiser import _flat_mode_factor
 from camppca.denoiser.camppca import denoise_whitened, whitened_level
 from camppca.noise_model import (
     NoiseModel,
+    _covered,
     _effective_d,
-    _pool_level,
-    _strided_level,
+    _footprint_average,
+    _level_centers,
     _white_rho,
     estimate_noise_model,
 )
@@ -121,33 +121,43 @@ def test_estimate_covers_the_lags_the_patch_needs():
     assert model.provenance["n_vols"] == bvals.size
 
 
-def test_d_is_the_standard_mppca_level_pooled():
+def test_d_is_the_standard_mppca_level_averaged_over_patch_footprints():
+    """Each grid center's MP level, squared, spread over its patch and averaged per voxel,
+    written out the long way."""
     dwi, bvals, mask, sigma = _synthetic(np.random.default_rng(1))
-    model = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
-    standard = denoise_mppca(dwi, mask, patch=(5, 5, 3)).sigma
-    pooled = _pool_level(np.where(mask, standard, 0.0).astype(np.float64), mask, 3)
+    patch = (5, 5, 3)
+    model = estimate_noise_model(dwi, mask, bvals=bvals, patch=patch)
+    centers = _level_centers(mask, patch)
+    level = whitened_level(dwi, centers, None, patch, workers=1)
 
+    half = np.array(patch) // 2
+    sums = np.zeros(mask.shape)
+    counts = np.zeros(mask.shape)
+    for c in np.argwhere(centers):
+        box = tuple(slice(max(0, a - h), a + h + 1) for a, h in zip(c, half, strict=True))
+        sums[box] += level[tuple(c)] ** 2
+        counts[box] += 1
+    want = np.sqrt(sums[mask] / counts[mask])
+
+    # Not exact: the estimate runs in the worker layout, and a near-tied MP cut can flip.
+    np.testing.assert_allclose(model.d[mask], want, rtol=5e-3)
     assert np.median(model.d[mask]) == pytest.approx(sigma, rel=0.1)
-    # Not exact: the level pass runs on a stride-2 grid and fills in between.
-    np.testing.assert_allclose(model.d[mask], pooled[mask], rtol=0.03)
     assert np.all(model.d[~mask] == 0)
+    assert model.provenance["level_stride"] == 2
     assert model.provenance["level_rounds_run"] == 0, "no level rounds by default"
 
 
-def test_the_strided_level_is_the_full_one_on_its_grid_and_rim():
-    dwi, _, mask, _ = _synthetic(np.random.default_rng(1))
-    full = whitened_level(dwi, mask, None, (5, 5, 3), workers=1)
-    strided = _strided_level(dwi, mask, (5, 5, 3), "cordero-grande", 1)
-
+def test_the_level_centers_lie_on_the_grid_and_their_patches_cover_the_mask():
+    mask = np.zeros((20, 20, 12), bool)
+    mask[3:17, 4:15, 2:10] = True
+    mask[1, 1, 1] = True                       # an island no grid patch reaches
+    centers = _level_centers(mask, (3, 3, 3))
     x, y, z = np.indices(mask.shape)
-    grid = mask & (x % 2 == 0) & (y % 2 == 0) & (z % 2 == 0)
-    grid |= mask & ~binary_erosion(mask, np.ones((3, 3, 3), bool), iterations=2,
-                                   border_value=0)
-    # Not exact: the level pass asks LAPACK for eigenvalues only, in batches that differ
-    # with the grid, and a near-tied MP cut can flip between them.
-    np.testing.assert_allclose(strided[grid], full[grid], rtol=5e-3)
-    assert (strided[mask] > 0).all() and not strided[~mask].any()
-    np.testing.assert_allclose(np.median(strided[mask]), np.median(full[mask]), rtol=0.01)
+    on = (x % 2 == 0) & (y % 2 == 0) & (z % 2 == 0)
+    assert np.array_equal(centers & ~on, np.isin(np.arange(mask.size), [
+        np.ravel_multi_index((1, 1, 1), mask.shape)]).reshape(mask.shape))
+    assert not (centers & ~mask).any()
+    assert _covered(centers, (3, 3, 3))[mask].all()
 
 
 @pytest.mark.parametrize("level_rounds", [0, 1])
@@ -235,41 +245,35 @@ def test_brain_mask_keeps_brain_that_touches_the_image_faces():
     np.testing.assert_array_equal(brain_mask(thin, erode=0), thin > 0)
 
 
-def test_pooling_averages_squares_and_ignores_voxels_outside_the_mask():
-    mask = np.zeros((3, 1, 1), bool)
-    mask[:2] = True
-    level = np.array([3.0, 4.0, 100.0]).reshape(3, 1, 1)
+def test_the_footprint_average_is_over_squares_and_skips_centers_below_the_floor():
+    level = np.array([3.0, 0.0, 4.0, 0.0, 1e-9]).reshape(5, 1, 1)
+    centers = np.array([True, False, True, False, True]).reshape(5, 1, 1)
+    mask = np.ones((5, 1, 1), bool)
 
-    pooled = _pool_level(level, mask, 3)
+    d = _footprint_average(level, centers, mask, (3, 1, 1))
 
-    # Voxel 0 sees itself and voxel 1; voxel 2 is out of the mask and contributes nothing.
-    assert pooled[0, 0, 0] == pytest.approx(np.sqrt((9 + 16) / 2))
-    assert pooled[1, 0, 0] == pytest.approx(np.sqrt((9 + 16) / 2))
-    assert pooled[2, 0, 0] == 0.0
-    assert pooled[0, 0, 0] > np.mean([3.0, 4.0]), "averaging levels would bias low"
-
-
-def test_pooling_of_size_one_is_a_no_op():
-    mask = np.ones((4, 4, 4), bool)
-    level = np.random.default_rng(0).uniform(1, 2, (4, 4, 4))
-    assert np.array_equal(_pool_level(level, mask, 1), level)
+    assert d[0, 0, 0] == pytest.approx(3.0)
+    assert d[1, 0, 0] == pytest.approx(np.sqrt((9 + 16) / 2)), "averaging levels biases low"
+    assert d[3, 0, 0] == pytest.approx(4.0), "the center below the floor adds nothing"
+    assert d[4, 0, 0] == 0.0, "and stays zero itself, for _effective_d to fill"
 
 
-def test_pooling_next_to_levels_near_zero_gives_no_nan():
-    """The running sum of uniform_filter rounds below zero there. ideas01 sub-103 hit it."""
+def test_the_footprint_average_next_to_levels_near_zero_gives_no_nan():
+    """The running sums of uniform_filter round below zero there. ideas01 sub-103 hit it."""
     level = np.random.default_rng(0).uniform(50, 150, (40, 40, 20))
     level[:, :, 15:] = 1e-7
-    pooled = _pool_level(level, np.ones(level.shape, bool), 3)
-    assert np.isfinite(pooled).all() and (pooled >= 0).all()
+    mask = np.ones(level.shape, bool)
+    d = _footprint_average(level, mask, mask, (3, 3, 3))
+    assert np.isfinite(d).all() and (d >= 0).all()
 
 
-def test_levels_near_zero_do_not_pull_down_their_neighbours_in_pooling():
-    """Pooled in, a zero slice took its neighbours to about 0.82 of their level."""
-    from camppca.noise_model import _level_field
+def test_levels_near_zero_do_not_pull_down_their_neighbours():
+    """Averaged in, a zero slice took its neighbours to about 0.82 of their level."""
     level = np.full((12, 12, 12), 10.0)
     level[:, :, 9:] = 1e-7
-    d = _level_field(level, np.ones(level.shape, bool), 3)
-    np.testing.assert_array_equal(d[:, :, :9], 10.0)
+    mask = np.ones(level.shape, bool)
+    d = _footprint_average(level, mask, mask, (3, 3, 3))
+    np.testing.assert_allclose(d[:, :, :9], 10.0, rtol=1e-6)
     assert not d[:, :, 9:].any(), "left zero for _effective_d to fill"
 
 
@@ -296,24 +300,6 @@ def test_zero_filled_slices_inside_the_mask_do_not_break_the_estimate():
     assert np.isfinite(result.denoised).all() and np.isfinite(result.sigma).all()
     assert abs(model.rho[model.lag + 1, model.lag, 0]) < 0.02, "the noise is white"
     assert np.median(result.sigma[:, :, 3:10]) == pytest.approx(sigma, rel=0.05)
-
-
-def test_estimate_pools_d():
-    dwi, bvals, mask, _ = _synthetic(np.random.default_rng(5))
-    raw = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3), pool=1)
-    pooled = estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
-
-    assert pooled.provenance["pool"] == 3, "pooling is on by default"
-    assert np.median(pooled.d[mask]) == pytest.approx(np.median(raw.d[mask]), rel=0.02)
-    # Neighbouring MP levels share most of their patch, so their scatter is correlated
-    # and a 3^3 box cuts it by far less than the sqrt(27) of independent voxels.
-    assert pooled.d[mask].std() < 0.75 * raw.d[mask].std(), "pooling cuts sampling scatter"
-
-
-def test_estimate_rejects_a_pool_smaller_than_one_voxel():
-    dwi, bvals, mask, _ = _synthetic(np.random.default_rng(6))
-    with pytest.raises(ValueError, match="pool must be"):
-        estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3), pool=0)
 
 
 @pytest.mark.parametrize("aggregate", ["center", "mean"])

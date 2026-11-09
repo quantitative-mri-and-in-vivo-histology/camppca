@@ -11,7 +11,7 @@ property of the noise -- so it is computed on demand by :meth:`NoiseModel.patch_
 and never stored.
 
 This half of the seam is source-specific: here both come from MPPCA itself. ``d`` is
-standard MPPCA's noise level, pooled, and rho comes from the loop (``loop.py``), started
+standard MPPCA's noise level averaged over patch footprints, and rho comes from the loop (``loop.py``), started
 from white. A future alignment-based estimator builds the same :class:`NoiseModel` a
 different way and feeds the same engine, so nothing downstream may assume this one.
 
@@ -51,6 +51,10 @@ MIN_EIGENVALUE = 1e-3
 #: Levels below this fraction of the median over the mask count as bad. Whitening divides
 #: by ``d``, so a patch of near-constant data, whose MP level is near zero, would blow up.
 LEVEL_FLOOR = 1e-2
+
+#: The level pass computes one patch every this many voxels on each axis, see
+#: :func:`_footprint_average`. MPPCA's level is a patch mean, so a full grid adds little.
+LEVEL_STRIDE = 2
 
 
 def _good_level(d, mask):
@@ -94,7 +98,7 @@ class NoiseModel:
 
     d: np.ndarray
     """(X, Y, Z) relative noise map, defined up to scale: standard MPPCA's
-    ``sigma_mppca`` pooled over a ``pool``^3 box. Only ratios matter. Zero outside
+    ``sigma_mppca`` averaged over patch footprints. Only ratios matter. Zero outside
     ``mask``."""
 
     mask: np.ndarray
@@ -232,57 +236,20 @@ def _real_data(dwi, spatial_shape=None):
     return zero_nonfinite(as_data(dwi))[0], imag
 
 
-def _pool_level(level, mask, size):
-    """Neighbourhood-average a per-voxel level in VARIANCE, over mask voxels only.
-
-    Args:
-        level: (X, Y, Z) per-voxel noise level, zero outside ``mask``.
-        mask: (X, Y, Z) bool, the voxels that count.
-        size: box width in voxels. 1 leaves the field untouched.
-
-    Returns:
-        (X, Y, Z) pooled level, zero outside ``mask``.
-
-    The average is over squares because the square is the unbiased quantity, being a
-    second moment. Averaging levels instead biases low. Pooling also smooths the grain an
-    MP level map carries where neighbouring voxels cut at different ranks; unpooled, that
-    grain made the loop's ``C`` near singular on strongly correlated data. The cost is
-    blur, roughly h^2 * lap(d^2) / 24 for a box of width h, so ``size`` trades sampling
-    noise against real structure.
-
-    Both sums run over mask voxels only, so the edge is not pulled toward the background.
-    ``mode="constant"`` extends that past the array edge: the default, ``reflect``, would
-    mirror the rim back in and count it twice.
-
-    ⚠ ``uniform_filter`` keeps a running sum. Where levels near zero sit next to normal
-    ones, its rounding can leave a sum of squares slightly below zero, so it is clipped
-    at zero before the root.
-    """
-    if size <= 1:
-        return level
-    kw = dict(size=size, mode="constant", cval=0.0)
-    num = uniform_filter(np.where(mask, level, 0.0) ** 2, **kw)
-    den = uniform_filter(mask.astype(np.float64), **kw)
-    pooled = np.zeros_like(level)
-    ok = mask & (den > 0)
-    pooled[ok] = np.sqrt(np.maximum(num[ok], 0.0) / den[ok])
-    return pooled
-
-
 @limit_blas
 def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
-                         pool=3, algorithm="cordero-grande", noise_field=True, level_rounds=0,
+                         algorithm="cordero-grande", noise_field=True, level_rounds=0,
                          workers=None):
     """Estimate the noise model from the data itself. No noise-only scan required.
 
-    The relative noise map ``d`` is standard MPPCA's ``sigma_mppca`` at every mask voxel,
-    pooled ``pool``^3. Unpooled, its rank grain made ``C`` near singular on strongly
-    correlated data. rho is the loop's (:mod:`camppca.noise_model.loop`), started from
-    white noise: 1 at lag 0, 0 elsewhere.
+    The relative noise map ``d`` is standard MPPCA's ``sigma_mppca`` of the patches on a
+    stride-2 grid, each spread over its patch and averaged where patches overlap, see
+    :func:`_footprint_average`. rho is the loop's (:mod:`camppca.noise_model.loop`),
+    started from white noise: 1 at lag 0, 0 elsewhere.
 
-    Each level round splits every mask voxel's whitened patch, which gives ``s``, the
-    level in d-normalized units. The new ``d`` is ``d * s`` pooled, and the loop is
-    refitted from the previous table. The rounds stop when ``d`` moves by less than
+    Each level round splits the whitened patches on the same grid, which gives ``s``, the
+    level in d-normalized units. The new ``d`` is ``d * s`` averaged the same way, and the
+    loop is refitted from the previous table. The rounds stop when ``d`` moves by less than
     :data:`LEVEL_TOL`. At the fixed point ``s`` is flat: every whitened patch carries the
     same noise level. They cost three to four times the estimate for little change on
     real data, hence the default of 0.
@@ -300,9 +267,6 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
             covers. None picks dwidenoise's default, see
             :func:`~camppca.patch.default_patch`.
         lowb: b-value at or below which a volume counts as a b0.
-        pool: box width, in voxels, the relative noise map ``d`` is averaged over.
-            Averaged in variance, over mask voxels only, see :func:`_pool_level`. 1
-            disables it.
         algorithm: the MP rule the denoiser will cut with.
         noise_field: whether the denoiser will divide rows by ``d``. Pass the settings
             you will denoise with: the loop fits to them.
@@ -317,7 +281,6 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
     """
     # Imported here: the denoiser imports this package, so a top-level import is circular.
     from .. import __version__  # the package sets it after importing this module
-    from ..denoiser.camppca import whitened_level
     from ..denoiser.gather import check_dwi, check_range
     from ..denoiser.mp_threshold import check_algorithm
     from .loop import fit_rho
@@ -330,9 +293,6 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
     check_range(dwi, patch)
     lag = required_lag(patch)
     dzmax = int(patch[2]) - 1
-    pool = int(pool)
-    if pool < 1:
-        raise ValueError(f"pool must be >= 1 voxel, got {pool}")
     level_rounds = int(level_rounds)
     if level_rounds < 0:
         raise ValueError(f"level_rounds must be >= 0, got {level_rounds}")
@@ -358,14 +318,14 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
     check_dwi(dwi, mask.shape)
 
     rho = _white_rho((2 * lag + 1, 2 * lag + 1, dzmax + 1))
-    level = None
     if noise_field:
-        level = _strided_level(dwi, mask, patch, algorithm, workers)
-        d = _level_field(level, mask, pool)
+        d = _footprint_average(*_level_pass(dwi, mask, patch, algorithm, workers), mask,
+                               patch)
     else:
         d = mask.astype(np.float32)
     if complex_input:
-        _check_phase_stabilized(imag, dwi, mask, level, patch, algorithm, workers)
+        _check_phase_stabilized(imag, dwi, mask, d if noise_field else None, patch,
+                                algorithm, workers)
     sample = _good_level(d, mask)          # the same patches in every level round
     rho, info = fit_rho(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
                             noise_field=noise_field, workers=workers, sample=sample)
@@ -375,12 +335,12 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
     n_rounds = level_rounds if noise_field and not info["fallback"] else 0
     for rounds_run in range(1, n_rounds + 1):  # noqa: B007
         d_eff = _effective_d(d, mask)
-        s = whitened_level(dwi, mask, _build_C(rho, patch, lag), patch, algorithm,
-                           d_field=d_eff, workers=workers)
-        q25, q50, q75 = np.percentile(s[mask], (25, 50, 75))
+        s, centers = _level_pass(dwi, mask, patch, algorithm, workers,
+                                 C=_build_C(rho, patch, lag), d_field=d_eff)
+        q25, q50, q75 = np.percentile(s[centers], (25, 50, 75))
         spread = float((q75 - q25) / q50)
-        new = _level_field(d_eff * s, mask, pool)
-        both = (new > 0) & (d > 0)         # _level_field leaves voxels below the floor zero
+        new = _footprint_average(d_eff * s, centers, mask, patch)
+        both = (new > 0) & (d > 0)         # voxels below the floor come out zero
         change = float(np.median(np.abs((new[both] / np.median(new[both]))
                                         / (d[both] / np.median(d[both])) - 1)))
         if change < LEVEL_TOL:
@@ -393,7 +353,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
 
     prov = dict(version=__version__,
                 patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
-                lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
+                lowb=float(lowb), level_stride=LEVEL_STRIDE, n_mask=int(mask.sum()),
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
                 sphericity=info["sphericity"], n_centers=info["n_centers"],
@@ -466,53 +426,69 @@ def _check_phase_stabilized(imag, real, mask, level, patch, algorithm, workers):
              "`camppca phase` first.")
 
 
-def _strided_level(dwi, mask, patch, algorithm, workers):
-    """Standard MPPCA's level on a stride-2 grid of patch centers, filled in between.
+def _level_pass(dwi, mask, patch, algorithm, workers, C=None, d_field=None):
+    """The MP level of the patch at every level center, see :func:`_level_centers`.
 
-    MPPCA's level is a patch mean, and the field is pooled 3^3 after, so the full grid
-    adds nothing the pooling keeps. Computed at mask voxels with every coordinate even,
-    plus mask voxels with no such voxel in their 3^3 box, plus the two outer layers of
-    the mask. The rest are filled by a tent interpolation in variance over the good
-    computed levels, zero where there is none. On EDDEN at 0.9 mm the level pass took
-    26 s against 92 s. The loop table moved by at most 5e-5, the median of d by 0.3%,
-    sigma by 0.1%, and no voxel's d by more than 10%.
-
-    ⚠ The rim is needed. At the mask edge the fill sees grid points on the inside only,
-    and the level often climbs steeply inward there. Without the rim, edge voxels of
-    EDDEN 0.9 mm had d up to 79% too high. Two layers, because the fill reaches one
-    voxel and the 3^3 pooling one more.
+    ``C`` and ``d_field`` as :func:`~camppca.denoiser.camppca.whitened_level` takes them:
+    None for standard MPPCA, given for the level rounds. Returns ``(level, centers)``.
     """
     from ..denoiser.camppca import whitened_level  # circular at the top level
 
+    centers = _level_centers(mask, patch)
+    level = whitened_level(dwi, centers, C, patch, algorithm, d_field=d_field,
+                           workers=workers)
+    return level, centers
+
+
+def _level_centers(mask, patch):
+    """Mask voxels with every coordinate a multiple of :data:`LEVEL_STRIDE`, plus any mask
+    voxel that none of their patches covers."""
     x, y, z = np.indices(mask.shape, sparse=True)
-    grid = mask & (x % 2 == 0) & (y % 2 == 0) & (z % 2 == 0)
-    box = np.ones((3, 3, 3), np.int32)
-    computed = grid | (mask & (ndimage.convolve(grid.astype(np.int32), box,
-                                                mode="constant") == 0))
-    computed |= mask & ~ndimage.binary_erosion(mask, box, iterations=2, border_value=0)
-    level = whitened_level(dwi, computed, None, patch, algorithm, workers=workers)
-    good = _good_level(level, computed)
-    tent = np.array([0.5, 1.0, 0.5])
-    tent = tent[:, None, None] * tent[None, :, None] * tent[None, None, :]
-    num = ndimage.convolve(np.where(good, level, 0.0).astype(np.float64) ** 2, tent,
-                           mode="constant")
-    den = ndimage.convolve(good.astype(np.float64), tent, mode="constant")
-    fill = mask & ~computed & (den > 0)
-    level = level.copy()
-    level[fill] = np.sqrt(num[fill] / den[fill])
-    return level
+    on = (x % LEVEL_STRIDE == 0) & (y % LEVEL_STRIDE == 0) & (z % LEVEL_STRIDE == 0)
+    centers = mask & on
+    return centers | (mask & ~_covered(centers, patch))
 
 
-def _level_field(level, mask, pool):
-    """A per-voxel level pooled ``pool``^3 into a relative noise map, zero outside ``mask``.
+def _covered(centers, patch):
+    """The voxels at least one of the centers' patches reaches."""
+    size = tuple(int(p) for p in patch)
+    # A running sum: test against half of one center's share, not against zero.
+    return uniform_filter(centers.astype(np.float64), size=size,
+                          mode="constant") > 0.5 / np.prod(size)
 
-    Levels below the floor of ``_effective_d`` are left out of the pooling and come out
-    zero, for ``_effective_d`` to fill. Pooled in, zero-filled slices would pull their
-    neighbours' level down: by about a fifth next to a zero slice at 3^3.
+
+def _footprint_average(level, centers, mask, patch):
+    """Each center's level spread over its patch, averaged where patches overlap.
+
+    Every center whose level passes the floor of ``_effective_d`` adds its variance to
+    each voxel of its patch. Each mask voxel's level is the root of the mean over the
+    patches that cover it. This is NORDIC's construction for its noise map (Moeller et
+    al., NeuroImage 2021), here with 3D patches on a stride-2 grid. A patch's MP level is
+    the noise of all its voxels, so it belongs to all of them, not to the center alone.
+
+    The mean is over squares because the square is the unbiased quantity, being a second
+    moment: averaging levels biases low. Averaging over the patch also smooths the grain
+    an MP level map carries where neighbouring patches cut at different ranks. Unpooled,
+    that grain made the loop's ``C`` near singular on strongly correlated data.
+
+    Centers below the floor, such as patches of zero-filled slices, add nothing, so they
+    do not pull their neighbours down. They stay zero themselves, as do mask voxels no
+    good center reaches, for ``_effective_d`` to fill.
+
+    Returns:
+        (X, Y, Z) float32 level, zero outside ``mask``.
     """
-    good = _good_level(level, mask)
-    pooled = _pool_level(np.where(good, level, 0.0).astype(np.float64), good, pool)
-    return np.where(good, pooled, 0.0).astype(np.float32)
+    good = _good_level(level, centers)
+    size = tuple(int(p) for p in patch)
+    kw = dict(size=size, mode="constant", cval=0.0)
+    num = uniform_filter(np.where(good, level, 0.0).astype(np.float64) ** 2, **kw)
+    den = uniform_filter(good.astype(np.float64), **kw)
+    out = np.zeros(mask.shape, np.float32)
+    ok = mask & (den > 0.5 / np.prod(size))
+    # The running sums round slightly below zero next to levels near zero: clip.
+    out[ok] = np.sqrt(np.maximum(num[ok], 0.0) / den[ok])
+    out[centers & ~good] = 0.0
+    return out
 
 
 def _bvals_hash(bvals):
