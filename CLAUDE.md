@@ -258,6 +258,11 @@ Breaking any of these corrupts results without an error:
   patch can be indefinite for a larger one, and whitening by a near-singular `C` sends
   σ to ~1e-7. `patch_correlation` raises. `_build_C` still projects silently, because
   the loop needs that each round.
+- **`NoiseModel` checks its table, and `patch_correlation` checks the patch** (2026-11-09).
+  `rho` must be `(2·lag+1, 2·lag+1, dzmax+1)` with 1 at zero lag: off-center tables were
+  read wrong, and C's diagonal hid a covariance. A patch wider on any axis than
+  `fitted_to["patch"]` raises: the loop fills only the lags its patch spans, and the rest
+  hold the white start. Without a fitted patch only the table's reach is checked.
 - Patch flattening is **C-order, z fastest**; `rho[table_index(dx, dy, dz, lag)]`.
   Paired — the two orders must agree.
 - **The table's only symmetry is ρ(h) = ρ(−h).** It stores the half dz ≥ 0, and a lag

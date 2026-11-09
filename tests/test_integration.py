@@ -173,7 +173,7 @@ def test_the_scale_of_d_cancels(dataset, model):
 
 def test_denoise_refuses_a_patch_the_model_cannot_serve(dataset, model):
     dwi, _, _ = dataset
-    with pytest.raises(ValueError, match="needs lag"):
+    with pytest.raises(ValueError, match="not fitted at"):
         denoise_with_noise_model(dwi, model, patch=(9, 9, 9))
 
 

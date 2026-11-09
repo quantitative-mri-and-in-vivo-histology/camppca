@@ -112,20 +112,39 @@ class NoiseModel:
         # `... & mask` into integer fancy indexing downstream, silently mis-normalizing d.
         self.mask = np.asarray(self.mask, bool)
         self.rho = np.asarray(self.rho, float)
+        # Both read silently wrong when broken: a table narrower or wider than the lag is
+        # indexed off center, and C's diagonal is set to 1 whatever rho holds at zero lag,
+        # so a covariance passed as rho would scale every off-diagonal entry.
+        side = 2 * int(self.lag) + 1
+        if self.rho.ndim != 3 or self.rho.shape[:2] != (side, side):
+            raise ValueError(f"rho must be shaped ({side}, {side}, dzmax + 1) for lag "
+                             f"{self.lag}, got {self.rho.shape}")
+        if abs(self.rho[self.lag, self.lag, 0] - 1.0) > 1e-6:
+            raise ValueError(f"rho must be a correlation, 1 at zero lag, got "
+                             f"{self.rho[self.lag, self.lag, 0]:g}")
 
     def effective_d(self):
         """``d`` as the denoiser uses it, guarded: see :func:`_effective_d`."""
         return _effective_d(self.d, self.mask)
 
     def patch_correlation(self, patch):
-        """Derive ``C`` (P, P), the unit-diagonal patch correlation.
+        """Derive ``C`` (n_vox, n_vox), the unit-diagonal patch correlation.
 
         ``C`` is ``rho`` re-indexed into the geometry of this patch, PSD-projected to unit
-        diagonal.  Raises if the patch needs lags this model never measured: without the
-        check, the index runs off the table and numpy wraps around silently.  Also raises
-        if ``C`` is near singular (see :data:`MIN_EIGENVALUE`).
+        diagonal.  Raises if the patch needs lags this model never measured: beyond the
+        table, the index runs off it and numpy wraps around silently. Within the table,
+        a model fitted to a patch fills only the lags that patch spans, so a patch wider
+        on any axis than ``fitted_to["patch"]`` raises too: the other lags hold the white
+        start, and C would call those voxels uncorrelated.  Also raises if ``C`` is near
+        singular (see :data:`MIN_EIGENVALUE`).
         """
         patch = check_patch(patch)
+        fitted = self.fitted_to.get("patch")
+        if fitted is not None and any(p > f for p, f in zip(patch, fitted, strict=True)):
+            raise ValueError(
+                f"patch {tuple(int(v) for v in patch)} reaches lags this noise model was "
+                f"not fitted at: it was fitted to {tuple(int(v) for v in fitted)}. "
+                f"Re-estimate with this patch.")
         need = required_lag(patch)
         if need > self.lag:
             raise ValueError(
