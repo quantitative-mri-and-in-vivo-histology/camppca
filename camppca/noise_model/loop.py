@@ -284,7 +284,9 @@ class _Factors:
             self.groups.append((off, int(k), Ug))
             cols.append(Ug.transpose(1, 0, 2).reshape(Ug.shape[1], -1))
             off += Ug.shape[0] * int(k)
-        self.U_cat = np.concatenate(cols, axis=1)                     # (n_vox, sum rank)
+        # No patch may keep anything, as on pure noise: then there is no column at all.
+        self.U_cat = np.concatenate(cols, axis=1) if cols else \
+            np.zeros((parts[0].shape[0], 0), parts[0].dtype)          # (n_vox, sum rank)
 
 
 def _split_chunk(patches, C, algorithm, tile=TILE):

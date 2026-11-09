@@ -365,3 +365,18 @@ def test_without_the_noise_field_d_is_one_and_no_level_round_runs(dataset):
     assert np.all(flat.d[mask] == 1)
     assert flat.provenance["level_rounds_run"] == 0
     assert "s_spread" not in flat.provenance
+
+
+def test_the_loop_runs_when_no_patch_keeps_anything():
+    """On pure noise most patches keep rank 0, and with few patches all may. Gathering
+    their kept bases then crashed: "need at least one array to concatenate"."""
+    n_vox = int(np.prod(PATCH))
+    factors = loop._Factors([np.zeros((n_vox, 0), np.float32)] * 3, np.zeros(3, int))
+    X = np.random.default_rng(0).standard_normal((n_vox, n_vox)).astype(np.float32)
+    np.testing.assert_allclose(loop._WhitenedBulk(factors, threads=1)(X), X)
+
+    white = np.zeros((2 * LAG + 1, 2 * LAG + 1, PATCH[2]))
+    white[LAG, LAG, 0] = 1.0
+    table = loop._fit_table(np.eye(n_vox), factors, np.eye(n_vox), PATCH, LAG,
+                            PATCH[2] - 1, white, threads=1)
+    np.testing.assert_allclose(table, white, atol=1e-4)
