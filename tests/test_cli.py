@@ -46,8 +46,12 @@ def test_denoise_writes_image_noise_map_and_qc(dataset, capsys):
     assert np.median(sigma[sigma > 0]) == pytest.approx(10.0, rel=0.2)
 
     for name in ("rho.nii.gz", "noise_field_d.nii.gz", "mask.nii.gz",
-                 "sigma.nii.gz", "rank.nii.gz", "provenance.json"):
+                 "sigma.nii.gz", "rank.nii.gz", "provenance.json",
+                 "noise_model_check.txt", "noise_model_check.json"):
         assert (qc / name).exists(), name
+    check = json.loads((qc / "noise_model_check.json").read_text())
+    assert len(check["regions"]) == 8 and check["volume_splits"] == []
+    assert "volume halves skipped" in (qc / "noise_model_check.txt").read_text()
 
     prov = json.loads((qc / "provenance.json").read_text())
     assert prov["model"]["level_rounds"] == 0, "no level rounds by default"

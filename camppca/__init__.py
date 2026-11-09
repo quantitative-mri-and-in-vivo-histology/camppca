@@ -9,14 +9,16 @@ from .noise_model import NoiseModel, brain_mask, estimate_noise_model
 
 __version__ = "0.1.0"
 
-__all__ = ["NoiseModel", "DenoiseResult", "brain_mask", "denoise_camppca",
+__all__ = ["NoiseModel", "NoiseModelCheck", "DenoiseResult", "brain_mask",
+           "check_noise_model", "denoise_camppca",
            "denoise_mppca", "denoise_with_noise_model", "estimate_noise_model",
            "stabilize_phase", "__version__"]
 
 # Lazy, so `import camppca` stays light.
 _LAZY = {"denoise_camppca": "denoiser", "denoise_mppca": "denoiser",
          "denoise_with_noise_model": "denoiser", "DenoiseResult": "denoiser",
-         "stabilize_phase": "phase"}
+         "stabilize_phase": "phase", "check_noise_model": "noise_model.qc",
+         "NoiseModelCheck": "noise_model.qc"}
 
 
 def __getattr__(name):
