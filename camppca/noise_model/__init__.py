@@ -272,7 +272,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     """
     # Imported here: the denoiser imports this package, so a top-level import is circular.
     from .. import __version__  # the package sets it after importing this module
-    from ..denoiser.gather import as_data, zero_nonfinite
+    from ..denoiser.gather import as_data, check_range, zero_nonfinite
     from ..denoiser.mp_threshold import check_algorithm
 
     check_algorithm(algorithm)
@@ -286,6 +286,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     dwi = zero_nonfinite(as_data(dwi))[0]  # float32 once: every pass and map reuses it
     n_vols = dwi.shape[3]
     patch = resolve_patch(patch, dwi.shape)
+    check_range(dwi, patch)
     lag = required_lag(patch)
     dzmax = int(patch[2]) - 1
     pool = int(pool)

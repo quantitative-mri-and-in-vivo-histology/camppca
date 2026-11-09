@@ -339,6 +339,12 @@ Breaking any of these corrupts results without an error:
 - NaN and inf are zeroed for the fit and put back in the output (`gather.zero_nonfinite`),
   in `denoise_mppca`, `denoise_whitened` and `estimate_noise_model`. One NaN would
   otherwise poison every patch that holds it, and `eigh` runs with `check_finite=False`.
+- **Values large enough to overflow a patch's float32 Gram raise** (`gather.check_range`,
+  after `zero_nonfinite`, in `denoise_whitened` and `estimate_noise_model`). The bound is
+  float32's largest value over `n_vox * n_vols * 1e6`, about 6e13 at 7³ and 300 volumes,
+  far above real data. Unchecked, one entry of 3e19 made its neighbours NaN with σ 1e-7
+  and no error. The eigendecompositions also raise on a LAPACK failure or a non-finite
+  eigenvalue, as a backstop.
 - **Every voxel is denoised by default**, inside the mask or not. camppca's `mask` says
   where the noise model is estimated, and a brain mask always misses some brain at its
   edge. `mask_only=True` (`--mask-only`) denoises only inside it and passes the rest
