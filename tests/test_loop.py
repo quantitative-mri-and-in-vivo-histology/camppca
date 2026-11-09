@@ -140,18 +140,28 @@ def _patch_projectors(factors, C):
     return Q
 
 
+def _spread(centers, n):
+    """``n`` of the grid's centers spread over the whole mask. The grid lists them in C
+    order, so the first ``n`` would all sit at low x, where the test level is lowest."""
+    pick = np.linspace(0, centers[0].size - 1, min(n, centers[0].size)).astype(int)
+    return tuple(c[pick] for c in centers)
+
+
 def test_the_batched_split_is_the_per_patch_algebra(dataset, model):
     dwi, _, mask = dataset
-    centers = loop._sample_centers(mask, PATCH)[0]
+    centers = _spread(loop._sample_centers(mask, PATCH)[0], 120)
     patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)
     C = model.patch_correlation(PATCH)
     # Patches with a clear gap at the cut. Where the kept and dropped singular values are
     # within 10%, float32 and float64 disagree on the projector by up to 8e-3, which is
-    # rounding, not algebra.
+    # rounding, not algebra. A patch keeping none or all has no gap to test.
     rank = loop._split(patches, C, "cordero-grande")[1].rank
     s = np.linalg.svd(sqrtm_psd(C, -0.5) @ patches.astype(np.float64), compute_uv=False)
-    gap = s[np.arange(len(s)), rank - 1] / s[np.arange(len(s)), rank]
-    patches = patches[gap > 1.1][:40]
+    rows, inner = np.arange(len(s)), (rank > 0) & (rank < s.shape[1])
+    gap = np.where(inner, s[rows, np.clip(rank - 1, 0, None)]
+                   / s[rows, np.clip(rank, None, s.shape[1] - 1)], 0.0)
+    clear = np.flatnonzero(gap > 1.1)
+    patches = patches[clear[np.linspace(0, clear.size - 1, min(40, clear.size)).astype(int)]]
 
     S, factors = loop._split(patches, C, "cordero-grande")
     S_ref, Q_ref = _reference_split(patches, C, factors.rank)
@@ -286,8 +296,8 @@ def test_the_fit_is_the_pinned_least_squares(dataset, model):
     """The float32 conjugate-gradient fit against a dense float64 least squares built one
     patch at a time, in whitened units, with the far-class mean held at zero."""
     dwi, _, mask = dataset
-    centers = loop._sample_centers(mask, PATCH)[0]
-    patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)[:300]
+    centers = _spread(loop._sample_centers(mask, PATCH)[0], 300)
+    patches = loop._gather(dwi, _effective_d(model.d, mask), centers, PATCH)
     C = model.patch_correlation(PATCH)
     S, factors = loop._split(patches, C, "cordero-grande")
     table = loop._fit_table(S, factors, C, PATCH, LAG, PATCH[2] - 1, model.rho)
@@ -320,7 +330,7 @@ def _relative_error(d, mask):
 
 def test_every_level_round_fits_the_same_patches(dataset, monkeypatch):
     """The centers came from the current d, so a voxel crossing the level floor between
-    rounds drew a different set of 3000 patches."""
+    rounds changed the set of patches."""
     dwi, bvals, mask = dataset
     drawn = []
     original = loop._sample_centers
