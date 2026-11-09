@@ -26,6 +26,7 @@ from scipy import ndimage
 from scipy.ndimage import uniform_filter
 
 from ..patch import check_patch, patch_offsets, required_lag, resolve_patch, table_index
+from ..pool import limit_blas
 from .masks import brain_mask
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask"]
@@ -112,20 +113,39 @@ class NoiseModel:
         # `... & mask` into integer fancy indexing downstream, silently mis-normalizing d.
         self.mask = np.asarray(self.mask, bool)
         self.rho = np.asarray(self.rho, float)
+        # Both read silently wrong when broken: a table narrower or wider than the lag is
+        # indexed off center, and C's diagonal is set to 1 whatever rho holds at zero lag,
+        # so a covariance passed as rho would scale every off-diagonal entry.
+        side = 2 * int(self.lag) + 1
+        if self.rho.ndim != 3 or self.rho.shape[:2] != (side, side):
+            raise ValueError(f"rho must be shaped ({side}, {side}, dzmax + 1) for lag "
+                             f"{self.lag}, got {self.rho.shape}")
+        if abs(self.rho[self.lag, self.lag, 0] - 1.0) > 1e-6:
+            raise ValueError(f"rho must be a correlation, 1 at zero lag, got "
+                             f"{self.rho[self.lag, self.lag, 0]:g}")
 
     def effective_d(self):
         """``d`` as the denoiser uses it, guarded: see :func:`_effective_d`."""
         return _effective_d(self.d, self.mask)
 
     def patch_correlation(self, patch):
-        """Derive ``C`` (P, P), the unit-diagonal patch correlation.
+        """Derive ``C`` (n_vox, n_vox), the unit-diagonal patch correlation.
 
         ``C`` is ``rho`` re-indexed into the geometry of this patch, PSD-projected to unit
-        diagonal.  Raises if the patch needs lags this model never measured: without the
-        check, the index runs off the table and numpy wraps around silently.  Also raises
-        if ``C`` is near singular (see :data:`MIN_EIGENVALUE`).
+        diagonal.  Raises if the patch needs lags this model never measured: beyond the
+        table, the index runs off it and numpy wraps around silently. Within the table,
+        a model fitted to a patch fills only the lags that patch spans, so a patch wider
+        on any axis than ``fitted_to["patch"]`` raises too: the other lags hold the white
+        start, and C would call those voxels uncorrelated.  Also raises if ``C`` is near
+        singular (see :data:`MIN_EIGENVALUE`).
         """
         patch = check_patch(patch)
+        fitted = self.fitted_to.get("patch")
+        if fitted is not None and any(p > f for p, f in zip(patch, fitted, strict=True)):
+            raise ValueError(
+                f"patch {tuple(int(v) for v in patch)} reaches lags this noise model was "
+                f"not fitted at: it was fitted to {tuple(int(v) for v in fitted)}. "
+                f"Re-estimate with this patch.")
         need = required_lag(patch)
         if need > self.lag:
             raise ValueError(
@@ -230,7 +250,8 @@ def _pool_level(level, mask, size):
     return pooled
 
 
-def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, seed=0,
+@limit_blas
+def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
                          pool=3, algorithm="cordero-grande", noise_field=True, level_rounds=0,
                          workers=None):
     """Estimate the noise model from the data itself. No noise-only scan required.
@@ -244,8 +265,6 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     ``patch``  the patch this model must be able to serve; sets the lag rho covers.
                None picks dwidenoise's default, see :func:`~camppca.patch.default_patch`.
     ``lowb``   b-value at or below which a volume counts as a b0.
-    ``seed``   picks the voxels the phase check of complex data samples.  The loop's
-               patch centers lie on a grid, so re-estimating gives an identical model.
     ``pool``   box width, in voxels, the relative noise map ``d`` is averaged over.  Averaged in
                variance, over mask voxels only; see :func:`_pool_level`.  1 disables it.
     ``algorithm``, ``noise_field``  the denoiser settings the model is fitted to: the MP rule,
@@ -272,7 +291,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     """
     # Imported here: the denoiser imports this package, so a top-level import is circular.
     from .. import __version__  # the package sets it after importing this module
-    from ..denoiser.gather import as_data, zero_nonfinite
+    from ..denoiser.gather import as_data, check_range, zero_nonfinite
     from ..denoiser.mp_threshold import check_algorithm
 
     check_algorithm(algorithm)
@@ -286,6 +305,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
     dwi = zero_nonfinite(as_data(dwi))[0]  # float32 once: every pass and map reuses it
     n_vols = dwi.shape[3]
     patch = resolve_patch(patch, dwi.shape)
+    check_range(dwi, patch)
     lag = required_lag(patch)
     dzmax = int(patch[2]) - 1
     pool = int(pool)
@@ -323,13 +343,14 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
 
     rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     rho[lag, lag, 0] = 1.0
+    level = None
     if noise_field:
         level = _strided_level(whitened_level, dwi, mask, patch, algorithm, workers)
-        if complex_input:
-            _check_phase_stabilized(imag, mask, level, seed)
         d = _level_field(level, mask, pool)
     else:
         d = mask.astype(np.float32)
+    if complex_input:
+        _check_phase_stabilized(imag, dwi, mask, level, patch, algorithm, workers)
     sample = _good_level(d, mask)          # the same patches in every level round
     rho, info = fit_rho(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
                             noise_field=noise_field, workers=workers, sample=sample)
@@ -357,7 +378,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
 
     prov = dict(version=__version__,
                 patch=tuple(int(v) for v in np.asarray(patch, int)), lag=lag, dzmax=dzmax,
-                seed=int(seed), lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
+                lowb=float(lowb), pool=pool, n_mask=int(mask.sum()),
                 n_vols=int(n_vols), bvals_sha=_bvals_hash(bvals),
                 loop_rounds=info["rounds"], loop_converged=info["converged"],
                 sphericity=info["sphericity"], n_centers=info["n_centers"],
@@ -392,17 +413,36 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
 PHASE_RATIO = 3.0
 
 
-def _check_phase_stabilized(imag, mask, level, seed):
+def _check_phase_stabilized(imag, real, mask, level, patch, algorithm, workers):
     """Warn when the imaginary part carries far more than noise.
 
     The estimator works on the real part, which holds the signal only once the phase is
     stabilized. Otherwise the real part is a random projection of the signal, and the
-    model fits that. 10000 mask voxels are enough and need no copy of the volume.
+    model fits that. 10000 mask voxels, evenly spaced in C order, are enough and need no
+    copy of the volume. Spaced, not drawn, so the estimate takes no seed: the loop's
+    centers lie on a grid too.
+
+    ``level`` is standard MPPCA's level of the real part, or None without a noise field,
+    and then it is computed at the sampled voxels only. The check used to run only with
+    a noise field. NaN and inf in the imaginary part are left out: the real part is
+    cleaned before estimating, the imaginary part is not, and one NaN made the ratio NaN,
+    which never exceeds the threshold.
     """
+    from ..denoiser.camppca import whitened_level
+
     voxels = np.flatnonzero(mask)
-    pick = np.random.default_rng(seed).choice(voxels, min(10000, voxels.size), replace=False)
-    where = np.unravel_index(np.sort(pick), mask.shape)
-    ratio = float(np.sqrt(np.mean(np.square(imag[where], dtype=np.float64)))
+    pick = voxels[np.linspace(0, voxels.size - 1, min(10000, voxels.size)).astype(int)]
+    where = np.unravel_index(pick, mask.shape)
+    if level is None:
+        picked = np.zeros(mask.shape, bool)
+        picked[where] = True
+        level = whitened_level(real, picked, None, patch, algorithm, workers=workers)
+        mask = picked
+    values = imag[where]
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return
+    ratio = float(np.sqrt(np.mean(np.square(values, dtype=np.float64)))
                   / np.median(level[mask]))
     if ratio > PHASE_RATIO:
         warnings.warn(f"the imaginary part is {ratio:.1f} times the real part's noise level "

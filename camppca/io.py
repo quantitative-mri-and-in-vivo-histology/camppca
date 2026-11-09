@@ -10,7 +10,11 @@ import json
 import nibabel as nib
 import numpy as np
 
-__all__ = ["load_dwi", "load_bvals", "load_mask", "save_like", "save_json"]
+__all__ = ["load_dwi", "load_bvals", "load_mask", "check_same_space", "save_like",
+           "save_json"]
+
+#: How far two affines may differ, in mm, and still count as one voxel grid.
+AFFINE_TOL = 1e-3
 
 
 def load_dwi(path, dtype=np.float32):
@@ -21,9 +25,13 @@ def load_dwi(path, dtype=np.float32):
     A NIfTI is read one volume at a time into the result, so only the result and one
     volume are ever in memory. ``np.asanyarray`` on nibabel's proxy held the unpacked
     file, the stored integers and the float copy at once: 16 GB for the 5.5 GB float32
-    EDDEN 0.9 mm image, against 5.5 GB this way. Anything else falls back to it.
+    EDDEN 0.9 mm image, against 5.5 GB this way. A NIfTI whose volumes are not stored one
+    after another falls back to it.
+
+    Only NIfTI is read: the outputs are NIfTI and reuse the input's header. A .mgz loaded
+    fine and crashed the first 3D write, after the whole denoise.
     """
-    img = nib.load(str(path))
+    img = _load_nifti(path)
     if img.ndim != 4:
         raise ValueError(f"{path}: expected a 4D image, got shape {img.shape}")
     if np.iscomplexobj(np.empty(0, img.get_data_dtype())):
@@ -69,13 +77,41 @@ def load_bvals(path):
     return bvals
 
 
-def load_mask(path):
+def load_mask(path, affine=None):
     """Load a mask image as a boolean array. A trailing dimension of 1 is dropped, as
-    some tools write masks with shape (X, Y, Z, 1)."""
-    data = np.asanyarray(nib.load(str(path)).dataobj)
+    some tools write masks with shape (X, Y, Z, 1).
+
+    With ``affine``, the data's, the mask must lie on the same voxel grid; see
+    :func:`check_same_space`.
+    """
+    img = _load_nifti(path)
+    if affine is not None:
+        check_same_space(img.affine, affine, path, "the input")
+    data = np.asanyarray(img.dataobj)
     if data.ndim == 4 and data.shape[3] == 1:
         data = data[..., 0]
     return data > 0.5
+
+
+def check_same_space(affine, reference, path, reference_name):
+    """Raise unless two images lie on the same voxel grid.
+
+    Only shapes were compared before: a mask of the right shape with a flipped axis
+    would have placed the noise model on a mirrored brain without an error.
+    """
+    diff = float(np.abs(np.asarray(affine) - np.asarray(reference)).max())
+    if diff > AFFINE_TOL:
+        raise ValueError(f"{path}: its affine differs from {reference_name}'s by up to "
+                         f"{diff:.3g}, so its voxels do not line up. Resample it to the "
+                         f"same grid first.")
+
+
+def _load_nifti(path):
+    img = nib.load(str(path))
+    if not isinstance(img, (nib.Nifti1Image, nib.Nifti2Image)):
+        raise ValueError(f"{path}: expected a NIfTI file (.nii or .nii.gz), got "
+                         f"{type(img).__name__}")
+    return img
 
 
 def save_like(path, data, affine, header=None, dtype=np.float32):

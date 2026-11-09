@@ -235,6 +235,18 @@ def test_brain_mask_with_erode_zero_does_not_erode_to_nothing():
     assert brain_mask(b0, erode=0).sum() > brain_mask(b0, erode=2).sum()
 
 
+def test_brain_mask_keeps_brain_that_touches_the_image_faces():
+    """The closing eroded against a zero border and cut two slices off each face."""
+    from camppca.noise_model.masks import brain_mask
+
+    b0 = np.zeros((20, 20, 8))
+    b0[4:16, 4:16, :] = 100.0
+    np.testing.assert_array_equal(brain_mask(b0, erode=0), b0 > 0)
+    thin = np.zeros((24, 24, 3))
+    thin[6:18, 6:18, :] = 100.0
+    np.testing.assert_array_equal(brain_mask(thin, erode=0), thin > 0)
+
+
 def test_pooling_averages_squares_and_ignores_voxels_outside_the_mask():
     mask = np.zeros((3, 1, 1), bool)
     mask[:2] = True
@@ -335,3 +347,30 @@ def test_sigma_leaves_the_flat_mode_out():
     expected = raw * model.effective_d() * _flat_mode_factor(C)
     np.testing.assert_allclose(out.sigma[mask], expected[mask], rtol=1e-6)
     assert _flat_mode_factor(C) < 1, "positive correlation: below the voxel's own level"
+
+
+def _white_model(lag, dzmax, fitted=None):
+    rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
+    rho[lag, lag, 0] = 1.0
+    return NoiseModel(rho=rho, d=np.ones((4, 4, 4)), mask=np.ones((4, 4, 4)), lag=lag,
+                      fitted_to={} if fitted is None else dict(patch=fitted))
+
+
+def test_a_patch_wider_than_the_fitted_one_on_any_axis_is_refused():
+    """A (3, 7, 5) fit has lag 6 but measured only |dx| <= 2: (7, 3, 5) passed the lag
+    check and read the white start as zero correlation."""
+    model = _white_model(6, 4, fitted=(3, 7, 5))
+    with pytest.raises(ValueError, match="not fitted at"):
+        model.patch_correlation((7, 3, 5))
+    assert model.patch_correlation((3, 5, 5)).shape == (75, 75)
+    with pytest.raises(ValueError, match="needs lag"):
+        _white_model(6, 4).patch_correlation((9, 9, 5))      # no fitted patch: the table
+
+
+def test_a_table_that_does_not_fit_the_lag_or_is_not_a_correlation_is_refused():
+    rho = np.zeros((9, 9, 3))
+    rho[4, 4, 0] = 1.0
+    with pytest.raises(ValueError, match="shaped"):
+        NoiseModel(rho=rho, d=np.ones((4, 4, 4)), mask=np.ones((4, 4, 4)), lag=2)
+    with pytest.raises(ValueError, match="1 at zero lag"):
+        NoiseModel(rho=2 * rho, d=np.ones((4, 4, 4)), mask=np.ones((4, 4, 4)), lag=4)

@@ -20,6 +20,7 @@ import numpy as np
 from .. import __version__
 from ..noise_model import estimate_noise_model
 from ..patch import resolve_patch
+from ..pool import limit_blas
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
 from .mp_threshold import check_algorithm
@@ -51,6 +52,7 @@ def _flat_mode_factor(C, aggregate="center"):
     return float(np.sqrt(n_vox / (n_vox - 1) * diag))
 
 
+@limit_blas
 def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
                              algorithm="cordero-grande", shrink="hard", workers=None,
                              aggregate="center", stride=1, mask_only=False):
@@ -78,8 +80,8 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
                      model was estimated, and a brain mask always misses some brain at
                      its edge. Outside it ``d`` takes the nearest mask voxel's level.
 
-    The rule -- Exp2 / Cordero-Grande, center-voxel-only, hard threshold unless ``shrink``
-    or ``aggregate`` say otherwise -- is the method.
+    The rule -- the MP cut ``algorithm``, center-voxel-only, hard threshold unless
+    ``shrink`` or ``aggregate`` say otherwise -- is the method.
     """
     shrink = check_shrink(shrink)
     check_algorithm(algorithm)
@@ -93,12 +95,14 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
         raise ValueError(f"dwi spatial shape {dwi.shape[:3]} != model mask "
                          f"{model.mask.shape}")
 
-    fitted = (model.fitted_to.get("algorithm"), model.fitted_to.get("noise_field"))
-    if "algorithm" in model.fitted_to and fitted != (algorithm, bool(noise_field)):
-        warnings.warn(f"the loop was fitted with algorithm={fitted[0]!r}, "
-                      f"noise_field={fitted[1]}, but this denoise uses algorithm={algorithm!r}, "
-                      f"noise_field={bool(noise_field)}. Re-estimate with the same settings.",
-                      RuntimeWarning, stacklevel=2)
+    # Only the settings the model records: a second estimator may leave keys out.
+    used = dict(algorithm=algorithm, noise_field=bool(noise_field))
+    differ = [k for k in used if k in model.fitted_to and model.fitted_to[k] != used[k]]
+    if differ:
+        fitted = ", ".join(f"{k}={model.fitted_to[k]!r}" for k in differ)
+        now = ", ".join(f"{k}={used[k]!r}" for k in differ)
+        warnings.warn(f"the loop was fitted with {fitted}, but this denoise uses {now}. "
+                      f"Re-estimate with the same settings.", RuntimeWarning, stacklevel=2)
     C = model.patch_correlation(patch)
     d_eff = model.effective_d() if noise_field else None
 
@@ -111,15 +115,16 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
         # The engine rescales the IMAGE by d at the center voxel but not sigma_mppca.
         # Do it here, or the scale of d leaks into the headline number.
         sigma_mppca = sigma_mppca * d_eff
-    sigma = sigma_mppca * _flat_mode_factor(C, aggregate)
+    flat_mode = _flat_mode_factor(C, aggregate)
+    sigma = sigma_mppca * flat_mode
 
     where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"
     prov = dict(method="camppca", version=__version__, patch=tuple(int(v) for v in patch),
                 algorithm=algorithm,
                 noise_field=bool(noise_field), shrink=shrink, aggregate=aggregate,
-                stride=stride, mask_only=bool(mask_only),
-                rule=f"Cordero-Grande/Exp2, {RULES[shrink]}, {where}",
+                stride=stride, mask_only=bool(mask_only), flat_mode_factor=flat_mode,
+                rule=f"MP cut {algorithm}, {RULES[shrink]}, {where}",
                 model=dict(model.provenance))
     return DenoiseResult(denoised=denoised, sigma=sigma, rank=rank, model=model,
                          provenance=prov)

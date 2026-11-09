@@ -1,6 +1,6 @@
 # camppca
 
-**Covariance-Aware Marchenko–Pastur PCA** — MPPCA denoising for diffusion MRI that
+**Covariance-aware MPPCA** — MPPCA denoising for diffusion MRI that
 accounts for spatially correlated noise.
 
 Standard MPPCA assumes white noise. Real EPI reconstruction (GRAPPA/SENSE, partial
@@ -15,7 +15,7 @@ whitened domain, where the Marchenko–Pastur assumption holds.
 pip install -e .
 ```
 
-Python ≥ 3.10. numpy and scipy only, on the CPU.
+Python ≥ 3.10. numpy, scipy, joblib, threadpoolctl and nibabel, on the CPU.
 
 ## Command line
 
@@ -60,8 +60,10 @@ The real part keeps Gaussian noise, so it has no Rician noise floor. The recipe 
 EDDEN preprocessing (Manzano-Patrón et al. 2024) with a different filter. The raw phase of
 one bright reference volume, in practice a b0, is removed from every volume. Then in each
 slice and volume a smooth estimate of the phase is removed. It comes from the decorrelated
-filter of Sprenger et al. (2017), where EDDEN used a k-space low-pass. The phase is read in
-radians or in any unit whose range is one full turn, such as -4096 to 4094 on Siemens.
+filter of Sprenger et al. (2017), where EDDEN used a k-space low-pass. The phase is read
+in radians. For any other format, `--phase-range LOW HIGH` gives the values that span one
+full turn, such as `-4096 4096` for Siemens integers or `-180 180` for degrees. A phase
+wider than the declared turn stops the run before any work is done.
 `--imag` writes the imaginary part, which should hold noise only.
 
 ### Complex data: denoising both channels

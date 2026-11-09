@@ -18,10 +18,29 @@ cluster say. joblib's own default would be ``/dev/shm``, which pins the whole vo
 RAM: 10.8 GB at the peak against 5.7 GB on disk for that pass, at the same speed.
 
 Each task returns only its own voxels' results, so no worker holds a full-slab output.
+
+BLAS THREADS. The workers run OpenBLAS with one thread. This process sets its own only
+inside camppca's calls, through :func:`blas_threads`, and restores it after, so a script
+that imports camppca keeps its settings. OpenBLAS's default is one thread per hardware
+thread, 32 on 16 cores, for numpy's and scipy's copies alike. Measured 2026-11-09:
+
+- Per-patch work run in this process, every pass with ``workers=1``, gets one thread,
+  as in the workers. A 2 mm crop's camppca estimate and denoise took 128.7 s at 32
+  threads against 14.3 s at one.
+- The rest, mostly the loop's fit, gets :func:`main_threads`, at most
+  :data:`MAIN_THREADS`. On EDDEN 0.9 mm the fits took 15.4 s at 32 threads, 5.2 at 16,
+  4.6 at 8, 5.8 at 4 and 15.5 at 1; the estimate 52.4 s against 41.0 at 8.
+- Neither raises the count above what the caller set: an ``OPENBLAS_NUM_THREADS`` or an
+  outer limit stays in force.
+
+The fitted table moves with the thread count, by up to 1e-4 on EDDEN 2 mm between 16 and
+32 threads. So the count follows neither ``workers`` nor the pool: the loop stays the
+same for any number of workers.
 """
 
 from __future__ import annotations
 
+import functools
 import os
 import tempfile
 from contextlib import contextmanager
@@ -30,9 +49,13 @@ from pathlib import Path
 import joblib
 import numpy as np
 from joblib import Parallel, delayed, parallel_config
+from threadpoolctl import threadpool_info, threadpool_limits
 
 __all__ = ["default_workers", "resolve_workers", "worker_pool", "voxel_chunks",
-           "run_voxels", "run_boxes"]
+           "run_voxels", "run_boxes", "blas_threads", "main_threads", "limit_blas"]
+
+#: BLAS threads for camppca's own work in this process, at most.
+MAIN_THREADS = 8
 
 
 def _physical_cores():
@@ -60,6 +83,36 @@ def default_workers() -> int:
     if os.environ.get("CAMPPCA_WORKERS"):
         return max(1, int(os.environ["CAMPPCA_WORKERS"]))
     return max(1, min(_physical_cores(), joblib.cpu_count()))
+
+
+def _caller_threads() -> int:
+    """The fewest BLAS threads any loaded BLAS library is set to now."""
+    counts = [i["num_threads"] for i in threadpool_info() if i["user_api"] == "blas"]
+    return min(counts) if counts else 1
+
+
+def main_threads() -> int:
+    """BLAS threads for this process's own work: :data:`MAIN_THREADS`, at most the CPUs
+    this process may use and at most what the caller has set."""
+    return max(1, min(MAIN_THREADS, joblib.cpu_count(), _caller_threads()))
+
+
+@contextmanager
+def blas_threads(n: int):
+    """Hold every loaded BLAS library at ``n`` threads, at most the caller's count,
+    restored on exit."""
+    with threadpool_limits(limits=max(1, min(int(n), _caller_threads())), user_api="blas"):
+        yield
+
+
+def limit_blas(fn):
+    """Run ``fn`` with :func:`main_threads` BLAS threads, the caller's setting restored
+    after. For the public entry points; nested calls keep the outer limit."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with blas_threads(main_threads()):
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 def resolve_workers(workers) -> int:
@@ -120,8 +173,9 @@ def run_voxels(fn, arrays, voxels, write, workers: int, tile: int):
     chunks = voxel_chunks(voxels, 8 * workers, int(tile))
     starts = np.cumsum([0] + [c.size for c in chunks])
     if workers == 1:
-        for i, chunk in enumerate(chunks):
-            write(slice(starts[i], starts[i + 1]), fn(*arrays, chunk))
+        with blas_threads(1):              # per-patch work, as in the workers
+            for i, chunk in enumerate(chunks):
+                write(slice(starts[i], starts[i + 1]), fn(*arrays, chunk))
         return
     with worker_pool(workers, return_as="generator_unordered") as parallel:
         for i, outputs in parallel(delayed(_chunk_task)(fn, i, chunk, arrays)
@@ -136,8 +190,9 @@ def run_boxes(fn, arrays, chunks, add, workers: int):
     in the order of ``chunks``, so sums come out the same for any number of workers.
     """
     if workers == 1:
-        for chunk in chunks:
-            add(fn(*arrays, chunk))
+        with blas_threads(1):              # per-patch work, as in the workers
+            for chunk in chunks:
+                add(fn(*arrays, chunk))
         return
     with worker_pool(workers, return_as="generator") as parallel:
         for _, outputs in parallel(delayed(_chunk_task)(fn, i, chunk, arrays)

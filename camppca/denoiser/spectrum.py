@@ -31,12 +31,22 @@ def eigh_descending(gram):
     pairs = [_eigh(g) for g in gram]
     evals = np.stack([w for w, _ in pairs])[:, ::-1]
     evecs = np.stack([v for _, v in pairs])[:, :, ::-1]
-    return np.maximum(evals, 0.0), evecs
+    return _checked(np.maximum(evals, 0.0)), evecs
 
 
 def eigvalsh_descending(gram):
     """(B, n, n) symmetric -> (B, n) eigenvalues, descending, floored at 0."""
-    return np.maximum(np.stack([_eigvalsh(g) for g in gram])[:, ::-1], 0.0)
+    return _checked(np.maximum(np.stack([_eigvalsh(g) for g in gram])[:, ::-1], 0.0))
+
+
+def _checked(evals, failed=False):
+    """``evals``, unless LAPACK failed or one is not finite. The input guard
+    (:func:`~camppca.denoiser.gather.check_range`) should make this unreachable; it is
+    the backstop, since ``eigh`` runs with ``check_finite=False``."""
+    if failed or not np.isfinite(evals).all():
+        raise ValueError("a patch's eigendecomposition failed or is not finite: the "
+                         "data hold values too large for float32")
+    return evals
 
 
 # The kept route. The MP cut needs every eigenvalue but the rebuild only the top P
@@ -93,9 +103,11 @@ def tridiagonal_eigvalsh(gram):
     sytrd = getattr(lapack, prefix + "sytrd")
     sterf = getattr(lapack, prefix + "sterf")
     lwork = int(getattr(lapack, prefix + "sytrd_lwork")(gram.shape[1])[0])
-    reduced = [sytrd(g, lwork=lwork)[:4] for g in gram]
-    evals = np.stack([sterf(d, e)[0] for _, d, e, _ in reduced])[:, ::-1]
-    return np.maximum(evals, 0.0), reduced
+    out = [sytrd(g, lwork=lwork) for g in gram]
+    values = [sterf(d, e) for _, d, e, _, _ in out]
+    failed = any(r[4] for r in out) or any(info for _, info in values)
+    evals = _checked(np.maximum(np.stack([w for w, _ in values])[:, ::-1], 0.0), failed)
+    return evals, [r[:4] for r in out]
 
 
 def top_eigvecs(gram, evals, reduced, counts):

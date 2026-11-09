@@ -21,13 +21,16 @@ from collections.abc import Iterator
 
 import numpy as np
 
-from ..patch import check_patch, patch_offsets
+from ..patch import check_patch, patch_offsets, patch_size
 
-__all__ = ["TILE", "as_data", "box_centers", "patch_tiles", "restore_nonfinite",
-           "zero_nonfinite"]
+__all__ = ["TILE", "as_data", "box_centers", "check_range", "patch_tiles",
+           "restore_nonfinite", "zero_nonfinite"]
 
 #: Patches per tile.
 TILE = 8
+#: How far below float32's largest value a patch's Gram must stay, for the whitening and
+#: the division by ``d`` that come before it.
+GRAM_HEADROOM = 1e6
 
 
 def as_data(dwi) -> np.ndarray:
@@ -58,6 +61,22 @@ def zero_nonfinite(dwi):
     dwi = dwi.copy()
     dwi[bad] = np.where(np.isfinite(values), values, 0)
     return dwi, bad, values
+
+
+def check_range(dwi, patch):
+    """Raise if a value is so large that a patch's float32 Gram would overflow.
+
+    A Gram entry sums ``n_vox * n_vols`` squares, and float32 ends at 3.4e38: about 6e13
+    for 7^3 and 300 volumes, with :data:`GRAM_HEADROOM`. Real data stays far below, so a
+    value that large is corrupt, like NaN. Unchecked, one entry of 3e19 made all 27
+    neighbours of a 3^3 patch NaN, with sigma 1e-7 and no error.
+    """
+    peak = max(float(np.abs(dwi[x]).max()) for x in range(dwi.shape[0]))
+    limit = float(np.sqrt(np.finfo(np.float32).max
+                          / (patch_size(patch) * dwi.shape[3] * GRAM_HEADROOM)))
+    if peak > limit:
+        raise ValueError(f"the data reach {peak:.3g}, above {limit:.3g}, where a patch's "
+                         "float32 Gram could overflow. Check the data, or rescale it.")
 
 
 def restore_nonfinite(denoised, bad, values):

@@ -173,7 +173,7 @@ def test_the_scale_of_d_cancels(dataset, model):
 
 def test_denoise_refuses_a_patch_the_model_cannot_serve(dataset, model):
     dwi, _, _ = dataset
-    with pytest.raises(ValueError, match="needs lag"):
+    with pytest.raises(ValueError, match="not fitted at"):
         denoise_with_noise_model(dwi, model, patch=(9, 9, 9))
 
 
@@ -202,3 +202,20 @@ def test_float64_input_gives_the_float32_model(dataset, model):
     narrow = estimate_noise_model(dwi.astype(np.float32), mask, bvals=bvals, patch=(5, 5, 3))
     np.testing.assert_array_equal(narrow.rho, model.rho)
     np.testing.assert_array_equal(narrow.d, model.d)
+
+
+def test_the_fit_mismatch_warning_names_only_recorded_settings(dataset, model):
+    """A model may leave fitted_to keys out. One with "algorithm" but no "noise_field"
+    warned about noise_field=None; one with only "noise_field" was never checked."""
+    import dataclasses
+
+    dwi, _, mask = dataset
+    partial = dataclasses.replace(model, fitted_to=dict(patch=(5, 5, 3),
+                                                        algorithm="cordero-grande"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        denoise_with_noise_model(dwi, partial, mask_only=True, workers=1)
+    only_field = dataclasses.replace(model, fitted_to=dict(patch=(5, 5, 3), noise_field=False))
+    with pytest.warns(RuntimeWarning, match="noise_field=False") as caught:
+        denoise_with_noise_model(dwi, only_field, mask_only=True, workers=1)
+    assert "algorithm" not in str(caught[0].message)

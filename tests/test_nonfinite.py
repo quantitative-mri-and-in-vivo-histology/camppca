@@ -60,3 +60,25 @@ def test_finite_input_is_not_copied_or_warned_about(data):
     _, zeroed = data
     out, bad, values = zero_nonfinite(zeroed)
     assert out is zeroed and bad is None and values is None
+
+
+def test_a_value_that_would_overflow_the_gram_stops_the_run(data):
+    """One entry of 3e19 made a whole patch's neighbours NaN, with no error."""
+    clean = data[1]
+    huge = clean.copy()
+    huge[8, 8, 6, 10] = 3e19
+    with pytest.raises(ValueError, match="float32 Gram"):
+        denoise_mppca(huge, patch=PATCH, workers=1)
+    with pytest.raises(ValueError, match="float32 Gram"):
+        estimate_noise_model(huge, patch=PATCH, workers=1)
+    denoise_mppca(clean * 1e6, patch=PATCH, workers=1)  # large but real-looking data pass
+
+
+def test_a_failed_eigendecomposition_raises():
+    from camppca.denoiser.spectrum import eigh_descending, tridiagonal_eigvalsh
+
+    gram = np.full((2, 6, 6), np.nan, np.float32)
+    with pytest.raises(ValueError, match="not finite"):
+        tridiagonal_eigvalsh(gram)
+    with pytest.raises(ValueError):            # scipy's own LinAlgError, or the backstop
+        eigh_descending(gram)

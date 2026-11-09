@@ -31,7 +31,12 @@ def brain_mask(b0_mean, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
     if n == 0:
         raise ValueError("empty brain mask -- check the threshold fraction")
     m = lab == (np.bincount(lab.ravel())[1:].argmax() + 1)
-    m = binary_fill_holes(binary_closing(m, iterations=close))
+    if close > 0:
+        # Padded with the edge slices: scipy erodes against a zero border, so the closing
+        # cut two slices off every face the brain touches (all of EDDEN's z faces).
+        m = binary_closing(np.pad(m, close, mode="edge"), iterations=close)
+        m = m[(slice(close, -close),) * 3]
+    m = binary_fill_holes(m)
     for z in range(m.shape[2]):                    # 3-D fill misses pores open in-plane only
         m[:, :, z] = binary_fill_holes(m[:, :, z])
     if erode <= 0:

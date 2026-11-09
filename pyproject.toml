@@ -1,7 +1,7 @@
 [project]
 name = "camppca"
 version = "0.1.0"
-description = "Covariance-Aware Marchenko-Pastur PCA: self-estimated spatial noise covariance and MPPCA denoising in the whitened domain for diffusion MRI"
+description = "Covariance-aware MPPCA: self-estimated spatial noise covariance and MPPCA denoising in the whitened domain for diffusion MRI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -37,6 +37,8 @@ dependencies = [
     "nibabel>=5.0.0",
     # The worker processes and their memory-mapped inputs. 1.4 for unordered results.
     "joblib>=1.4.0",
+    # BLAS threads in this process, set only inside camppca's calls (camppca.pool).
+    "threadpoolctl>=3.1.0",
 ]
 
 [project.optional-dependencies]

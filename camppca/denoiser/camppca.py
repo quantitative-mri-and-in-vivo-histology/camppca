@@ -12,9 +12,10 @@ reconstruction is a dense combination of all ``n_vox`` whitened rows::
 
     xhat_c = (e_c^T C^(1/2)) Yw Pi = (e_c^T X) Pi
 
-since ``C^(1/2) C^(-1/2) = I``, both from one eigendecomposition in :func:`sqrtm_psd`. So
-the voxel's own row of the patch, projected, is its denoised signal, and unwhitening
-needs no product at all. ``Pi`` is the projection the whitened spectrum picks.
+since unwhitening undoes the whitener, ``W^(-1) W = I`` for the ``W`` actually applied.
+So the voxel's own row of the patch, projected, is its denoised signal, and unwhitening
+needs no product at all: no root of ``C`` is ever multiplied. ``Pi`` is the projection the
+whitened spectrum picks.
 
 WHITENER FACTORIZATION. The paper applies ``W = (DCD)^(-1/2)`` in one symmetric step. This
 code divides rows by ``d`` and then applies ``C^(-1/2)``, i.e. ``W = C^(-1/2) D^(-1)``.
@@ -36,9 +37,9 @@ from functools import partial
 import numpy as np
 
 from ..patch import patch_size, resolve_patch
-from ..pool import resolve_workers, run_boxes, run_voxels, voxel_chunks
+from ..pool import limit_blas, resolve_workers, run_boxes, run_voxels, voxel_chunks
 from .aggregate import MEAN_CHUNKS, BoxSum, MeanAssembly, check_aggregate, patch_centers
-from .gather import TILE, as_data, patch_tiles, restore_nonfinite, zero_nonfinite
+from .gather import TILE, as_data, check_range, patch_tiles, restore_nonfinite, zero_nonfinite
 from .mp_threshold import check_algorithm, mp_threshold
 from .shrink import check_shrink, shrink_weight, signal_alignment
 from .spectrum import eigh_descending, eigvalsh_descending, top_eigvecs, tridiagonal_eigvalsh
@@ -68,9 +69,11 @@ def _whiten_split(patches, whitener, n_small: int, n_large: int, algorithm: str,
         algorithm: which Marchenko-Pastur variant to cut with.
         values_only: compute the eigenvalues only, for the level pass. ``evecs`` is then
             None.
-        kept_only: compute only the eigenvectors each patch keeps, for the denoiser;
-            the other columns of ``evecs`` are zero. Real data only, complex data gets
-            them all. See :func:`~camppca.denoiser.spectrum.top_eigvecs`.
+        kept_only: compute only the eigenvectors each patch keeps, for the denoiser.
+            Columns past a patch's rank are zero, or hold the other eigenvectors for a
+            patch that falls back to the full ``eigh``; callers read only the first
+            ``rank``. Real data only, complex data gets them all. See
+            :func:`~camppca.denoiser.spectrum.top_eigvecs`.
 
     Returns:
         ``(whitened, evals, evecs, rank, sigma_mppca)``: (B, n_vox, n_vols) whitened
@@ -111,10 +114,10 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
     """Denoise a batch of whitened patches, returning the center voxel of each, or with
     ``full`` each whole rebuilt patch.
 
-    The whole patch unwhitens without ``C^(1/2)``: ``C^(1/2) (C^(-1/2) X) V diag(w) V^T``
-    is ``X V diag(w) V^T``, because both roots come from one eigendecomposition in
-    :func:`sqrtm_psd`. ``V`` are the whitened Gram's eigenvectors, ``w`` the kept and
-    shrink weights. The voxel's row is the same identity for one row.
+    The whole patch unwhitens without ``C^(1/2)``: ``W^(-1) (W X) V diag(w) V^T`` is
+    ``X V diag(w) V^T`` for the whitener ``W`` applied. ``V`` are the whitened Gram's
+    eigenvectors, ``w`` the kept and shrink weights. The voxel's row is the same identity
+    for one row.
 
     Args:
         patches: (B, n_vox, n_vols) patch matrices, already divided by ``d``.
@@ -153,8 +156,8 @@ def _denoise_tile(patches, whitener, root, C, n_small: int, n_large: int, algori
         return np.matmul(np.matmul(patches, V) * w[:, None, :], V.conj().transpose(0, 2, 1)), \
             sigma_mppca, rank
 
-    # e_c^T C^(1/2) Yw = e_c^T C^(1/2) C^(-1/2) X = e_c^T X: the voxel's own row, since
-    # both roots come from one eigendecomposition. No product with C^(1/2) is needed.
+    # e_c^T W^(-1) Yw = e_c^T W^(-1) W X = e_c^T X: the voxel's own row. No product with
+    # C^(1/2) is needed.
     voxel_row = patches[:, n_vox // 2, :] if rows is None else \
         patches[np.arange(len(rows)), rows, :]
     coords = np.einsum("bm,bmk->bk", voxel_row, evecs)
@@ -185,6 +188,7 @@ def _level_voxels(dwi, d_field, voxels, whitener, patch, algorithm, tile):
     return (level,)
 
 
+@limit_blas
 def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TILE,
                    d_field=None, workers=None):
     """The MP noise level of every mask voxel's whitened patch, without denoising.
@@ -285,6 +289,7 @@ def _mean_whitened_voxels(dwi, d_field, mask, centers, whitener, root, C, patch,
     return box.result()
 
 
+@limit_blas
 def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TILE,
                      d_field=None, shrink="hard", workers=None, aggregate="center",
                      stride=1):
@@ -322,6 +327,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
     mask = np.asarray(mask, bool)          # non-bool would make `& mask` an integer op
     patch = resolve_patch(patch, dwi.shape)  # odd dims: center = n_vox // 2 must BE the center
     dwi, bad, values = zero_nonfinite(dwi)
+    check_range(dwi, patch)
     aggregate, stride = check_aggregate(aggregate, stride)
     n_vox = patch_size(patch)
 

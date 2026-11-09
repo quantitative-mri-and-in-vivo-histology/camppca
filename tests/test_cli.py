@@ -211,3 +211,14 @@ def test_bad_options_fail_before_the_data_is_read(tmp_path, capsys):
         main(["denoise", missing, str(tmp_path / "out.nii.gz"), "--stride", "2"])
     assert main(["estimate", missing]) == 1
     assert "nothing written" in capsys.readouterr().err
+
+
+def test_a_mask_on_another_grid_stops_the_run(dataset):
+    mask = dataset / "flipped_mask.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((34, 34, 16), np.uint8), np.diag([-1.0, 1, 1, 1])),
+             str(mask))
+    out = dataset / "never.nii.gz"
+    with pytest.raises(ValueError, match="do not line up"):
+        main(["denoise", str(dataset / "in.nii.gz"), str(out), "--mask", str(mask),
+              *_grad(dataset)])
+    assert not out.exists()

@@ -136,7 +136,7 @@ picks the b0s the default mask is drawn from.
 The patches lie on a grid (`_sample_centers`), each wholly inside the mask, with stride
 equal to the patch, so they tile the mask without overlap. The grid's phase is the one
 with the most centers. Above 5000 the stride widens, below 500 it narrows to overlap,
-down to every voxel. No seed. EDDEN 0.9 mm gets 4579 patches, 2 mm 1563. Measured
+down to every voxel, every axis by the same factor so the grid keeps the patch's shape. No seed. EDDEN 0.9 mm gets 4579 patches, 2 mm 1563. Measured
 2026-11-09 (`docs/local/2026-11-09_loop_sampling.md`): σ moved by at most 0.1% above a
 few hundred patches, ρ stopped improving at about 700 patches of 7³, and at 2 mm
 overlapping centers up to 7060 came no closer than the tiling. A grid was no more
@@ -258,6 +258,11 @@ Breaking any of these corrupts results without an error:
   patch can be indefinite for a larger one, and whitening by a near-singular `C` sends
   σ to ~1e-7. `patch_correlation` raises. `_build_C` still projects silently, because
   the loop needs that each round.
+- **`NoiseModel` checks its table, and `patch_correlation` checks the patch** (2026-11-09).
+  `rho` must be `(2·lag+1, 2·lag+1, dzmax+1)` with 1 at zero lag: off-center tables were
+  read wrong, and C's diagonal hid a covariance. A patch wider on any axis than
+  `fitted_to["patch"]` raises: the loop fills only the lags its patch spans, and the rest
+  hold the white start. Without a fitted patch only the table's reach is checked.
 - Patch flattening is **C-order, z fastest**; `rho[table_index(dx, dy, dz, lag)]`.
   Paired — the two orders must agree.
 - **The table's only symmetry is ρ(h) = ρ(−h).** It stores the half dz ≥ 0, and a lag
@@ -331,9 +336,20 @@ Breaking any of these corrupts results without an error:
   whitening would divide by it. The loop also skips patches holding such a voxel.
   ideas01 sub-103 hit this in its top two slices: pooling returned NaN, and sub-01
   finished with a suspect correction of 16.8%.
+- **Files are NIfTI only, and every image of a run shares one voxel grid** (`io.py`). A
+  .mgz loaded and then crashed the first 3D write, after the whole denoise. A mask or
+  phase image whose affine differs from the input's by more than 1e-3 raises
+  (`check_same_space`). Only shapes were compared before, so a flipped mask would have
+  placed the model on a mirrored brain.
 - NaN and inf are zeroed for the fit and put back in the output (`gather.zero_nonfinite`),
   in `denoise_mppca`, `denoise_whitened` and `estimate_noise_model`. One NaN would
   otherwise poison every patch that holds it, and `eigh` runs with `check_finite=False`.
+- **Values large enough to overflow a patch's float32 Gram raise** (`gather.check_range`,
+  after `zero_nonfinite`, in `denoise_whitened` and `estimate_noise_model`). The bound is
+  float32's largest value over `n_vox * n_vols * 1e6`, about 6e13 at 7³ and 300 volumes,
+  far above real data. Unchecked, one entry of 3e19 made its neighbours NaN with σ 1e-7
+  and no error. The eigendecompositions also raise on a LAPACK failure or a non-finite
+  eigenvalue, as a backstop.
 - **Every voxel is denoised by default**, inside the mask or not. camppca's `mask` says
   where the noise model is estimated, and a brain mask always misses some brain at its
   edge. `mask_only=True` (`--mask-only`) denoises only inside it and passes the rest
@@ -372,6 +388,13 @@ removed from every volume. Then per slice and volume the phase of the dk smooth 
   result does not depend on the number of workers. On EDDEN 0.9 mm the step took about
   125 s on one core before and 22 s on 16 workers after (2026-11-05), the phasor now
   taken as `conj(s) / |s|` without `angle`.
+- **The phase format is declared, never guessed** (`phase_range`, `--phase-range LOW HIGH`,
+  radians by default). Only the width of the turn matters. A phase wider than it raises,
+  narrower than half warns. Until 2026-11-09 `phase_scale` took the data's range as one
+  turn, so radians that were unwrapped or offset came out scaled wrong without a word.
+- NaN and inf are zeroed before the smoothing: a zero adds nothing to the complex sum
+  whose angle is the smooth phase. Left in, one NaN left its 5 x 5 neighbours unturned.
+  They stay NaN in the output.
 - The phase is removed with a smooth estimate, which leaves neighbours' noise correlation
   in the real part close to the complex one. The estimator measures it from the real
   part anyway.
@@ -420,9 +443,17 @@ Both denoisers take complex64 data and return it. The Gram is `X^H X`, the rebui
     is 3 to 4 preconditioned steps of two bulk maps each, plus 0.25 s to build the
     preconditioner. The splits are slower in the pool than alone, about 1.5 times, from
     shared memory bandwidth and clock.
-  - ⚠ OpenBLAS in the main process starts one thread per hardware thread, 32 on 16
-    cores. Held to 16 threads, a bulk map took 24 ms against 49 ms and the estimate
-    18 s against 21 s, before the split moved to float32. Not set in the code yet.
+  - **BLAS threads in the main process are set inside camppca's calls only**
+    (`pool.blas_threads`, `pool.limit_blas` on `estimate_noise_model`,
+    `denoise_with_noise_model`, `denoise_whitened`, `whitened_level`), through
+    threadpoolctl, and restored after. OpenBLAS's default is a thread per hardware
+    thread, 32 on 16 cores. Per-patch work in this process, every pass with `workers=1`,
+    runs on one thread as in the workers. The rest, mostly the loop's fit, runs on at
+    most 8 (`MAIN_THREADS`), the CPUs allowed and the caller's own setting. Measured
+    2026-11-09: 0.9 mm fits 15.4 s at 32 threads, 4.6 at 8, 15.5 at 1; the estimate
+    44.6 s before, 40.9 after; a 2 mm crop's camppca run with `workers=1` 128.7 s at 32
+    threads, 14.3 s after. ⚠ The table moves with the thread count, up to 1e-4, so the
+    count must never follow `workers`.
 
 - **Tests run one worker and one BLAS thread each**, set in `tests/conftest.py`, and
   pytest runs them side by side (`-n auto` in `pyproject.toml`): 22 s against 85 s with a

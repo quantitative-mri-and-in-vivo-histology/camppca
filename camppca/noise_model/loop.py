@@ -72,7 +72,7 @@ from scipy.ndimage import binary_erosion
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import TILE
 from ..patch import patch_offsets, table_index
-from ..pool import resolve_workers, worker_pool
+from ..pool import blas_threads, resolve_workers, worker_pool
 from . import (
     FALLBACK_REASON,
     MIN_EIGENVALUE,
@@ -90,7 +90,7 @@ MIN_CENTERS = 500       # fewer tiles than this and the grid narrows, so patches
 LOOP_TOL = 1e-3         # stop when C's sphericity changes by less than this per round
 MAX_ROUNDS = 20
 LOOP_CHUNKS = 32        # fixed chunks of sampled patches, so workers cannot change the sums
-FIT_TOL = 1e-5          # the fit stops at this gradient, relative to its start
+FIT_TOL = 1e-5          # the fit stops at this gradient, relative to that of a zero table
 MAX_FIT_STEPS = 300
 PRODUCT_THREADS = 8     # threads for the bulk map's per-patch products
 PRODUCT_CHUNK = 64      # patches per thread task
@@ -155,8 +155,9 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
             patches = _gather(dwi, levels, centers, patch)
 
             def split(C):
-                return _assemble(C, [_split_chunk(patches[part], C, algorithm)
-                                     for part in parts])
+                with blas_threads(1):          # per-patch work, as in the workers
+                    chunks = [_split_chunk(patches[part], C, algorithm) for part in parts]
+                return _assemble(C, chunks)
 
         rho = rho_start
         C = _build_C(rho, patch, lag)
@@ -206,8 +207,11 @@ def _sample_centers(mask, patch):
 
     The stride is the patch, so the patches tile the mask without overlap and each brings
     its own noise. Of the grid's phases the one with the most centers is taken. Above
-    :data:`MAX_CENTERS` the stride widens by one voxel per axis until under it. Below
-    :data:`MIN_CENTERS` it narrows until over it, down to every voxel.
+    :data:`MAX_CENTERS` the stride widens until under it, below :data:`MIN_CENTERS` it
+    narrows until over it, down to every voxel. Every axis scales by the same factor, in
+    steps of one voxel on the longest, so the grid keeps the patch's shape. Adding one
+    voxel per axis instead grew the z stride of a 7 x 7 x 3 patch by a third against a
+    seventh in plane, and skipped slices.
 
     Measured 2026-11-09 on EDDEN 0.9, 1.5 and 2 mm (``docs/local/2026-11-09_loop_sampling.md``):
     sigma moved by at most 0.1% above a few hundred patches, and rho stopped improving at
@@ -223,15 +227,24 @@ def _sample_centers(mask, patch):
     if not eligible.any():
         raise ValueError(f"no mask voxel has its whole {tuple(int(v) for v in patch)} "
                          "patch inside the mask, so the loop has no patch to fit")
-    stride = tuple(int(v) for v in patch)
+    longest = int(max(patch))
+
+    def scaled(k):                    # the stride with k voxels added on the longest axis
+        return tuple(max(1, int(np.floor(int(p) * (longest + k) / longest + 0.5)))
+                     for p in patch)
+
+    k = 0
+    stride = scaled(k)
     centers = _grid(eligible, stride)
     if centers.sum() > MAX_CENTERS:
         while centers.sum() > MAX_CENTERS:
-            stride = tuple(s + 1 for s in stride)
+            k += 1
+            stride = scaled(k)
             centers = _grid(eligible, stride)
         return np.nonzero(centers), stride
     while centers.sum() < MIN_CENTERS and max(stride) > 1:
-        stride = tuple(max(s - 1, 1) for s in stride)
+        k -= 1
+        stride = scaled(k)
         centers = _grid(eligible, stride)
     return np.nonzero(centers), stride
 
@@ -284,7 +297,9 @@ class _Factors:
             self.groups.append((off, int(k), Ug))
             cols.append(Ug.transpose(1, 0, 2).reshape(Ug.shape[1], -1))
             off += Ug.shape[0] * int(k)
-        self.U_cat = np.concatenate(cols, axis=1)                     # (n_vox, sum rank)
+        # No patch may keep anything, as on pure noise: then there is no column at all.
+        self.U_cat = np.concatenate(cols, axis=1) if cols else \
+            np.zeros((parts[0].shape[0], 0), parts[0].dtype)          # (n_vox, sum rank)
 
 
 def _split_chunk(patches, C, algorithm, tile=TILE):
