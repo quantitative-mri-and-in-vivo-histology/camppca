@@ -35,11 +35,13 @@ likelihood reaches the true lag-1 correlation within 0.002, at 7^3 too, where th
 within 0.0022, sigma by a median 0.02% at most, 99th percentile 0.03%.
 
 THE HOLE. Every patch keeps its smooth patch-mean pattern as signal, so the bulk barely
-sees the noise along it. Among stationary tables this is exactly one direction, the same
-value added to every lag: on the EDDEN crop its weight in the least-squares fit was
-2.5e-4 of the largest, the next weakest 4.8e-2. It is fixed by an assumption, noise
-correlation dies off with distance, so the mean over the far classes, those on the edge
-of the patch's lag box, is held at zero.
+sees the noise along it. Among stationary covariances this is exactly one direction, the
+same value added to every lag: on the EDDEN crop its weight in the least-squares fit was
+2.5e-4 of the largest, the next weakest 4.8e-2. With the zero lag held at 1 it becomes
+``1 - rho`` at each lag, the same value only near white noise. It is fixed by an
+assumption, noise correlation dies off with distance, so the mean over the far classes,
+those on the edge of the patch's lag box, is held at its starting value. That is zero
+for white noise and for every table the loop returns, the only starts it is given.
 
 Do not go back to a free solve of the covariance averaged over lags. There the hole is
 a near-null eigenvalue along the patch mean, a converged solve divides by it, and the
@@ -52,20 +54,27 @@ are kept with patterns tilted toward the noise, and weaker ones stay in the bulk
 are smooth in space and read as extra correlation. On the paper's phantom (Hann window
 f = 0.5, g = 0.33, 80 volumes, 5^3) a round started at the truth gave a z correlation
 of 0.037 where the truth is 0, and the converged loop 0.051. Patch2Self overshot too.
+The fixed point enlarges the bias of a single round: if a round moves a table by ``b``
+plus a share ``a`` of its distance from the fixed point, the fixed point lies
+``b / (1 - a)`` from the truth. Here that is 1.4 times.
 
-The rounds stop on a full step that changes the sphericity of the patch correlation by
-less than :data:`LOOP_TOL`: a shorter step changes it little because it is short. The
-sphericity closes about half its remaining gap each round, and a start far from the
-answer can dip and turn, so a looser tolerance stops early on a single small step. The
-table of the last round is returned.
+The rounds stop on a full step that moves no table value by more than :data:`LOOP_TOL`:
+a shorter step moves it little because it is short. Until 2026-11-09 they stopped on a
+change in sphericity below 1e-3, which cannot see a change orthogonal to ``C``: from
+white noise a step to lag-1 0.015 moves it by 7e-4. The table of the last round is
+returned. A full step inside the valid correlations that no fraction of raises the
+likelihood beyond rounding also ends the loop, as converged.
 
 The stationary model does not explain the bulk, and the loop falls back to white noise,
-when no step down to :data:`MIN_STEP` raises the likelihood, the step does not point
-uphill, the split is not finite, or the loop has not converged in :data:`MAX_ROUNDS` and
-its last step was still shortened. Near a regular optimum Fisher scoring takes full
-steps. An unstabilized phase ends this way: its full steps left the valid correlations
-round after round, toward a sphericity of 25 where the truth is 0. A loop that has not
-converged on full steps keeps its table and warns.
+when the full step leaves the valid correlations and no shorter one down to
+:data:`MIN_STEP` raises the likelihood, or when :data:`MAX_ROUNDS` end with the last full
+step outside them. Near a regular optimum Fisher scoring takes full steps inside them.
+An unstabilized phase ends this way: its full steps left the valid correlations round
+after round, toward a sphericity of 25 where the truth is 0. A loop whose last step was
+shortened by the likelihood alone keeps its table and warns, as one that has not
+converged on full steps does. A step that is not finite or does not point uphill, or a
+split that is not finite, is a numerical failure and falls back saying so: a solved
+Fisher step is finite and points uphill.
 
 Patch rows are divided by the guarded relative noise map before whitening, exactly as the
 denoiser divides them, so the loop fits ``C`` to the patches the denoiser whitens. The
@@ -76,10 +85,13 @@ Lags the patch never spans, such as ``|dx| > 2`` for a 3 x 7 patch whose table r
 lag 6, carry no information from the bulk. They keep the starting table's values.
 
 The split runs in float32, with each tile's bulk product in float64, and the Fisher step
-in float32 too. Against float64 the least-squares table moved by at most 2.4e-5. Each
-patch's kept directions are orthonormalized in float64, and the line search evaluates
-the change in likelihood in float64, see :func:`_gain_chunk`.
+in float32 too, unless the smallest eigenvalue of ``C`` is below :data:`PRECISE_BELOW`.
+Rounding in a float32 operator grows with the condition of ``C``: about 6e-4 relative
+at 1.2e-4, 0.06 at the floor of 1e-6. Against float64 the least-squares table moved by
+at most 2.4e-5. Each patch's kept directions are orthonormalized in float64, and the
+line search evaluates the change in likelihood in float64, see :func:`_gain_chunk`.
 """
+from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from functools import partial
@@ -97,6 +109,7 @@ from ..warn import warn
 from . import (
     FALLBACK_REASON,
     MIN_EIGENVALUE,
+    NUMERICAL_REASON,
     _build_C,
     _effective_d,
     _good_level,
@@ -107,13 +120,14 @@ __all__ = ["fit_rho"]
 
 MAX_CENTERS = 5000      # patch centers the bulk is pooled over, at most
 MIN_CENTERS = 500       # fewer tiles than this and the grid narrows, so patches overlap
-LOOP_TOL = 1e-3         # stop when C's sphericity changes by less than this per round
+LOOP_TOL = 5e-4         # stop when a full step moves no table value by more than this
 MAX_ROUNDS = 20
 LOOP_CHUNKS = 32        # fixed chunks of sampled patches, so workers cannot change the sums
 FIT_TOL = 1e-5          # the fit stops at this residual, relative to its right-hand side
 MAX_FIT_STEPS = 300
 MIN_STEP = 2.0 ** -10   # the shortest step the line search tries
 ARMIJO = 1e-4           # the share of the predicted rise in likelihood a step must reach
+PRECISE_BELOW = 1e-4    # the Fisher step runs in float64 below this smallest eigenvalue of C
 PRODUCT_THREADS = 8     # threads for the bulk map's per-patch products
 PRODUCT_CHUNK = 64      # patches per thread task
 
@@ -148,7 +162,7 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
         lag and ``rho_start``'s values at lags the patch never spans, and a dict with
         ``rounds``, ``converged``, ``steps`` (each round's line-search step, 1 for a
-        full one), ``sphericity`` (that of the returned table's patch correlation),
+        full one, 0 for a round that found the table at the optimum), ``unsolved`` (the rounds whose Fisher step stopped unsolved), ``sphericity`` (that of the returned table's patch correlation),
         ``n_centers``, ``stride`` (of the grid of patch centers, see
         :func:`_sample_centers`, None when ``centers`` is given) and ``fallback``: None,
         or why the table fell back to white noise.
@@ -200,50 +214,71 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
         cls, lags = _lag_classes(patch)
         rho = rho_start
         C = _build_C(rho, patch, lag)
-        u_prev = _sphericity_excess(C)
-        converged, fallback, steps = False, None, []
+        converged, fallback, steps, unsolved, bounded = False, None, [], {}, False
         for rounds in range(1, MAX_ROUNDS + 1):  # noqa: B007 - read after the loop
             results = split(C)
             bulk, factors = _assemble(results)
             W = sqrtm_psd(C, -0.5)
-            step, values, why = _line_search(
+            outcome = _line_search(
                 bulk, factors, W, rho, patch, lag, cls, lags,
                 lambda G, W=W, results=results: sum(gain(W, G, results)),
                 threads=min(PRODUCT_THREADS, workers))
-            if values is None:
+            if outcome.residual is not None:
+                unsolved[rounds] = outcome.residual
+            if outcome.values is None:
+                # The full step left the valid correlations and no shorter one helped:
+                # the stationary model does not explain the bulk. Anything else is
+                # numerical, and blaming the data would mislead.
+                reason = FALLBACK_REASON if outcome.bounded else NUMERICAL_REASON
                 fallback = (f"the loop found no step that raises the likelihood of the "
-                            f"noise bulk in round {rounds}: {why}. {FALLBACK_REASON}")
+                            f"noise bulk in round {rounds}: {outcome.why}. {reason}")
                 warn(fallback)
                 rho = _white_rho(rho.shape)
                 break
-            steps.append(step)
-            rho = _table_from_values(values, lags, lag, dzmax)
-            C = _build_C(rho, patch, lag)
-            u = _sphericity_excess(C)
-            change = abs(u - u_prev)
-            if change < LOOP_TOL and step == 1.0:
+            if outcome.step == 0.0:
+                # A full step inside the valid correlations, and no fraction of it raises
+                # the likelihood beyond rounding: the table is at the optimum.
+                steps.append(0.0)
                 converged = True
                 break
-            u_prev = u
-        if not converged and fallback is None and steps[-1] < 1.0:
-            # Near a regular optimum Fisher scoring takes full steps. Still shortened
-            # after every round, the pattern is pressing against the valid correlations.
+            steps.append(outcome.step)
+            bounded = outcome.bounded
+            change = float(np.abs(outcome.values - _class_values(rho, lags, lag)).max())
+            rho = _table_from_values(outcome.values, lags, lag, dzmax)
+            C = _build_C(rho, patch, lag)
+            if change < LOOP_TOL and outcome.step == 1.0:
+                converged = True
+                break
+        if not converged and fallback is None and bounded:
+            # Near a regular optimum Fisher scoring takes full steps inside the valid
+            # correlations. Still cut by them in the last round, the pattern is pressing
+            # against them.
             fallback = (f"the loop did not converge in {MAX_ROUNDS} rounds, and its last "
-                        f"step was shortened to {steps[-1]:g}. {FALLBACK_REASON}")
+                        f"full step left the valid correlations. {FALLBACK_REASON}")
             warn(fallback)
             rho = _white_rho(rho.shape)
         elif not converged and fallback is None:
-            warn(f"the loop did not converge in {MAX_ROUNDS} rounds; the "
-                 f"sphericity changed by {change:.4f} in the last one, against a "
-                 f"tolerance "
-                 f"of {LOOP_TOL}")
+            warn(f"the loop did not converge in {MAX_ROUNDS} rounds; the last round "
+                 f"moved the table by up to {change:.1e} with a step of {steps[-1]:g}, "
+                 f"against a tolerance of {LOOP_TOL:g} on a full step")
+        # After a fallback the unsolved steps are a symptom of the same misfit, already
+        # reported. A kept table reports them once.
+        if unsolved and fallback is None:
+            warn(f"the Fisher step's solve stopped at {MAX_FIT_STEPS} conjugate-gradient "
+                 f"steps in round(s) {sorted(unsolved)}, residual up to "
+                 f"{max(unsolved.values()):.1e} against {FIT_TOL}. The line search still "
+                 f"accepted each step only where it raised the likelihood.")
     rho = rho.copy()
     unspanned = ~_spanned(patch, lag, dzmax)
     rho[unspanned] = rho_start[unspanned]
     info = dict(rounds=rounds, converged=converged, steps=steps, fallback=fallback,
+                unsolved=sorted(unsolved),
                 sphericity=_sphericity_excess(_build_C(rho, patch, lag)),
                 n_centers=int(centers[0].size), stride=stride)
     return rho, info
+
+
+_Outcome = namedtuple("_Outcome", "step values why residual bounded")
 
 
 def _line_search(bulk, factors, W, rho, patch, lag, cls, lags, gain,
@@ -259,28 +294,45 @@ def _line_search(bulk, factors, W, rho, patch, lag, cls, lags, gain,
             profile log-likelihood from ``rho``, see :func:`_gain_chunk`.
 
     Returns:
-        ``(step, values, why)``: the step taken and the class values of the new table,
-        unit at zero lag, or None for both and why no step was taken.
+        an ``_Outcome``: ``step``, the step taken, 0 when the table is already at the
+        optimum; ``values``, the class values of the new table, unit at zero lag, or None
+        when no step was found, with ``why``; ``residual``, the relative residual of the
+        Fisher step's solve where it stopped unsolved, else None; ``bounded``, whether
+        the full step left the valid correlations.
     """
     n_vox = len(W)
-    if not np.isfinite(bulk).all():
-        return None, None, "the split of the whitened patches is not finite"
     current = _class_values(rho, lags, lag)
+    if not np.isfinite(bulk).all():
+        return _Outcome(None, None, "the split of the whitened patches is not finite",
+                        None, False)
     rhs = bulk - factors.total * (np.eye(n_vox) - factors.Um)    # sum_b (S_b - nu_b P_b)
-    delta = _fisher_step(rhs / factors.total, factors, W, patch, threads)
+    # Rounding in a float32 operator grows with the condition of C, 1 / smallest eigenvalue.
+    precise = float(np.linalg.eigvalsh(W)[-1]) ** -2 < PRECISE_BELOW
+    delta, residual = _fisher_step(rhs / factors.total, factors, W, patch, threads,
+                                   dtype=np.float64 if precise else np.float32)
+    if not np.isfinite(delta).all():
+        return _Outcome(None, None, "the Fisher step is not finite", residual, False)
+    if not delta.any():
+        return _Outcome(0.0, current, None, residual, False)
     slope = 0.5 * float(np.sum((W @ delta[cls] @ W) * rhs))
-    if not (np.isfinite(slope) and slope > 0):
-        return None, None, f"the step does not point uphill, slope {slope:.2e}"
-    step, smallest = 1.0, None
+    if not slope > 0:
+        # The Fisher operator is positive semi-definite, so a solved step points uphill.
+        return _Outcome(None, None, f"the step does not point uphill, slope {slope:.2e}",
+                        residual, False)
+    full = float(np.linalg.eigvalsh((current + delta)[cls])[0])
+    bounded = full < MIN_EIGENVALUE
+    step = 1.0
     while step >= MIN_STEP:
         values = current + step * delta
-        low = float(np.linalg.eigvalsh(values[cls])[0])
-        smallest = low if smallest is None else smallest
-        if low >= MIN_EIGENVALUE and gain(W @ values[cls] @ W) >= ARMIJO * step * slope:
-            return step, values, None
+        if (step == 1.0 and not bounded) or \
+                float(np.linalg.eigvalsh(values[cls])[0]) >= MIN_EIGENVALUE:
+            if gain(W @ values[cls] @ W) >= ARMIJO * step * slope:
+                return _Outcome(step, values, None, residual, bounded)
         step /= 2
-    return None, None, (f"none down to {MIN_STEP:g} did; the full step's C has smallest "
-                        f"eigenvalue {smallest:.1e}")
+    if not bounded:
+        return _Outcome(0.0, current, None, residual, False)
+    return _Outcome(None, None, (f"none down to {MIN_STEP:g} did; the full step's C has "
+                                 f"smallest eigenvalue {full:.1e}"), residual, True)
 
 
 def _sphericity_excess(C):
@@ -596,7 +648,7 @@ class _WhitenedBulk:
         return bulk - level
 
 
-def _fisher_step(rhs, factors, W, patch, threads=PRODUCT_THREADS):
+def _fisher_step(rhs, factors, W, patch, threads=PRODUCT_THREADS, dtype=np.float32):
     """The Fisher scoring step on the profile likelihood, in class values.
 
     The change ``delta`` of the table, one value per lag class, that solves::
@@ -605,21 +657,28 @@ def _fisher_step(rhs, factors, W, patch, threads=PRODUCT_THREADS):
 
     with ``F`` the Fisher operator (:class:`_WhitenedBulk`) and ``rhs`` the gradient,
     ``sum_b (S_b - nu_b P_b) / total``. The zero lag does not change: ``F`` cannot see
-    the scale. The one direction the bulk cannot see, the same value added to every
-    lag, is fixed by keeping the mean over the far classes at zero, those on the edge of
-    the patch's lag box. ``delta`` is solved for on that space, in an orthonormal basis.
+    the scale. The direction the bulk barely sees, see the module docstring, is fixed by
+    keeping the mean over the far classes unchanged, those on the edge of the patch's
+    lag box. ``delta`` is solved for on that space, in an orthonormal basis.
 
-    Conjugate gradients from zero, one Fisher operator a step in float32. Preconditioned
+    Conjugate gradients from zero, one Fisher operator a step in ``dtype``. Preconditioned
     by the bulk map with every patch's removal replaced by the average one,
     ``X -> Pm X Pm`` with ``Pm = I - Um``, without the level term. That matrix is
     ``A^T (G (x) G) A`` with ``G = W Pm W`` and ``A`` the class indicators, one product
     ``G E_c G`` per class and no bulk map.
 
+    The operator is positive semi-definite, so every conjugate-gradient iterate from zero
+    points uphill, ``g . y = y^T F y``. Where rounding breaks that, ``p . q`` not
+    positive, the iterations stop at the last good iterate. If none is left, the step is
+    the preconditioned gradient, which points uphill by construction.
+
     Returns:
-        the change in class values, see :func:`_lag_classes`.
+        ``(delta, residual)``: the change in class values, see :func:`_lag_classes`, and
+        the relative residual if the solve stopped short of :data:`FIT_TOL`, else None.
+        The caller reports it, see :func:`fit_rho`.
     """
-    W32 = W.astype(np.float32)
-    op = _WhitenedBulk(factors, threads)
+    W32 = W.astype(dtype)
+    op = _WhitenedBulk(factors, threads, dtype=dtype)
     cls, lags = _lag_classes(patch)
     n_cls, flat = len(lags), cls.ravel()
     reach = np.abs(lags).max(0)
@@ -628,7 +687,7 @@ def _fisher_step(rhs, factors, W, patch, threads=PRODUCT_THREADS):
     basis = null_space(np.stack([far, zero]).astype(np.float64))   # far mean 0, zero lag 0
 
     def normal(y):
-        X = op(W32 @ (basis @ y).astype(np.float32)[cls] @ W32)
+        X = op(W32 @ (basis @ y).astype(dtype)[cls] @ W32)
         return basis.T @ np.bincount(flat, weights=(W32 @ X @ W32).ravel(), minlength=n_cls)
 
     G = W @ (np.eye(len(W)) - factors.Um) @ W
@@ -638,28 +697,34 @@ def _fisher_step(rhs, factors, W, patch, threads=PRODUCT_THREADS):
                            minlength=n_cls)
     pre = _preconditioner(basis.T @ (0.5 * (M + M.T)) @ basis)
 
-    g = basis.T @ np.bincount(flat, weights=(W32 @ rhs.astype(np.float32) @ W32).ravel(),
+    g = basis.T @ np.bincount(flat, weights=(W32 @ rhs.astype(dtype) @ W32).ravel(),
                               minlength=n_cls)
+    norm0 = float(np.linalg.norm(g))
+    if norm0 == 0 or not np.isfinite(norm0):
+        return basis @ np.where(np.isfinite(g), 0.0, np.nan), None
     y = np.zeros(basis.shape[1])
     resid = g.copy()
     h = pre(resid)
     p, rh = h.copy(), float(resid @ h)
-    norm0 = float(np.linalg.norm(g))
+    solved = False
     for _ in range(MAX_FIT_STEPS):
         if np.linalg.norm(resid) <= FIT_TOL * norm0:
+            solved = True
             break
         q = normal(p)
-        alpha = rh / float(p @ q)
+        curvature = float(p @ q)
+        if not (np.isfinite(curvature) and curvature > 0):
+            break
+        alpha = rh / curvature
         y += alpha * p
         resid -= alpha * q
         h = pre(resid)
         rh_new = float(resid @ h)
         p = h + (rh_new / rh) * p
         rh = rh_new
-    else:
-        warn(f"loop fit stopped at {MAX_FIT_STEPS} steps, residual "
-             f"{np.linalg.norm(resid) / norm0:.1e} against {FIT_TOL}")
-    return basis @ y
+    if not y.any() or not float(g @ y) > 0:
+        y = pre(g)
+    return basis @ y, None if solved else float(np.linalg.norm(resid) / norm0)
 
 
 def _preconditioner(M):
@@ -667,14 +732,15 @@ def _preconditioner(M):
 
     ``M`` is singular when every patch keeps the same direction, as with few patches of
     strongly correlated noise: a 32 x 32 x 10 phantom crashed here in round 1. Only the
-    speed of the conjugate gradients depends on it, never their answer.
+    speed of the conjugate gradients depends on it, not their answer, as long as they
+    reach :data:`FIT_TOL`.
     """
     try:
         factor = cho_factor(M)
         return lambda r: cho_solve(factor, r, check_finite=False)
     except np.linalg.LinAlgError:
         w, V = np.linalg.eigh(M)
-        w = np.maximum(w, 1e-4 * w.max())
+        w = np.maximum(w, 1e-8 * w.max())
         return lambda r: V @ ((V.T @ r) / w)
 
 

@@ -191,6 +191,14 @@ two large values: near convergence it is a millionth of the likelihood. Write-up
   against 0.677, σ 0.96. At 7³ the true `C` has smallest eigenvalue 1.2e-4, and it
   reaches that too, σ 0.99. EDDEN 2 mm and 0.9 mm: tables within 0.0022, σ by a
   median 0.02% at most, 99th percentile 0.03%, all six rounds full steps.
+- The Fisher step runs in float64 when the smallest eigenvalue of `C` is below 1e-4
+  (`PRECISE_BELOW`). The rounding of a float32 operator grows with the condition of `C`,
+  about 0.06 relative at the floor of 1e-6. EDDEN never gets near it.
+- Reviewed 2026-11-09 by a separate agent, from the code only. The likelihood, the
+  profile, the Fisher operator, the gradient, the gain formula and the QR step were
+  checked by derivation and found correct. Its fixes to the stopping rule, the fallback
+  causes and the float32 step are in. Tests compare the gain formula with the profile
+  likelihood written out per patch, and the slope with its finite difference.
 - ⚠ Each patch's kept directions are orthonormalized by QR in float64. Taken by the
   eigenvalues, a patch keeping 104 of 105 components had columns far from unit length,
   its projector was no projector, and the Fisher operator went indefinite in round 1.
@@ -215,7 +223,8 @@ are kept with patterns tilted toward the noise, and weaker ones stay in the bulk
 are smooth and read as extra correlation. Paper phantom (Hann f 0.5, 80 volumes, 5³):
 the true z correlation is 0, the loop reports 0.05 at lag 1, and Patch2Self overshot
 too. With a signal MPPCA separates perfectly the loop is within 0.005. This is the
-split's limit, not the fit's. Estimating from the volume side (project every voxel off
+split's limit, not the fit's. The fixed point enlarges it: a round started at the truth
+gave 0.037, the converged loop 0.051, 1.4 times. Report both. Estimating from the volume side (project every voxel off
 a global signal subspace) was tried and fails on real data: the signal subspace is local.
 
 The split runs in float32, its bulk summed in float64. It needed float64 only while the
@@ -319,11 +328,17 @@ Breaking any of these corrupts results without an error:
   lag lookup wraps around. `dzmax` used to equal `LAG`, which crashed a one-slice patch
   on a thin volume.
 - **The loop falls back to white noise when the stationary model does not explain the
-  bulk**: no step down to 2^-10 (`MIN_STEP`) raises the likelihood, the step does not
-  point uphill, the split is not finite, or 20 rounds end without convergence and the
-  last step was still shortened. Near a regular optimum Fisher scoring takes full
-  steps. It warns, and provenance records `fallback`; `loop_steps` records every
-  round's step. A loop that has not converged on full steps keeps its table and warns.
+  bulk**: the full step leaves the valid correlations and no shorter one down to 2^-10
+  (`MIN_STEP`) raises the likelihood, or 20 rounds end with the last full step outside
+  them. Near a regular optimum Fisher scoring takes full steps inside them. It warns,
+  and provenance records `fallback`; `loop_steps` records every round's step. A loop
+  whose last step was shortened by the likelihood alone, or that has not converged on
+  full steps, keeps its table and warns. A step that is not finite or not uphill, or a
+  split that is not finite, falls back as a numerical failure (`NUMERICAL_REASON`),
+  never blaming the data. The rounds stop on a full step that moves no table value by
+  more than 5e-4 (`LOOP_TOL`). The old stop, sphericity changing by less than 1e-3,
+  cannot see a change orthogonal to `C`. It stopped weak correlation after round 1,
+  which happened to be within 0.0003 of the answer already (`profiling/weak_stop.py`).
   Cause seen: in the real part of data whose phase was never stabilized, the signal is
   higher rank, part of it falls below the MP edge, and pooled over the loop's patches
   that smooth signal reads as strong correlation no table explains. The likelihood

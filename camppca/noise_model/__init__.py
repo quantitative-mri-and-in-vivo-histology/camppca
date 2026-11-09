@@ -207,6 +207,11 @@ FALLBACK_REASON = ("The noise bulk most likely holds signal, as an unstabilized 
                    "leaves in the real part. The noise model falls back to white noise: "
                    "camppca then denoises like MPPCA with the relative noise map.")
 
+#: Why the loop fell back when the arithmetic, not the data, gave out.
+NUMERICAL_REASON = ("This is a numerical failure of the fit. The noise model falls back "
+                    "to white noise: camppca then denoises like MPPCA with the relative "
+                    "noise map.")
+
 
 def _build_C(rho, patch, lag):
     """Patch correlation from a correlation pattern, read by :func:`~camppca.patch.table_index`.
