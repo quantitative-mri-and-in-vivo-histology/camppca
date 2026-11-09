@@ -14,16 +14,19 @@ Outputs split by AUDIENCE, not by kind:
     --noise PATH     the sigma map -- a downstream product (SNR maps, weighting),
                      first-class, as `dwidenoise -noise` is
     --qc DIR         things to look at: rho as NIfTI + a plot, the relative noise map d,
-                     rank, provenance.json
+                     rank, provenance.json, and the check of one rho across regions and
+                     volume halves (noise_model_check.txt and .json)
 
-⚠ `--qc` is deliberately a SUPERSET. Today it dumps the free byproducts. When the real QC
-feature lands (whiteness before/after, noise-only spectrum against the MP edge, an
-index.html) it writes into the SAME directory -- no second flag, no rename.
+⚠ `--qc` is deliberately a SUPERSET. Anything to look at goes into the SAME directory --
+no second flag, no rename. The check (:func:`camppca.check_noise_model`) runs right after
+the estimate, before the denoise holds the output in memory. It refits the loop 23
+times, several times the estimate.
 
 `--model` (a reloadable NoiseModel npz) is deliberately NOT here. Estimation is seconds
 against a minutes-long denoise and is deterministic, so re-estimating is
 identical; the only strong reason is cross-dataset rho transfer, which is a research
-activity for now. Purely additive whenever that changes.
+activity for now. A saved model would also need a file format kept readable across
+versions. So the check runs where the model is made, not on a file.
 """
 
 import argparse
@@ -37,6 +40,7 @@ from .denoiser.aggregate import check_aggregate
 from .denoiser.mp_threshold import ALGORITHMS
 from .denoiser.shrink import RULES
 from .noise_model import estimate_noise_model
+from .noise_model.qc import check_noise_model
 from .phase import RADIANS, phase_scale, stabilize_phase
 
 __all__ = ["main"]
@@ -56,7 +60,10 @@ def _add_common(p):
     p.add_argument("--patch", type=int, nargs=3, default=None, metavar=("X", "Y", "Z"),
                    help="patch shape, odd in every dimension (default: dwidenoise's rule, "
                         "the smallest odd cube with at least as many voxels as volumes)")
-    p.add_argument("--qc", metavar="DIR", help="write QC byproducts here")
+    p.add_argument("--qc", metavar="DIR",
+                   help="write things to look at here, and check that one correlation "
+                        "pattern holds across regions and volume halves. The check "
+                        "refits the noise model 23 times.")
     p.add_argument("--lowb", type=float, default=100.0,
                    help="b-value at or below which a volume counts as a b0 (default: 100)")
     p.add_argument("--level-rounds", type=int, default=0, metavar="N",
@@ -156,6 +163,18 @@ def _write_qc(directory, model, affine, header, result=None):
     return _plot_rho(out / "rho.png", model)
 
 
+def _write_check(directory, check):
+    """The check of the noise model, as text to read and as JSON."""
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "noise_model_check.txt").write_text("\n".join(check.report()) + "\n")
+    io.save_json(out / "noise_model_check.json",
+                 dict(regions=check.regions, reference=check.reference,
+                      volume_splits=check.volume_splits,
+                      flagged=check.flagged(),
+                      provenance=check.provenance))
+
+
 def _plot_rho(path, model):
     """Lag profiles along each axis. Optional: skipped, loudly, without matplotlib."""
     try:
@@ -227,6 +246,13 @@ def main(argv=None):
     lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
     say(f"  noise model: patch {'x'.join(map(str, model.provenance['patch']))}, "
         f"lag {model.lag}{lag1}, sphericity {model.provenance['sphericity']:.3f}")
+
+    if args.qc:                    # before the denoise, which holds the output in memory
+        say("  checking the noise model across regions and volume halves")
+        check = check_noise_model(dwi, model, workers=args.workers)
+        _write_check(args.qc, check)
+        for line in check.report():
+            say(f"    {line}")
 
     result = None
     if args.command == "denoise":

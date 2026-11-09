@@ -31,7 +31,7 @@ camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/                         
 | *(positional out)* | the denoised 4D image |
 | *(no `--mask`)* | `out_mask.nii.gz` next to the output: the brain mask estimated in its place |
 | `--noise PATH` | the σ map, in the input's units — a first-class product, as `dwidenoise -noise` is |
-| `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the relative noise map, σ, rank, `provenance.json` |
+| `--qc DIR` | things to look at: the correlation pattern as NIfTI + `rho.png`, the relative noise map, σ, rank, `provenance.json`, and the check of one pattern across regions and volume halves, `noise_model_check.txt` and `.json`. The check refits the noise model 23 times. |
 
 **Supply a brain mask with `--mask`.** The noise model is estimated inside it. Every voxel
 is denoised, so brain the mask missed at its edge is denoised too. `--mask-only` denoises
@@ -104,6 +104,18 @@ result = denoise_with_noise_model(dwi, model)    # the patch the model was estim
 
 That split is deliberate: `denoise_with_noise_model` never asks where the model came from,
 so a differently-estimated covariance feeds the same engine.
+
+The model assumes one correlation pattern for the whole brain and every volume.
+`check_noise_model` refits it on 8 regions and on 5 random halves of the volumes, and
+reports how much each difference would change the noise level. `--qc DIR` runs it and
+writes `noise_model_check.txt`.
+
+```python
+from camppca import check_noise_model
+
+check = check_noise_model(dwi, model)     # 23 refits of the loop
+print("\n".join(check.report()))
+```
 
 Arrays in, arrays out — `nibabel` is only used at the file I/O boundary.
 

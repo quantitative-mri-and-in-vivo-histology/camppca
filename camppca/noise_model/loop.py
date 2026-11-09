@@ -99,7 +99,7 @@ _product_pools = {}     # one thread pool per thread count, kept: starting one c
 
 
 def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
-                noise_field=True, workers=None, sample=None):
+                noise_field=True, workers=None, sample=None, centers=None):
     """Refine rho until it is consistent with the MPPCA bulk of the patches.
 
     Args:
@@ -117,13 +117,16 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
         sample: (X, Y, Z) bool, the voxels patch centers are taken from, or None for the
             mask voxels whose level passes the floor of ``_effective_d``. The level rounds
             pass the first one, so every round fits the same patches.
+        centers: the patch centers as index arrays, as :func:`_sample_centers` returns
+            them, or None to sample them from ``sample``. The QC fits subsets of the
+            centers, see :mod:`camppca.noise_model.qc`.
 
     Returns:
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
         lag and ``rho_start``'s values at lags the patch never spans, and a dict with
         ``rounds``, ``converged``, ``sphericity`` (that of the returned table's patch
         correlation), ``n_centers``, ``stride`` (of the grid of patch centers, see
-        :func:`_sample_centers`) and ``fallback``: None, or why the table fell back to
+        :func:`_sample_centers`, None when ``centers`` is given) and ``fallback``: None, or why the table fell back to
         white noise because a round's fit was not a valid correlation.
 
     Raises:
@@ -134,9 +137,12 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
     dzmax = rho_start.shape[2] - 1
     workers = resolve_workers(workers)
     # Patches with a level below the floor hold near-constant data, which the fit cannot use.
-    if sample is None:
-        sample = _good_level(d, mask)
-    centers, stride = _sample_centers(sample, patch)
+    if centers is None:
+        if sample is None:
+            sample = _good_level(d, mask)
+        centers, stride = _sample_centers(sample, patch)
+    else:
+        stride = None
     levels = _effective_d(d, mask) if noise_field else np.ones(mask.shape, np.float32)
 
     # Fixed chunks, pooled in chunk order, so the model does not depend on ``workers``.
@@ -202,7 +208,7 @@ def _sphericity_excess(C):
     return float((C ** 2).sum() / len(C) - 1.0)
 
 
-def _sample_centers(mask, patch):
+def _sample_centers(mask, patch, min_centers=None):
     """Patch centers on a grid, each patch wholly inside the mask.
 
     The stride is the patch, so the patches tile the mask without overlap and each brings
@@ -220,6 +226,10 @@ def _sample_centers(mask, patch):
     centers at the same count. It ties the count to the mask and needs no seed. Patches
     reaching outside the mask lowered the sphericity a little and gained nothing.
 
+    ``min_centers`` None is :data:`MIN_CENTERS`. 0 keeps the tiling however few centers
+    it has. The QC needs that: overlapping patches share noise, so a region of them counts
+    for less than the same number spread over the mask.
+
     Returns:
         ``(centers, stride)``: the centers as index arrays, C order, and the stride used.
     """
@@ -228,6 +238,7 @@ def _sample_centers(mask, patch):
         raise ValueError(f"no mask voxel has its whole {tuple(int(v) for v in patch)} "
                          "patch inside the mask, so the loop has no patch to fit")
     longest = int(max(patch))
+    min_centers = MIN_CENTERS if min_centers is None else min_centers
 
     def scaled(k):                    # the stride with k voxels added on the longest axis
         return tuple(max(1, int(np.floor(int(p) * (longest + k) / longest + 0.5)))
@@ -242,7 +253,7 @@ def _sample_centers(mask, patch):
             stride = scaled(k)
             centers = _grid(eligible, stride)
         return np.nonzero(centers), stride
-    while centers.sum() < MIN_CENTERS and max(stride) > 1:
+    while centers.sum() < min_centers and max(stride) > 1:
         k -= 1
         stride = scaled(k)
         centers = _grid(eligible, stride)

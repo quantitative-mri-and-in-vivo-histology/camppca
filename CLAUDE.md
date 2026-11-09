@@ -184,6 +184,37 @@ The split runs in float32, its bulk summed in float64. It needed float64 only wh
 free solve left `C` near singular. Against float64 the table moved by at most 2.4e-5.
 The fit runs in float32 too, within 1e-4 of a float64 least squares.
 
+### The check
+
+`check_noise_model(dwi, model)` (`noise_model/qc.py`) asks whether one `rho` holds across
+the brain and the volumes. It refits the loop on parts of the data, with the model's
+`fitted_to`, and prices each difference on synthetic noise: patches drawn with one `C`,
+whitened with it and with the other, the median ratio of the two MP levels minus one.
+The CLI runs it under `--qc`, right after the estimate, and writes
+`noise_model_check.txt` and `.json`. There is no saved model to check later: a model
+file would need a format kept readable across versions.
+
+- Regions: a 2 x 2 x 2 grid at the quantiles of the centers, each against the model,
+  judged against 5 random subsets of the centers of the same size. Flagged beyond twice
+  the largest random change, once 1 region in 8 beat 5 draws by chance, and beyond 1%,
+  since EDDEN 0.9 mm regions differ for real but by 0.4% at most.
+- ⚠ The centers are the tiling, never narrowed to overlap (`_sample_centers(...,
+  min_centers=0)`). Overlapping patches share noise, so a clustered region counts for
+  less than scattered ones: on stationary synthetic noise every region fell outside.
+- Volumes: 5 random 50/50 splits, the halves against each other, never against the
+  model. With half the volumes the split leaks more signal into the bulk, so every half
+  differs from the model the same way. Skipped below 2 x `MIN_VOLUMES` volumes.
+- Not the sphericity, which says how correlated `C` is, not what a wrong one costs. Not
+  the share of noise patches keeping a component, which needs about 20,000 draws. No
+  shell split: b1000 against b2000 differed by up to 1.6%, the split's bias growing with
+  the signal (`docs/local/2026-11-09_qc_trial.md`).
+- EDDEN 2026-11-09, defaults: 2 mm, check 20 s against an estimate of 4 s, regions up to
+  0.37% against 0.30% random, volume halves within 0.15%. 0.9 mm, check 185 s against
+  39 s, six of eight regions beyond twice the random subsets, at 0.25 to 0.38% against 0.06%, low z above
+  and high z below, as in the trial.
+  Volume halves within 0.13%. Real, and small. The synthetic noise runs in the worker
+  pool, one task per comparison: serial it was 80 s of the 0.9 mm check.
+
 ### One whitener
 
 The paper and the code both whiten with `W = C^(-1/2) D^(-1)`: divide rows by `d`, then
@@ -198,6 +229,7 @@ subspace and reconstruction. Older paper drafts used it.
         __init__.py        NoiseModel, estimate_noise_model() -> NoiseModel
         masks.py           brain mask
         loop.py            the loop, refines rho from white
+        qc.py              check_noise_model(): one rho across regions and volume halves
       denoiser/
         __init__.py        denoise_camppca(), denoise_with_noise_model()
         camppca.py         covariance-aware MPPCA — the method, and the one engine
@@ -220,7 +252,8 @@ do not repeat it, and each `__init__.py` is that half's public face.
 
 **The public API is flat.** Everything a user calls is `camppca.<name>`:
 `denoise_camppca`, `denoise_mppca`, `denoise_with_noise_model`, `estimate_noise_model`,
-`brain_mask`, `NoiseModel`, `DenoiseResult`, `stabilize_phase`. Nothing public needs a `camppca.denoiser.`
+`brain_mask`, `NoiseModel`, `DenoiseResult`, `stabilize_phase`, `check_noise_model`,
+`NoiseModelCheck`. Nothing public needs a `camppca.denoiser.`
 or `camppca.noise_model.` prefix.
 
 - **Never `estimate` or `model` bare** — they do not say *what* is estimated or modeled.
