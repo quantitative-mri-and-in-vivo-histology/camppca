@@ -78,8 +78,8 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
                      model was estimated, and a brain mask always misses some brain at
                      its edge. Outside it ``d`` takes the nearest mask voxel's level.
 
-    The rule -- Exp2 / Cordero-Grande, center-voxel-only, hard threshold unless ``shrink``
-    or ``aggregate`` say otherwise -- is the method.
+    The rule -- the MP cut ``algorithm``, center-voxel-only, hard threshold unless
+    ``shrink`` or ``aggregate`` say otherwise -- is the method.
     """
     shrink = check_shrink(shrink)
     check_algorithm(algorithm)
@@ -113,15 +113,16 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
         # The engine rescales the IMAGE by d at the center voxel but not sigma_mppca.
         # Do it here, or the scale of d leaks into the headline number.
         sigma_mppca = sigma_mppca * d_eff
-    sigma = sigma_mppca * _flat_mode_factor(C, aggregate)
+    flat_mode = _flat_mode_factor(C, aggregate)
+    sigma = sigma_mppca * flat_mode
 
     where = "center-voxel only" if aggregate == "center" else \
         f"mean over overlapping patches, stride {stride}"
     prov = dict(method="camppca", version=__version__, patch=tuple(int(v) for v in patch),
                 algorithm=algorithm,
                 noise_field=bool(noise_field), shrink=shrink, aggregate=aggregate,
-                stride=stride, mask_only=bool(mask_only),
-                rule=f"Cordero-Grande/Exp2, {RULES[shrink]}, {where}",
+                stride=stride, mask_only=bool(mask_only), flat_mode_factor=flat_mode,
+                rule=f"MP cut {algorithm}, {RULES[shrink]}, {where}",
                 model=dict(model.provenance))
     return DenoiseResult(denoised=denoised, sigma=sigma, rank=rank, model=model,
                          provenance=prov)

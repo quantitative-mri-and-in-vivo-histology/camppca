@@ -1,6 +1,6 @@
 # camppca
 
-**Covariance-Aware Marchenko–Pastur PCA** — MPPCA denoising for diffusion MRI that
+**Covariance-aware MPPCA** — MPPCA denoising for diffusion MRI that
 accounts for spatially correlated noise.
 
 Standard MPPCA assumes white noise. Real EPI reconstruction (GRAPPA/SENSE, partial
@@ -15,7 +15,7 @@ whitened domain, where the Marchenko–Pastur assumption holds.
 pip install -e .
 ```
 
-Python ≥ 3.10. numpy and scipy only, on the CPU.
+Python ≥ 3.10. numpy, scipy, joblib and nibabel, on the CPU.
 
 ## Command line
 

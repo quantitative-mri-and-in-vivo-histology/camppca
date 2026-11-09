@@ -73,7 +73,7 @@ def mp_threshold(eigenvalues: np.ndarray, n_small: int, n_large: int,
 
     observed = (vals - smallest) / mp_width
     crossed = observed < predicted
-    # first crossing, or everything below the top component if the spread never falls short
+    # first crossing, or all but the smallest component if the spread never falls short
     rank = np.where(np.any(crossed, axis=1), np.argmax(crossed, axis=1), n_small - 1)
 
     sigma_sq = np.take_along_axis(predicted, rank[:, None], axis=1)[:, 0]

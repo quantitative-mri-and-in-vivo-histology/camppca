@@ -15,7 +15,9 @@ __all__ = ["DenoiseResult"]
 class DenoiseResult:
     """Denoised data plus the noise level the Marchenko-Pastur fit found.
 
-    ``sigma`` is an OUTPUT. It is what the fit measured, in the input's units.
+    ``sigma`` is an OUTPUT, in the input's units. For standard MPPCA it is what the fit
+    measured. For camppca it is the fit's level times ``d`` at the voxel and times the
+    flat-mode factor, recorded in provenance as ``flat_mode_factor``.
 
     Voxels outside the region denoised are passed through unchanged. Both denoisers write
     back the center voxel of each patch by default; ``aggregate="mean"`` averages the overlapping

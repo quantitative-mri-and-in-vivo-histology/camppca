@@ -49,8 +49,9 @@ def _add_common(p):
                         "every volume.")
     p.add_argument("--mask", metavar="PATH",
                    help="brain mask (recommended), where the noise model is estimated. "
-                        "Without it one is estimated from the "
-                        "mean b0, and denoise writes it next to the output as "
+                        "Without it one is estimated from the mean b0, the mean of "
+                        "every volume without -fslgrad, and denoise writes it next to "
+                        "the output as "
                         "<output>_mask.nii.gz")
     p.add_argument("--patch", type=int, nargs=3, default=None, metavar=("X", "Y", "Z"),
                    help="patch shape, odd in every dimension (default: dwidenoise's rule, "
@@ -243,7 +244,8 @@ def main(argv=None):
             io.save_like(mask_path, model.mask.astype(np.uint8), affine, header,
                          dtype=np.uint8)
             say(f"  wrote {mask_path}: no --mask given, so one was estimated from the "
-                "mean b0. Check it; supplying your own brain mask is recommended.")
+                f"mean {'b0' if bvals is not None else 'of every volume'}. Check it; "
+                "supplying your own brain mask is recommended.")
         if args.noise:
             io.save_like(args.noise, result.sigma, affine, header)
             say(f"  wrote {args.noise}")
