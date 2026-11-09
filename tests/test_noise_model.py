@@ -235,6 +235,18 @@ def test_brain_mask_with_erode_zero_does_not_erode_to_nothing():
     assert brain_mask(b0, erode=0).sum() > brain_mask(b0, erode=2).sum()
 
 
+def test_brain_mask_keeps_brain_that_touches_the_image_faces():
+    """The closing eroded against a zero border and cut two slices off each face."""
+    from camppca.noise_model.masks import brain_mask
+
+    b0 = np.zeros((20, 20, 8))
+    b0[4:16, 4:16, :] = 100.0
+    np.testing.assert_array_equal(brain_mask(b0, erode=0), b0 > 0)
+    thin = np.zeros((24, 24, 3))
+    thin[6:18, 6:18, :] = 100.0
+    np.testing.assert_array_equal(brain_mask(thin, erode=0), thin > 0)
+
+
 def test_pooling_averages_squares_and_ignores_voxels_outside_the_mask():
     mask = np.zeros((3, 1, 1), bool)
     mask[:2] = True
