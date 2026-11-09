@@ -343,13 +343,14 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
 
     rho = np.zeros((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     rho[lag, lag, 0] = 1.0
+    level = None
     if noise_field:
         level = _strided_level(whitened_level, dwi, mask, patch, algorithm, workers)
-        if complex_input:
-            _check_phase_stabilized(imag, mask, level, seed)
         d = _level_field(level, mask, pool)
     else:
         d = mask.astype(np.float32)
+    if complex_input:
+        _check_phase_stabilized(imag, dwi, mask, level, seed, patch, algorithm, workers)
     sample = _good_level(d, mask)          # the same patches in every level round
     rho, info = fit_rho(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
                             noise_field=noise_field, workers=workers, sample=sample)
@@ -412,17 +413,34 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100, se
 PHASE_RATIO = 3.0
 
 
-def _check_phase_stabilized(imag, mask, level, seed):
+def _check_phase_stabilized(imag, real, mask, level, seed, patch, algorithm, workers):
     """Warn when the imaginary part carries far more than noise.
 
     The estimator works on the real part, which holds the signal only once the phase is
     stabilized. Otherwise the real part is a random projection of the signal, and the
     model fits that. 10000 mask voxels are enough and need no copy of the volume.
+
+    ``level`` is standard MPPCA's level of the real part, or None without a noise field,
+    and then it is computed at the sampled voxels only. The check used to run only with
+    a noise field. NaN and inf in the imaginary part are left out: the real part is
+    cleaned before estimating, the imaginary part is not, and one NaN made the ratio NaN,
+    which never exceeds the threshold.
     """
+    from ..denoiser.camppca import whitened_level
+
     voxels = np.flatnonzero(mask)
     pick = np.random.default_rng(seed).choice(voxels, min(10000, voxels.size), replace=False)
     where = np.unravel_index(np.sort(pick), mask.shape)
-    ratio = float(np.sqrt(np.mean(np.square(imag[where], dtype=np.float64)))
+    if level is None:
+        picked = np.zeros(mask.shape, bool)
+        picked[where] = True
+        level = whitened_level(real, picked, None, patch, algorithm, workers=workers)
+        mask = picked
+    values = imag[where]
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return
+    ratio = float(np.sqrt(np.mean(np.square(values, dtype=np.float64)))
                   / np.median(level[mask]))
     if ratio > PHASE_RATIO:
         warnings.warn(f"the imaginary part is {ratio:.1f} times the real part's noise level "

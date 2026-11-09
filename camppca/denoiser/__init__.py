@@ -93,12 +93,14 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
         raise ValueError(f"dwi spatial shape {dwi.shape[:3]} != model mask "
                          f"{model.mask.shape}")
 
-    fitted = (model.fitted_to.get("algorithm"), model.fitted_to.get("noise_field"))
-    if "algorithm" in model.fitted_to and fitted != (algorithm, bool(noise_field)):
-        warnings.warn(f"the loop was fitted with algorithm={fitted[0]!r}, "
-                      f"noise_field={fitted[1]}, but this denoise uses algorithm={algorithm!r}, "
-                      f"noise_field={bool(noise_field)}. Re-estimate with the same settings.",
-                      RuntimeWarning, stacklevel=2)
+    # Only the settings the model records: a second estimator may leave keys out.
+    used = dict(algorithm=algorithm, noise_field=bool(noise_field))
+    differ = [k for k in used if k in model.fitted_to and model.fitted_to[k] != used[k]]
+    if differ:
+        fitted = ", ".join(f"{k}={model.fitted_to[k]!r}" for k in differ)
+        now = ", ".join(f"{k}={used[k]!r}" for k in differ)
+        warnings.warn(f"the loop was fitted with {fitted}, but this denoise uses {now}. "
+                      f"Re-estimate with the same settings.", RuntimeWarning, stacklevel=2)
     C = model.patch_correlation(patch)
     d_eff = model.effective_d() if noise_field else None
 

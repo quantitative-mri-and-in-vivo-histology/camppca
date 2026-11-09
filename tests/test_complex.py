@@ -157,6 +157,14 @@ def test_complex_data_without_a_stabilized_phase_is_flagged():
     turned = (stable * np.exp(2j * np.pi * rng.random(N_VOLS))).astype(np.complex64)
     with pytest.warns(RuntimeWarning, match="phase is stabilized"):
         estimate_noise_model(turned, mask=mask, patch=PATCH, workers=1)
+    # Also without a noise field, and with a NaN in the imaginary part: the check was
+    # skipped in the first case and silenced by the NaN in the second.
+    with pytest.warns(RuntimeWarning, match="phase is stabilized"):
+        estimate_noise_model(turned, mask=mask, patch=PATCH, noise_field=False, workers=1)
+    turned[8, 8, 6, 0] = complex(np.nan, np.nan)
+    with pytest.warns(RuntimeWarning, match="phase is stabilized"), \
+            pytest.warns(RuntimeWarning, match="NaN or inf"):
+        estimate_noise_model(turned, mask=mask, patch=PATCH, workers=1)
 
 
 def test_an_unstabilized_real_part_falls_back_instead_of_crashing():
