@@ -447,21 +447,24 @@ Breaking any of these corrupts results without an error:
 `phase.py`, `camppca phase`: complex data rotated onto the real axis, and the real part
 denoised like a magnitude image. A separate step before `estimate`/`denoise`, so the
 noise model is estimated on exactly the data that is denoised. One recipe, no options:
-EDDEN's preprocessing with Sprenger's `"dk"` filter in place of their k-space low-pass.
-The raw phase of a reference volume, the first within 95% of the brightest mean, is
-removed from every volume. Then per slice and volume the phase of the dk smooth is removed.
+NIFTI_NORDIC2's default phase step. Per slice and volume the phase of the dk smooth is
+removed, nothing before it.
 
 - Scope: the paper is about magnitude data, complex is a supplement example. The recipe
-  had to be a published one, so it is EDDEN's. Do not grow phase options again.
-- EDDEN's own filter (`NIFTI_COMP_to_REAL.m`, a Hann window cubed, their "Tukey, FWHM
-  58%") leaves the real part's mean over pure noise at 0.54σ, dk at 0.01σ. The reference
-  step costs nothing on noise and removes a rough fixed phase dk alone does not follow:
-  signal loss 0.19 down to 0.015 at a b0 SNR of 20 (2026-11-06). The reference volume
-  itself ends up as its magnitude.
+  had to be a published one. Do not grow phase options again.
+- Upstream defaults, read 2026-11-10. NIFTI_NORDIC2 (NORDIC_Raw 1a893ec) computes a mean
+  phase but multiplies it by `phase_slice_average_for_kspace_centering`, default 0, so
+  only the per-slice step runs, with its `'DK'` filter. EDDEN's `NIFTI_COMP_to_REAL.m`
+  first removes the raw phase of the first volume within 95% of the brightest mean, then
+  the phase of a Hann window cubed in k-space, their "Tukey, FWHM 58%".
+- Until 2026-11-10 camppca followed EDDEN, the reference step plus dk. On EDDEN 2 mm
+  run-01 that left more signal in the imaginary part of the shells than the old mean
+  phase step: RMS 266 to 277 at b1000, 249 to 254 at b2000, 537 to 526 at b0. The
+  session-to-session spread of the real part grew with it. So the step was dropped.
+- EDDEN's own filter leaves the real part's mean over pure noise at 0.54σ, dk at 0.01σ.
 - The removed `mean_phase` option, the phase of the mean over all volumes, biased the
-  real part by about σ/√N, since the mean carries each voxel's own noise. One reference
-  volume does not: its noise is independent of the other volumes'.
-
+  real part by about σ/√N, since the mean carries each voxel's own noise. Neither
+  upstream default does it.
 - ⚠ **Do not copy or translate NORDIC code** (NORDIC_Raw, NIFTI_NORDIC, NORDIC-python).
   It is University of Minnesota copyright, research use only, no redistribution, and
   NORDIC is patented (US 10,768,260). EDDEN's `NIFTI_COMP_to_REAL.m` is NORDIC-derived,

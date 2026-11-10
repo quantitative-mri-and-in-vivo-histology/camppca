@@ -6,7 +6,7 @@ import pytest
 
 from camppca import stabilize_phase as public
 from camppca.cli import main
-from camppca.phase import _dk_weights, phase_scale, reference_volume, stabilize_phase
+from camppca.phase import _dk_weights, phase_scale, stabilize_phase
 
 SHAPE = (48, 40, 3, 8)
 
@@ -19,10 +19,11 @@ def blob(shape=SHAPE[:3]):
 
 
 def phases(rng, shape=SHAPE):
-    """A rough fixed phase, the same in every volume, plus a smooth one per volume, wrapped
-    to radians."""
+    """A smooth fixed phase, the same in every volume, plus a smooth one per volume,
+    wrapped to radians."""
     x, y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
-    fixed = rng.uniform(-np.pi, np.pi, shape[:3])
+    fixed = (rng.uniform(-np.pi, np.pi) + 0.002 * (x - 24) ** 2
+             - 0.003 * (y - 20) ** 2)[:, :, None] * np.ones(shape[2])
     smooth = np.stack([(a * x + b * y)[:, :, None] * np.ones(shape[2])
                        for a, b in rng.uniform(-0.05, 0.05, (shape[3], 2))], axis=-1)
     return np.angle(np.exp(1j * (fixed[..., None] + smooth)))
@@ -79,7 +80,6 @@ def test_the_dk_filter_is_symmetric_and_avoids_the_center():
 
 
 def test_without_noise_the_real_part_is_the_magnitude():
-    """The rough fixed phase goes with the reference volume's phase."""
     rng = np.random.default_rng(0)
     magnitude = blob()[..., None] * np.ones(SHAPE[3])
     real, imag = stabilize_phase(magnitude, phases(rng), imag=True)
@@ -88,40 +88,29 @@ def test_without_noise_the_real_part_is_the_magnitude():
     assert np.abs(imag[inside] / magnitude[inside]).max() < 0.1   # under 0.1 rad off
 
 
-def test_the_reference_is_the_first_bright_volume():
-    magnitude = np.ones((4, 4, 2, 5)) * np.array([50, 60, 100, 97, 100.0])
-    assert reference_volume(magnitude) == 2
-    magnitude[0, 0, 0, 1] = np.nan
-    assert reference_volume(magnitude) == 2
-
-
 def test_a_nan_leaves_its_neighbours_turned():
     """One NaN spread through the smoothing and left its 5 x 5 neighbours unturned."""
     magnitude = np.full((16, 16, 3, 4), 100.0)
     phase = np.zeros(magnitude.shape)
     phase[..., 1:] = 0.8                       # a constant phase on every volume but one
-    phase[3, 3, 1, 0] = np.nan                 # in the reference volume
+    phase[3, 3, 1, 0] = np.nan
     phase[0, 0, 0, 1:3] = -np.pi, np.pi        # the full turn, as noise gives
     magnitude[8, 8, 1, 2] = np.nan
     real = stabilize_phase(magnitude, phase)
-    # The reference phase's NaN makes that voxel NaN in every volume, and nothing else.
-    assert np.isnan(real[8, 8, 1, 2]) and np.isnan(real[3, 3, 1]).all()
+    assert np.isnan(real[8, 8, 1, 2]) and np.isnan(real[3, 3, 1, 0])
     finite = np.isfinite(real)
-    assert finite.sum() == real.size - 1 - magnitude.shape[3]
+    assert finite.sum() == real.size - 2
     finite[:3, :3, 0] = False                  # the corner holding the full turn
     np.testing.assert_allclose(real[finite], 100.0, rtol=1e-5)
 
 
 def test_the_real_part_carries_no_noise_floor():
-    """Pure complex noise: the magnitude sits at 1.25 sigma, the real part near 0. The
-    reference volume keeps its magnitude."""
+    """Pure complex noise: the magnitude sits at 1.25 sigma, the real part near 0."""
     rng = np.random.default_rng(1)
     z = rng.standard_normal((64, 64, 4, 12)) + 1j * rng.standard_normal((64, 64, 4, 12))
     real = stabilize_phase(np.abs(z), np.angle(z))
-    ref = reference_volume(np.abs(z))
     assert np.abs(z).mean() == pytest.approx(1.25, abs=0.02)
-    np.testing.assert_allclose(real[..., ref], np.abs(z[..., ref]), rtol=1e-4, atol=1e-5)
-    assert abs(np.delete(real, ref, axis=3).mean()) < 0.03
+    assert abs(real.mean()) < 0.03
 
 
 def test_the_slice_axis_picks_the_plane():

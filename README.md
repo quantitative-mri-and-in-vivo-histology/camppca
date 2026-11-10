@@ -57,10 +57,8 @@ camppca denoise real.nii.gz out.nii.gz --mask brain.nii.gz -fslgrad in.bvec in.b
 ```
 
 The real part keeps Gaussian noise, so it has no Rician noise floor. The recipe is the
-EDDEN preprocessing (Manzano-Patrón et al. 2024) with a different filter. The raw phase of
-one bright reference volume, in practice a b0, is removed from every volume. Then in each
-slice and volume a smooth estimate of the phase is removed. It comes from the decorrelated
-filter of Sprenger et al. (2017), where EDDEN used a k-space low-pass. The phase is read
+default phase step of NORDIC's NIFTI_NORDIC2. In each slice and volume a smooth estimate
+of the phase is removed. It comes from the decorrelated filter of Sprenger et al. (2017). The phase is read
 in radians. For any other format, `--phase-range LOW HIGH` gives the values that span one
 full turn, such as `-4096 4096` for Siemens integers or `-180 180` for degrees. A phase
 wider than the declared turn stops the run before any work is done.
