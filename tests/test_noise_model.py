@@ -187,7 +187,7 @@ def test_estimate_rejects_mismatched_bvals():
 
 def test_fewer_volumes_than_the_mp_fit_trusts_warns():
     dwi, bvals, mask, _ = _synthetic(np.random.default_rng(0), n_dirs=17)   # 40 volumes
-    with pytest.warns(RuntimeWarning, match="fewer than 50"):
+    with pytest.warns(RuntimeWarning, match="works best with 50 or more"):
         estimate_noise_model(dwi, mask, bvals=bvals, patch=(5, 5, 3))
 
 

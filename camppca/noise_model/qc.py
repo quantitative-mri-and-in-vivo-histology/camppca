@@ -105,7 +105,7 @@ def check_noise_model(dwi, model, *, grid=(2, 2, 2), random_splits=5, n_noise=20
     """Refit the noise model on regions and on volume halves, and price the differences.
 
     Every refit costs about one loop of the estimate. The default runs 23 of them.
-    Volume halves need :data:`~camppca.noise_model.MIN_VOLUMES` volumes each, and are
+    Volume halves need :data:`~camppca.noise_model.MIN_VOLUMES` volumes in all, and are
     skipped with a warning below that.
 
     Args:
@@ -187,8 +187,8 @@ def check_noise_model(dwi, model, *, grid=(2, 2, 2), random_splits=5, n_noise=20
                               fallback=fallback))
 
     volume_splits, skipped = [], None
-    if n_vols // 2 < MIN_VOLUMES:
-        skipped = (f"{n_vols} volumes, so a half has fewer than {MIN_VOLUMES}, where the "
+    if n_vols < MIN_VOLUMES:
+        skipped = (f"{n_vols} volumes, fewer than {MIN_VOLUMES}, where the "
                    f"Marchenko-Pastur fit degenerates")
         warn(f"volume halves skipped: {skipped}")
     else:
