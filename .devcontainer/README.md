@@ -30,9 +30,6 @@ docker-compose.yml                  base: build, volumes, env, shm_size
 Machine-specific paths belong in `docker-compose.override.yml`, and the paths
 themselves in `.env` — so even a mis-committed override file leaks nothing.
 
-Editor settings are **not** in `devcontainer.json`. They live in
-`../.vscode/settings.json`, so they also apply outside a container.
-
 ## Python layout
 
 - **Image** (`requirements.txt`) — tooling only: pytest, ruff, mypy, debugpy,
@@ -64,4 +61,4 @@ headless runs; use a notebook for interactive plotting.
 | Add a system package | `Dockerfile` |
 | Mount a dataset | `docker-compose.override.yml` + `.env` |
 | Change timezone | `TZ` in `.env` (defaults to `Europe/Berlin`) |
-| Add a VS Code extension | `devcontainer.json` + `../.vscode/extensions.json` |
+| Add a VS Code extension | `devcontainer.json` |
