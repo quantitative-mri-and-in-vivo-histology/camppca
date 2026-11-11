@@ -14,7 +14,24 @@ signal.
 The three variants differ only in the degrees of freedom they charge for the components
 already cut away, so they agree on long spectra and disagree at small N.
 
-References: Veraart 2016, Cordero-Grande 2019, Ades-Aron 2020.
+References:
+    Marčenko VA, Pastur LA. Distribution of eigenvalues for some sets of random
+    matrices. Math USSR-Sbornik 1967;1(4):457-483.
+
+    Veraart J, Fieremans E, Novikov DS. Diffusion MRI noise mapping using random
+    matrix theory. Magn Reson Med 2016;76:1582-1593. The noise level from the
+    eigenvalues, and the "veraart" rule.
+
+    Veraart J, Novikov DS, Christiaens D, Ades-Aron B, Sijbers J, Fieremans E.
+    Denoising of diffusion MRI using random matrix theory. NeuroImage
+    2016;142:394-406. The "veraart" rule used for denoising.
+
+    Cordero-Grande L, Christiaens D, Hutter J, Price AN, Hajnal JV. Complex
+    diffusion-weighted image estimation via matrix recovery under general noise
+    models. NeuroImage 2019;200:391-404. The "cordero-grande" rule.
+
+    Olesen JL, Jespersen SN. About the slightly modified MP-PCA. Note in
+    https://github.com/Neurophysics-CFIN/MP-PCA-Denoising, 2020. The "jespersen" rule.
 """
 
 from __future__ import annotations

@@ -51,8 +51,13 @@ def default_patch(shape):
 
     The smallest odd cube with at least N voxels, so the patch matrix is never wider than
     tall: 5 x 5 x 5 up to 125 volumes, 7 x 7 x 7 up to 343. Each side is clipped to the
-    image. MRtrix 3.0.4 clips to the image size itself, which can be even. Here a side is
-    clipped to the largest odd size that fits, since the patch needs a center voxel.
+    largest odd size that fits the image, since the patch needs a center voxel.
+
+    References:
+        Tournier JD, Smith R, Raffelt D, Tabbara R, Dhollander T, Pietsch M,
+        Christiaens D, Jeurissen B, Yeh CH, Connelly A. MRtrix3: A fast, flexible and
+        open software framework for medical image processing and visualisation.
+        NeuroImage 2019;202:116137.
     """
     side = 1
     while side ** 3 < shape[3]:

@@ -69,6 +69,23 @@ result.denoised, result.sigma, result.rank
 - **Keep ≳ 50 volumes.** The noise-level estimator degenerates as the retained rank
   approaches the smaller of the patch's voxel count and the volume count.
 
+## References
+
+- Cordero-Grande L et al. (2019). Complex diffusion-weighted image estimation via matrix recovery under general noise models. NeuroImage. [doi:10.1016/j.neuroimage.2019.06.039](https://doi.org/10.1016/j.neuroimage.2019.06.039)
+- Eichner C et al. (2015). Real diffusion-weighted MRI enabling true signal averaging and increased diffusion contrast. NeuroImage. [doi:10.1016/j.neuroimage.2015.07.074](https://doi.org/10.1016/j.neuroimage.2015.07.074)
+- Gavish M, Donoho DL (2017). Optimal shrinkage of singular values. IEEE Trans Inf Theory. [doi:10.1109/TIT.2017.2653801](https://doi.org/10.1109/TIT.2017.2653801)
+- Leeb W, Romanov E (2021). Optimal spectral shrinkage and PCA with heteroscedastic noise. IEEE Trans Inf Theory. [doi:10.1109/TIT.2021.3055075](https://doi.org/10.1109/TIT.2021.3055075)
+- Manjón JV et al. (2013). Diffusion weighted image denoising using overcomplete local PCA. PLoS One. [doi:10.1371/journal.pone.0073021](https://doi.org/10.1371/journal.pone.0073021)
+- Manzano Patron JP et al. (2024). Denoising diffusion MRI: considerations and implications for analysis. Imaging Neuroscience. [doi:10.1162/imag_a_00060](https://doi.org/10.1162/imag_a_00060)
+- Marčenko VA, Pastur LA (1967). Distribution of eigenvalues for some sets of random matrices. Math USSR-Sbornik. [doi:10.1070/SM1967v001n04ABEH001994](https://doi.org/10.1070/SM1967v001n04ABEH001994)
+- Moeller S. NORDIC_Raw. [github.com/SteenMoeller/NORDIC_Raw](https://github.com/SteenMoeller/NORDIC_Raw)
+- Moeller S et al. (2021). NOise reduction with DIstribution Corrected (NORDIC) PCA in dMRI with complex-valued parameter-free locally low-rank processing. NeuroImage. [doi:10.1016/j.neuroimage.2020.117539](https://doi.org/10.1016/j.neuroimage.2020.117539)
+- Olesen JL, Jespersen SN (2020). About the slightly modified MP-PCA. [github.com/Neurophysics-CFIN/MP-PCA-Denoising](https://github.com/Neurophysics-CFIN/MP-PCA-Denoising)
+- Sprenger T et al. (2017). Real valued diffusion-weighted imaging using decorrelated phase filtering. Magn Reson Med. [doi:10.1002/mrm.26138](https://doi.org/10.1002/mrm.26138)
+- Tournier JD et al. (2019). MRtrix3: A fast, flexible and open software framework for medical image processing and visualisation. NeuroImage. [doi:10.1016/j.neuroimage.2019.116137](https://doi.org/10.1016/j.neuroimage.2019.116137)
+- Veraart J, Fieremans E, Novikov DS (2016). Diffusion MRI noise mapping using random matrix theory. Magn Reson Med. [doi:10.1002/mrm.26059](https://doi.org/10.1002/mrm.26059)
+- Veraart J et al. (2016). Denoising of diffusion MRI using random matrix theory. NeuroImage. [doi:10.1016/j.neuroimage.2016.08.016](https://doi.org/10.1016/j.neuroimage.2016.08.016)
+
 ## Development
 
 Open in the devcontainer (**Dev Containers: Reopen in Container**). See

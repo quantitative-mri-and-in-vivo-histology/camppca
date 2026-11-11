@@ -25,12 +25,24 @@ complex white noise of unit level it leaves the real part's mean at 0.54, agains
 with the filter and 1.25 for the magnitude.
 
 References:
-    Eichner C et al. Real diffusion-weighted MRI enabling true signal averaging and
-    increased diffusion contrast. NeuroImage 2015;122:373-384.
-    Sprenger T et al. Real valued diffusion-weighted imaging using decorrelated phase
-    filtering. Magn Reson Med 2017;77:559-570.
-    Manzano-Patron JP et al. Denoising diffusion MRI: considerations and implications for
-    analysis. Imaging Neuroscience 2024;2. doi:10.1162/imag_a_00060 (EDDEN).
+    Moeller S, Pisharady PK, Ramanna S, et al. NOise reduction with DIstribution
+    Corrected (NORDIC) PCA in dMRI with complex-valued parameter-free locally
+    low-rank processing. NeuroImage 2021;226:117539.
+
+    Moeller S. NORDIC_Raw, https://github.com/SteenMoeller/NORDIC_Raw, commit
+    1a893ec. The default phase step of NIFTI_NORDIC2 followed here.
+
+    Eichner C, Cauley SF, Cohen-Adad J, et al. Real diffusion-weighted MRI enabling
+    true signal averaging and increased diffusion contrast. NeuroImage
+    2015;122:373-384.
+
+    Sprenger T, Sperl JI, Fernandez B, Haase A, Menzel MI. Real valued
+    diffusion-weighted imaging using decorrelated phase filtering. Magn Reson Med
+    2017;77(2):559-570. The "dk" filter.
+
+    Manzano Patron JP, Moeller S, Andersson JLR, Ugurbil K, Yacoub E, Sotiropoulos SN.
+    Denoising diffusion MRI: considerations and implications for analysis. Imaging
+    Neuroscience 2024;2:1-29. EDDEN's recipe, the one not taken.
 """
 
 from __future__ import annotations

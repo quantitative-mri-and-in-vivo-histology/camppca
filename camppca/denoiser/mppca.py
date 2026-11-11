@@ -28,7 +28,12 @@ gives what reconstructing the whole patch and reading one row out would give.
 It runs the covariance-aware engine with no patch correlation and no relative noise map, which is
 exactly this method: see :func:`~camppca.denoiser.camppca.denoise_whitened`.
 
-References: Veraart 2016, Cordero-Grande 2019, Ades-Aron 2020.
+References:
+    Veraart J, Novikov DS, Christiaens D, Ades-Aron B, Sijbers J, Fieremans E.
+    Denoising of diffusion MRI using random matrix theory. NeuroImage
+    2016;142:394-406.
+
+    The threshold rules cite their own sources in :mod:`camppca.denoiser.mp_threshold`.
 """
 
 from __future__ import annotations

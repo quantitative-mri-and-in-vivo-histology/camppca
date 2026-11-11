@@ -15,6 +15,11 @@ rebuilds every patch whole and averages, at each voxel, all the patches that cov
 Each chunk of patch centers sums its rebuilt patches over its box: the x-slices its
 patches reach, all of y and z. The boxes are added in chunk order, and the chunks do not
 depend on the number of workers, so the result does not either, bit for bit.
+
+References:
+    Manjón JV, Coupé P, Concha L, Buades A, Collins DL, Robles M. Diffusion weighted
+    image denoising using overcomplete local PCA. PLoS One 2013;8(9):e73021.
+    Averaging overlapping patch reconstructions, there with weights.
 """
 
 from __future__ import annotations

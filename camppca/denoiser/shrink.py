@@ -7,7 +7,7 @@ the rule called noise was counted in ``sigma_mppca`` as noise, so it stays dropp
 
 ``"gd"``  Gavish & Donoho's Frobenius-optimal shrinker. Optimal for the error in the
           WHITENED patch.
-``"lr"``  Leeb & Romanov's correction of it (arXiv 1811.02201, Algorithm 1). Unwhitening
+``"lr"``  Leeb & Romanov's correction of it, their Algorithm 1. Unwhitening
           stretches a component's true part by how loud the noise is along that signal
           direction, and its noise part by the average noise loudness, so the error that
           matters, in data units, wants a different weight. With white noise the two agree.
@@ -34,6 +34,13 @@ With patch averaging every voxel of a patch reaches the output, and the loss is 
 Romanov's own, the error over the whole patch in data units. The way back is then
 ``D C^(1/2)``, and :func:`signal_alignment` given the patch's levels measures
 ``q_k = |D C^(1/2) u_k|^2 / mean(d^2)``. With equal levels the two agree.
+
+References:
+    Gavish M, Donoho DL. Optimal shrinkage of singular values. IEEE Trans Inf
+    Theory 2017;63(4):2137-2152. The "gd" shrinker, for Frobenius loss.
+
+    Leeb W, Romanov E. Optimal spectral shrinkage and PCA with heteroscedastic
+    noise. IEEE Trans Inf Theory 2021;67(5):3009-3037. The "lr" shrinker.
 """
 
 from __future__ import annotations

@@ -16,6 +16,12 @@ from white. A future alignment-based estimator builds the same :class:`NoiseMode
 different way and feeds the same engine, so nothing downstream may assume this one.
 
 The loop runs MPPCA's own split, so it uses the denoiser's internals.
+
+References:
+    Moeller S, Pisharady PK, Ramanna S, et al. NOise reduction with DIstribution
+    Corrected (NORDIC) PCA in dMRI with complex-valued parameter-free locally
+    low-rank processing. NeuroImage 2021;226:117539. The noise map as an average
+    over patch footprints.
 """
 
 import hashlib
