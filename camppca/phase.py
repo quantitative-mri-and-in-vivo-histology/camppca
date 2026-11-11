@@ -8,15 +8,14 @@ rank, and the magnitude carries a Rician noise floor. Removing a smooth estimate
 phase leaves the signal near the real axis. The real part then has Gaussian noise and no
 floor, and denoises like a magnitude image.
 
-The recipe is EDDEN's preprocessing, with a different filter:
+The recipe is the default phase step of NORDIC's NIFTI_NORDIC2:
 
-1. remove the raw phase of one reference volume from every volume: the first volume whose
-   mean magnitude is within 95% of the largest, in practice a b0. That takes out the fixed
-   phase from k-space sampling and the coil combination, which can vary faster than any
-   smooth estimate follows;
-2. in each slice, in plane, for every volume, estimate the remaining smooth phase with the
+1. in each slice, in plane, for every volume, estimate the smooth phase with the
    decorrelated filter of Sprenger et al., their Opt5;
-3. rotate by minus that phase and keep the real part.
+2. rotate by minus that phase and keep the real part.
+
+EDDEN's preprocessing first removes the raw phase of one bright reference volume from
+every volume. That step is left out.
 
 The filter is a 5 x 5 smoother in image space that gives almost no weight to the center
 voxel and its direct neighbours, whose noise is correlated with the center's. The estimate
@@ -24,9 +23,6 @@ then barely sees the voxel's own noise, so the real part stays unbiased. EDDEN u
 window cubed in k-space, which they describe as a Tukey filter with an FWHM of 58%. On
 complex white noise of unit level it leaves the real part's mean at 0.54, against 0.01
 with the filter and 1.25 for the magnitude.
-
-The reference volume itself ends up as its magnitude, noise floor included. It is a bright
-b0, where the floor is small.
 
 References:
     Eichner C et al. Real diffusion-weighted MRI enabling true signal averaging and
@@ -129,9 +125,6 @@ def stabilize_phase(magnitude, phase, *, slice_axis=2, imag=False, workers=None,
     scale = phase_scale(phase, phase_range)    # per volume: no scaled copy of the phase
     workers = resolve_workers(workers)
 
-    reference = reference_volume(magnitude)
-    fixed = np.exp(-1j * scale * phase[..., reference]).astype(np.complex64)
-
     real = np.empty(magnitude.shape, np.float32)
     im = np.empty(magnitude.shape, np.float32) if imag else None
 
@@ -144,20 +137,13 @@ def stabilize_phase(magnitude, phase, *, slice_axis=2, imag=False, workers=None,
     chunks = np.array_split(np.arange(n_vols), min(n_vols, 4 * workers))
     if workers == 1:
         for chunk in chunks:
-            write(chunk, task(magnitude, phase, fixed, chunk))
+            write(chunk, task(magnitude, phase, chunk))
     else:
         with worker_pool(workers, return_as="generator_unordered") as parallel:
-            for chunk, out in parallel(delayed(_chunk_task)(task, chunk, magnitude, phase,
-                                                            fixed) for chunk in chunks):
+            for chunk, out in parallel(delayed(_chunk_task)(task, chunk, magnitude, phase)
+                                       for chunk in chunks):
                 write(chunk, out)
     return (real, im) if imag else real
-
-
-def reference_volume(magnitude) -> int:
-    """The first volume whose mean magnitude is within 95% of the largest. NaN is
-    ignored."""
-    means = np.array([np.nanmean(magnitude[..., n]) for n in range(magnitude.shape[3])])
-    return int(np.flatnonzero(means >= 0.95 * means.max())[0])
 
 
 def _volume(magnitude, phase, n, scale):
@@ -165,11 +151,11 @@ def _volume(magnitude, phase, n, scale):
     return (magnitude[..., n] * np.exp(1j * scale * phase[..., n])).astype(np.complex64)
 
 
-def _chunk_task(task, chunk, magnitude, phase, fixed):
-    return chunk, task(magnitude, phase, fixed, chunk)
+def _chunk_task(task, chunk, magnitude, phase):
+    return chunk, task(magnitude, phase, chunk)
 
 
-def _rotate_volumes(magnitude, phase, fixed, volumes, scale, slice_axis, imag):
+def _rotate_volumes(magnitude, phase, volumes, scale, slice_axis, imag):
     """Stabilize the phase of some volumes. Returns their real and imaginary parts,
     (X, Y, Z, len(volumes)) each, the imaginary part None unless ``imag``."""
     shape = magnitude.shape[:3]
@@ -177,7 +163,7 @@ def _rotate_volumes(magnitude, phase, fixed, volumes, scale, slice_axis, imag):
     real = np.empty(shape + (len(volumes),), np.float32)
     im = np.empty_like(real) if imag else None
     for k, n in enumerate(volumes):
-        z = _volume(magnitude, phase, n, scale) * fixed
+        z = _volume(magnitude, phase, n, scale)
         # A zero adds nothing to the weighted sum whose angle is the smooth phase, so
         # zeroing NaN and inf leaves them out exactly. Left in, one NaN spread to its
         # 5 x 5 neighbours, which then went unturned. They stay NaN in the output.
