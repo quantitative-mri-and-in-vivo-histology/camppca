@@ -1,7 +1,4 @@
 // CPU only, no added capabilities: camppca runs on numpy and scipy.
-//
-// Editor settings deliberately live in ../.vscode/settings.json instead of here,
-// so they also apply outside a container.
 {
   "name": "Dev Container",
   "dockerComposeFile": [
