@@ -1,11 +1,11 @@
 """Patch geometry, shared by both halves of the seam.
 
 Neutral by design: the noise-model half needs the offsets to build C, the denoise half
-needs them to gather voxels.  Putting them here keeps the engine from importing the
+needs them to gather voxels. Putting them here keeps the engine from importing the
 estimator.
 
-⚠ The flattening order is C-order with z fastest, and it is PAIRED with the indexing of
-``rho`` (:func:`table_index`).  The two must agree or C is silently wrong.
+The flattening order is C-order with z fastest, and it is paired with the indexing of
+``rho`` (:func:`table_index`). The two must agree or C is silently wrong.
 """
 
 import numpy as np
@@ -38,8 +38,8 @@ def table_index(dx, dy, dz, lag):
 def required_lag(patch):
     """The in-plane lag ``rho`` must cover for this patch: ``max(patch[0], patch[1]) - 1``.
 
-    Any smaller and lag lookup runs off the table -- which numpy answers with a
-    wraparound, not an error.  The through-slice reach is separate: ``patch[2] - 1``,
+    Any smaller and lag lookup runs off the table, which numpy answers with a
+    wraparound and no error. The through-slice reach is separate: ``patch[2] - 1``,
     which is ``rho.shape[2] - 1``.
     """
     patch = np.asarray(patch, int)

@@ -6,7 +6,7 @@ whitened patch at the patch's own ``sigma_mppca``, and both keep the MP rank: a 
 the rule called noise was counted in ``sigma_mppca`` as noise, so it stays dropped.
 
 ``"gd"``  Gavish & Donoho's Frobenius-optimal shrinker. Optimal for the error in the
-          WHITENED patch.
+          whitened patch.
 ``"lr"``  Leeb & Romanov's correction of it, their Algorithm 1. Unwhitening
           stretches a component's true part by how loud the noise is along that signal
           direction, and its noise part by the average noise loudness, so the error that

@@ -86,7 +86,6 @@ pytest
 - Gavish M, Donoho DL (2017). Optimal shrinkage of singular values. IEEE Trans Inf Theory. [doi:10.1109/TIT.2017.2653801](https://doi.org/10.1109/TIT.2017.2653801)
 - Leeb W, Romanov E (2021). Optimal spectral shrinkage and PCA with heteroscedastic noise. IEEE Trans Inf Theory. [doi:10.1109/TIT.2021.3055075](https://doi.org/10.1109/TIT.2021.3055075)
 - Manjón JV et al. (2013). Diffusion weighted image denoising using overcomplete local PCA. PLoS One. [doi:10.1371/journal.pone.0073021](https://doi.org/10.1371/journal.pone.0073021)
-- Manzano Patron JP et al. (2024). Denoising diffusion MRI: considerations and implications for analysis. Imaging Neuroscience. [doi:10.1162/imag_a_00060](https://doi.org/10.1162/imag_a_00060)
 - Marčenko VA, Pastur LA (1967). Distribution of eigenvalues for some sets of random matrices. Math USSR-Sbornik. [doi:10.1070/SM1967v001n04ABEH001994](https://doi.org/10.1070/SM1967v001n04ABEH001994)
 - Moeller S. NORDIC_Raw. [github.com/SteenMoeller/NORDIC_Raw](https://github.com/SteenMoeller/NORDIC_Raw)
 - Moeller S et al. (2021). NOise reduction with DIstribution Corrected (NORDIC) PCA in dMRI with complex-valued parameter-free locally low-rank processing. NeuroImage. [doi:10.1016/j.neuroimage.2020.117539](https://doi.org/10.1016/j.neuroimage.2020.117539)

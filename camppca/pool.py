@@ -8,7 +8,7 @@ across the cores.
 The processes are joblib's reusable loky workers: started on first use, kept warm
 between calls, and able to run functions defined in a user's script. A worker that dies
 raises an error instead of hanging, and the next call starts fresh ones. They are not
-pinned to cores, which cost nothing.
+pinned to cores.
 
 Large arrays, the volume and the relative noise map, reach the workers as joblib memory
 maps: written once per pass to a file the workers map read-only. The file goes to the
@@ -18,21 +18,20 @@ gain in speed.
 
 Each task returns only its own voxels' results, so no worker holds a full-slab output.
 
-BLAS THREADS. The workers run OpenBLAS with one thread. This process sets its own only
+BLAS threads. The workers run OpenBLAS with one thread. This process sets its own only
 inside camppca's calls, through :func:`blas_threads`, and restores it after, so a script
 that imports camppca keeps its settings. OpenBLAS's default is one thread per hardware
 thread, for numpy's and scipy's copies alike.
 
 - Per-patch work run in this process, every pass with ``workers=1``, gets one thread,
-  as in the workers. Small matrices on many threads were ten times slower.
+  as in the workers. Small matrices run far slower on many threads.
 - The rest, mostly the loop's fit, gets :func:`main_threads`, at most
   :data:`MAIN_THREADS`, where the fit was fastest.
 - Neither raises the count above what the caller set: an ``OPENBLAS_NUM_THREADS`` or an
   outer limit stays in force.
 
-The fitted table moves with the thread count, by up to 1e-4. So the count follows
-neither ``workers`` nor the pool: the loop stays the same for any number of workers.
-The measurements are in CLAUDE.md, under Gotchas.
+The fitted table moves slightly with the thread count. So the count follows neither
+``workers`` nor the pool: the loop stays the same for any number of workers.
 """
 
 from __future__ import annotations

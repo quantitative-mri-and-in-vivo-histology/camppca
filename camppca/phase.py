@@ -14,15 +14,9 @@ The recipe is the default phase step of NORDIC's NIFTI_NORDIC2:
    decorrelated filter of Sprenger et al., their Opt5;
 2. rotate by minus that phase and keep the real part.
 
-EDDEN's preprocessing first removes the raw phase of one bright reference volume from
-every volume. That step is left out.
-
 The filter is a 5 x 5 smoother in image space that gives almost no weight to the center
 voxel and its direct neighbours, whose noise is correlated with the center's. The estimate
-then barely sees the voxel's own noise, so the real part stays unbiased. EDDEN used a Hann
-window cubed in k-space, which they describe as a Tukey filter with an FWHM of 58%. On
-complex white noise of unit level it leaves the real part's mean at 0.54, against 0.01
-with the filter and 1.25 for the magnitude.
+then barely sees the voxel's own noise, so the real part stays unbiased.
 
 References:
     Moeller S, Pisharady PK, Ramanna S, et al. NOise reduction with DIstribution
@@ -39,10 +33,6 @@ References:
     Sprenger T, Sperl JI, Fernandez B, Haase A, Menzel MI. Real valued
     diffusion-weighted imaging using decorrelated phase filtering. Magn Reson Med
     2017;77(2):559-570. The "dk" filter.
-
-    Manzano Patron JP, Moeller S, Andersson JLR, Ugurbil K, Yacoub E, Sotiropoulos SN.
-    Denoising diffusion MRI: considerations and implications for analysis. Imaging
-    Neuroscience 2024;2:1-29. EDDEN's recipe, the one not taken.
 """
 
 from __future__ import annotations

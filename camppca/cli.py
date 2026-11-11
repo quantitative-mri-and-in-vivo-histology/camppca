@@ -1,32 +1,25 @@
 """Command line interface.
 
-    camppca denoise  in.nii out.nii [--noise n.nii] [--qc DIR] -fslgrad in.bvec in.bval
-    camppca estimate in.nii --qc DIR                           -fslgrad in.bvec in.bval
+    camppca denoise  in.nii out.nii [--mask PATH] [-fslgrad BVEC BVAL] [--noise PATH] [--qc DIR]
+    camppca estimate in.nii [--mask PATH] [-fslgrad BVEC BVAL] [--qc DIR]
     camppca phase    mag.nii phase.nii real.nii [--imag PATH] [--phase-range LOW HIGH]
 
-Outputs split by AUDIENCE, not by kind:
+Outputs are split by audience:
 
     positional out   the denoised image
-    <out>_mask       the brain mask, written next to the denoised image ONLY when no
-                     --mask was given. A mask the user supplies is the recommended way;
-                     the estimated one is a fallback, written so it can be checked and
+    <out>_mask       the brain mask, written next to the denoised image only when no
+                     --mask was given. A mask the user supplies is the recommended way.
+                     The estimated one is a fallback, written so it can be checked and
                      reused.
-    --noise PATH     the sigma map -- a downstream product (SNR maps, weighting),
-                     first-class, as `dwidenoise -noise` is
-    --qc DIR         things to look at: rho as NIfTI + a plot, the relative noise map d,
+    --noise PATH     the sigma map, a downstream product for SNR maps or weighting, as
+                     `dwidenoise -noise` is
+    --qc DIR         things to look at: rho as NIfTI and a plot, the relative noise map d,
                      rank, provenance.json, and the check of one rho across regions and
                      volume halves (noise_model_check.txt and .json)
 
-⚠ `--qc` is deliberately a SUPERSET. Anything to look at goes into the SAME directory --
-no second flag, no rename. The check (:func:`camppca.check_noise_model`) runs right after
-the estimate, before the denoise holds the output in memory. It refits the loop 23
-times, several times the estimate.
-
-`--model` (a reloadable NoiseModel npz) is deliberately NOT here. Estimation is seconds
-against a minutes-long denoise and is deterministic, so re-estimating is
-identical; the only strong reason is cross-dataset rho transfer, which is a research
-activity for now. A saved model would also need a file format kept readable across
-versions. So the check runs where the model is made, not on a file.
+Everything to look at goes into the ``--qc`` directory. The check
+(:func:`camppca.check_noise_model`) runs right after the estimate, before the denoise
+holds the output in memory. It refits the loop 23 times.
 """
 
 import argparse
@@ -145,7 +138,7 @@ def _load(args):
 
 
 def _write_qc(directory, model, affine, header, result=None):
-    """Free byproducts, as things to look at. Not a reload unit -- see the module docstring."""
+    """Free byproducts, as things to look at."""
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
     io.save_like(out / "rho.nii.gz", model.rho, np.eye(4))

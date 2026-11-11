@@ -7,7 +7,7 @@ and unwhitens. Standard MPPCA assumes the patch noise is i.i.d. across voxels; h
     Y[:, n] = signal + eps_n,   Cov(eps_n) = sigma^2 C
     Yw[:, n] = C^(-1/2) Y[:, n]        ->   Cov = sigma^2 I
 
-UNWHITENING THE CENTER VOXEL. Whitening mixes voxels, so the center voxel of the
+Unwhitening the center voxel. Whitening mixes voxels, so the center voxel of the
 reconstruction is a dense combination of all ``n_vox`` whitened rows::
 
     xhat_c = (e_c^T C^(1/2)) Yw Pi = (e_c^T X) Pi
@@ -17,18 +17,18 @@ So the voxel's own row of the patch, projected, is its denoised signal, and unwh
 needs no product at all: no root of ``C`` is ever multiplied. ``Pi`` is the projection the
 whitened spectrum picks.
 
-THE WHITENER. Rows are divided by ``d``, then ``C^(-1/2)`` is applied:
+The whitener. Rows are divided by ``d``, then ``C^(-1/2)`` is applied:
 ``W = C^(-1/2) D^(-1)``, as in the paper. ``W^T W = (DCD)^(-1)``, so the symmetric
-``(DCD)^(-1/2)`` of older drafts gives the same Gram, spectrum, threshold, retained
+``(DCD)^(-1/2)`` would give the same Gram, spectrum, threshold, retained
 subspace and reconstruction.
 
-STANDARD MPPCA IS THE CASE C = None. The whitening multiply is skipped and the center row
+Standard MPPCA is the case C = None. The whitening multiply is skipped and the center row
 is the patch's own, so :func:`~camppca.denoiser.mppca.denoise_mppca` runs this same engine.
 
-WHERE C COMES FROM. :meth:`~camppca.noise_model.NoiseModel.patch_correlation` derives it,
+Where C comes from. :meth:`~camppca.noise_model.NoiseModel.patch_correlation` derives it,
 because it belongs to the model.
 
-PATCH ORDER. C is built from explicit (dx, dy, dz) lags in C order with z fastest, not as a
+Patch order. C is built from explicit (dx, dy, dz) lags in C order with z fastest, not as a
 Kronecker product, so it is Toeplitz in the true relative lags with no wraparound.
 """
 
@@ -305,7 +305,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
             :func:`~camppca.patch.default_patch`.
         algorithm: which Marchenko-Pastur variant to cut with.
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
-        d_field: (X, Y, Z) relative noise map, ALREADY guarded by the caller
+        d_field: (X, Y, Z) relative noise map, already guarded by the caller
             (:meth:`~camppca.noise_model.NoiseModel.effective_d`). Each voxel row is
             divided by its own level before whitening, which is exact for
             ``Sigma = sigma^2 D C D``, and the voxel's row is multiplied back on the way

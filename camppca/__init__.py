@@ -1,4 +1,4 @@
-"""camppca -- covariance-aware MPPCA for diffusion MRI.
+"""camppca: covariance-aware MPPCA for diffusion MRI.
 
 Estimates the spatial noise covariance of reconstructed dMRI from the data itself and
 runs MPPCA denoising in the whitened domain, where the Marchenko-Pastur i.i.d.-noise

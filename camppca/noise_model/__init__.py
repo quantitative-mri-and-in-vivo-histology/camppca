@@ -1,14 +1,14 @@
-"""The noise model: what the noise IS, and how to estimate it from the data.
+"""The noise model: what the noise is, and how to estimate it from the data.
 
 The patch noise covariance is assumed to factorize into a level that varies in space and
 a correlation pattern that does not::
 
     Sigma = sigma^2 * D * C * D          D = diag(d)
 
-``rho`` (the correlation pattern) and ``d`` (the relative noise map) are the model.  ``C``, the
-n_vox x n_vox patch correlation, is DERIVED from rho plus a patch shape -- a denoiser knob, not a
-property of the noise -- so it is computed on demand by :meth:`NoiseModel.patch_correlation`
-and never stored.
+``rho`` (the correlation pattern) and ``d`` (the relative noise map) are the model. ``C``,
+the n_vox x n_vox patch correlation, follows from rho and a patch shape. The patch shape is
+a denoiser setting and no property of the noise. So ``C`` is computed on demand by
+:meth:`NoiseModel.patch_correlation` and never stored.
 
 This half of the seam is source-specific: here both come from MPPCA itself. ``d`` is
 standard MPPCA's noise level averaged over patch footprints, and rho comes from the loop (``loop.py``), started
@@ -38,21 +38,19 @@ from .masks import brain_mask
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask"]
 
-#: Fewest volumes the Marchenko-Pastur fit is trusted with. Below this the Exp2 width
-#: normalizer degenerates as the rank approaches the volume count: at 125 voxels and 34
-#: volumes the noise level came out 52% high against a true 5%.
+#: Fewest volumes the Marchenko-Pastur fit is trusted with. Below this the width
+#: normalizer of the cordero-grande rule degenerates as the rank approaches the volume
+#: count, and the noise level comes out far too high.
 MIN_VOLUMES = 50
 
 #: Stop the level rounds when the median relative change of ``d`` drops below this.
-#: On real data the first round moved ``d`` by 3.5 to 5%, the second by under 1%.
 LEVEL_TOL = 5e-3
 
 #: Smallest eigenvalue a patch correlation may have. A correlation pattern can be valid for one
 #: patch and indefinite for a larger one. `_build_C` then projects it to a C with
 #: eigenvalues near zero, whitening divides by them, and sigma collapses to ~1e-7
-#: everywhere without an error. A guard, not a model limit: noise filtered by a Hann
-#: window over all of k-space has a true C at 1.2e-4 at 7^3, and the loop's likelihood
-#: reaches it. Until 2026-11-09 it was 1e-3, which that truth could not pass.
+#: everywhere without an error. The bound is a guard and set low: the true C of noise
+#: filtered over all of k-space can come close to it.
 MIN_EIGENVALUE = 1e-6
 
 
@@ -85,7 +83,7 @@ def _effective_d(d, mask):
     mask missed gets a local level.
 
     The engine takes the field as given and rescales the denoised image by it at the center
-    voxel, but NOT ``sigma_mppca``. Putting sigma_mppca back into data units therefore means
+    voxel, but not ``sigma_mppca``. Putting sigma_mppca back into data units therefore means
     applying this same field, which is why the denoiser takes it from
     :meth:`NoiseModel.effective_d` and passes it down.
     """
@@ -187,7 +185,7 @@ class NoiseModel:
 
 
 def _table_C(rho, patch, lag):
-    """The patch correlation a correlation pattern spells out, symmetric with unit diagonal, NOT
+    """The patch correlation a correlation pattern spells out, symmetric with unit diagonal, not
     projected: its smallest eigenvalue says whether the table is a valid correlation."""
     o = patch_offsets(patch)
     dx = o[:, 0][:, None] - o[:, 0][None, :]
@@ -396,8 +394,8 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
 
 
 #: The imaginary part's rms over the real part's noise level above which complex data look
-#: phase unstabilized. Stabilized EDDEN 2 mm gave 1.5, the imaginary part holding a little
-#: structure. Unstabilized, it carries the signal.
+#: phase unstabilized. Stabilized data stay well below it, the imaginary part holding a
+#: little structure. Unstabilized, it carries the signal.
 PHASE_RATIO = 3.0
 
 
@@ -411,8 +409,7 @@ def _check_phase_stabilized(imag, real, mask, level, patch, algorithm, workers):
     centers lie on a grid too.
 
     ``level`` is standard MPPCA's level of the real part, or None without a noise field,
-    and then it is computed at the sampled voxels only. The check used to run only with
-    a noise field. NaN and inf in the imaginary part are left out: the real part is
+    and then it is computed at the sampled voxels only. NaN and inf in the imaginary part are left out: the real part is
     cleaned before estimating, the imaginary part is not, and one NaN made the ratio NaN,
     which never exceeds the threshold.
     """

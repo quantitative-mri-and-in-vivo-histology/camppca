@@ -20,15 +20,6 @@ one patch correlation ``C_true``, at the data's volume count, and whitened once 
 ``C_true`` and once with the other ``C``. The change is the median ratio of the two MP
 noise levels, minus one. Positive means the other ``C`` would report a higher level.
 The draws are the same for every comparison.
-
-Not the sphericity: it says how strongly ``C`` is correlated, not what a wrong ``C``
-costs. Not the share of noise patches that keep a component either: at 11% it needs about
-20,000 draws before a difference of half a point means anything.
-
-Trial on EDDEN 2 mm and 0.9 mm (``docs/local/2026-11-09_qc_trial.md``): halves along an
-axis changed the level by up to 0.2% at 2 mm and 0.5% at 0.9 mm, even against odd volumes
-by 0.06% and 0.02%. The shells differed by up to 1.6%, which is the split's bias growing
-with the signal, not the noise. So the check has no shell split.
 """
 
 from dataclasses import dataclass, field
@@ -79,8 +70,8 @@ class NoiseModelCheck:
         largest random subset.
 
         Twice, not once: of 8 regions on stationary noise, one beats the largest of 5
-        random subsets by chance, as a region beats 5 draws 1 time in 6. And 1%: EDDEN
-        0.9 mm regions differ beyond the random subsets, but by 0.4% at most.
+        random subsets by chance, as a region beats 5 draws 1 time in 6. And 1%: on real
+        data regions can differ beyond the random subsets, by too little to matter.
         """
         bound = max(REFERENCE_FACTOR * self.reference_spread(), MIN_FLAGGED)
         return [r["region"] for r in self.regions if abs(r["change"]) > bound]

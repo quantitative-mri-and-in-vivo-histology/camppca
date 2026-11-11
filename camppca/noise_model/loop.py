@@ -3,12 +3,12 @@
 MPPCA splits each whitened patch into kept directions and a bulk. With the split fixed,
 the bulk is noise, and the loop fits its correlation by maximum likelihood. Patch b,
 whitened by ``W = C^(-1/2)``, keeps ``r_b`` orthonormal directions ``U_b``. Its residual
-``R_b = P_b W X_b``, ``P_b = I - U_b U_b^T``, has ``nu_b = N - r_b`` independent columns,
+``res_b = P_b W X_b``, ``P_b = I - U_b U_b^T``, has ``nu_b = N - r_b`` independent columns,
 each Gaussian with covariance ``s_b P_b M P_b``, ``M = W C' W``, ``C'`` the stationary
 patch correlation sought and ``s_b`` the patch's level. The levels are nuisances and
 are profiled out, so over the patches, with ``d_b = n_vox - r_b``::
 
-    l = -1/2 sum_b nu_b [ log det+(P_b M P_b) + d_b log tr((P_b M P_b)+ R_b R_b^T) ]
+    l = -1/2 sum_b nu_b [ log det+(P_b M P_b) + d_b log tr((P_b M P_b)+ res_b res_b^T) ]
 
 ``C'`` has one value per lag class, the voxel pairs that share a lag up to its sign,
 ``h`` and ``-h``: 364 classes at 5^3, 1098 at 7^3, against 58,996 unknowns for a free
@@ -21,47 +21,25 @@ Fisher scoring step on ``l`` (:func:`_fisher_step`). A backtracking line search 
 the step until ``l`` rises by :data:`ARMIJO` of the predicted amount and ``C'`` stays a
 valid correlation (:data:`~camppca.noise_model.MIN_EIGENVALUE`). ``l`` is minus
 infinity at a singular ``C'``. The next round splits again with the new ``C``.
-Directions a patch kept are NOT filled in with the current pattern's values; that is
+Directions a patch kept are not filled in with the current pattern's values; that is
 what keeps the loop from drifting.
 
-Until 2026-11-09 the fit was least squares on the pooled bulk, with MPPCA's level per
-patch, and a table that was no valid correlation fell back to white noise. Its normal
-equations pass the misfit through the bulk map twice, which magnifies the directions the
-bulk barely sees. Under strong correlation the split from white keeps most components,
-a median 68 of 105 on a phantom filtered by a Hann window over all of k-space, at 5^3.
-The least-squares table came out with smallest eigenvalue -5.3 and fell back. The
-likelihood reaches the true lag-1 correlation within 0.002, at 7^3 too, where the true
-``C`` has smallest eigenvalue 1.2e-4. On EDDEN 2 mm and 0.9 mm the two agree: tables
-within 0.0022, sigma by a median 0.02% at most, 99th percentile 0.03%.
-
-THE HOLE. Every patch keeps its smooth patch-mean pattern as signal, so the bulk barely
+The hole. Every patch keeps its smooth patch-mean pattern as signal, so the bulk barely
 sees the noise along it. Among stationary covariances this is exactly one direction, the
-same value added to every lag: on the EDDEN crop its weight in the least-squares fit was
-2.5e-4 of the largest, the next weakest 4.8e-2. With the zero lag held at 1 it becomes
+same value added to every lag. With the zero lag held at 1 it becomes
 ``1 - rho`` at each lag, the same value only near white noise. It is fixed by an
 assumption, noise correlation dies off with distance, so the mean over the far classes,
 those on the edge of the patch's lag box, is held at its starting value. That is zero
 for white noise and for every table the loop returns, the only starts it is given.
 
-Do not go back to a free solve of the covariance averaged over lags. There the hole is
-a near-null eigenvalue along the patch mean, a converged solve divides by it, and the
-pattern runs away. With the far classes pinned the loop converges, and on the paper's
-phantom with a signal MPPCA separates perfectly it lands within 0.005 of the true
-correlation.
-
-⚠ The split itself is biased, and no fit undoes it. Signal components near the MP edge
+The split itself is biased, and no fit undoes it. Signal components near the MP edge
 are kept with patterns tilted toward the noise, and weaker ones stay in the bulk. Both
-are smooth in space and read as extra correlation. On the paper's phantom (Hann window
-f = 0.5, g = 0.33, 80 volumes, 5^3) a round started at the truth gave a z correlation
-of 0.037 where the truth is 0, and the converged loop 0.051. Patch2Self overshot too.
-The fixed point enlarges the bias of a single round: if a round moves a table by ``b``
-plus a share ``a`` of its distance from the fixed point, the fixed point lies
-``b / (1 - a)`` from the truth. Here that is 1.4 times.
+are smooth in space and read as extra correlation. The fixed point enlarges the bias of
+a single round: if a round moves a table by ``b`` plus a share ``a`` of its distance from
+the fixed point, the fixed point lies ``b / (1 - a)`` from the truth.
 
 The rounds stop on a full step that moves no table value by more than :data:`LOOP_TOL`:
-a shorter step moves it little because it is short. Until 2026-11-09 they stopped on a
-change in sphericity below 1e-3, which cannot see a change orthogonal to ``C``: from
-white noise a step to lag-1 0.015 moves it by 7e-4. The table of the last round is
+a shorter step moves it little because it is short. The table of the last round is
 returned. A full step inside the valid correlations that no fraction of raises the
 likelihood beyond rounding also ends the loop, as converged.
 
@@ -69,8 +47,7 @@ The stationary model does not explain the bulk, and the loop falls back to white
 when the full step leaves the valid correlations and no shorter one down to
 :data:`MIN_STEP` raises the likelihood, or when :data:`MAX_ROUNDS` end with the last full
 step outside them. Near a regular optimum Fisher scoring takes full steps inside them.
-An unstabilized phase ends this way: its full steps left the valid correlations round
-after round, toward a sphericity of 25 where the truth is 0. A loop whose last step was
+The real part of data whose phase was never stabilized ends this way. A loop whose last step was
 shortened by the likelihood alone keeps its table and warns, as one that has not
 converged on full steps does. A step that is not finite or does not point uphill, or a
 split that is not finite, is a numerical failure and falls back saying so: a solved
@@ -86,9 +63,7 @@ lag 6, carry no information from the bulk. They keep the starting table's values
 
 The split runs in float32, with each tile's bulk product in float64, and the Fisher step
 in float32 too, unless the smallest eigenvalue of ``C`` is below :data:`PRECISE_BELOW`.
-Rounding in a float32 operator grows with the condition of ``C``: about 6e-4 relative
-at 1.2e-4, 0.06 at the floor of 1e-6. Against float64 the least-squares table moved by
-at most 2.4e-5. Each patch's kept directions are orthonormalized in float64, and the
+Rounding in a float32 operator grows with the condition of ``C``. Each patch's kept directions are orthonormalized in float64, and the
 line search evaluates the change in likelihood in float64, see :func:`_gain_chunk`.
 """
 from collections import namedtuple
@@ -287,7 +262,7 @@ def _line_search(bulk, factors, W, rho, patch, lag, cls, lags, gain,
 
     Args:
         bulk: (n_vox, n_vox) ``sum_b S_b``, each patch's whitened residual scatter
-            ``R_b R_b^T`` at its own profiled level, see :func:`_split_chunk`.
+            ``res_b res_b^T`` at its own profiled level, see :func:`_split_chunk`.
         factors: the round's :class:`_Factors`.
         W: ``C^(-1/2)`` of the round's ``C``, the patch correlation of ``rho``.
         gain: maps ``G = W C' W``, ``C'`` a trial patch correlation, to the rise in
@@ -347,13 +322,9 @@ def _sample_centers(mask, patch, min_centers=None):
     its own noise. Of the grid's phases the one with the most centers is taken. Above
     :data:`MAX_CENTERS` the stride widens until under it, below :data:`MIN_CENTERS` it
     narrows until over it, down to every voxel. Every axis scales by the same factor, in
-    steps of one voxel on the longest, so the grid keeps the patch's shape. Adding one
-    voxel per axis instead grew the z stride of a 7 x 7 x 3 patch by a third against a
-    seventh in plane, and skipped slices.
+    steps of one voxel on the longest, so the grid keeps the patch's shape.
 
-    A grid was as precise as random centers at the same count, ties the count to the
-    mask and needs no seed. More patches than a few hundred, or overlapping ones, gained
-    nothing. CLAUDE.md has the measurements.
+    A grid ties the count to the mask and needs no seed.
 
     ``min_centers`` None is :data:`MIN_CENTERS`. 0 keeps the tiling however few centers
     it has. The QC needs that: overlapping patches share noise, so a region of them counts
@@ -531,15 +502,15 @@ def _split_task(dwi, levels, centers, patch, C, algorithm):
 def _gain_chunk(patches, W, G, parts, nu):
     """A batch's share of the rise in profile log-likelihood from ``M = I`` to ``M = G``.
 
-    Patch b contributes ``-1/2 nu_b [log det+(P G P) + d_b log tr((P G P)+ R R^T)]``,
+    Patch b contributes ``-1/2 nu_b [log det+(P G P) + d_b log tr((P G P)+ res res^T)]``,
     its level profiled out, and ``M = I`` at the current table. For orthonormal
     ``[U, V]``, ``V^T G V`` is ``P G P`` on the bulk, with
     ``det(V^T G V) = det(G) det(U^T G^-1 U)`` and inverse, on the bulk,
-    ``G^-1 - G^-1 U (U^T G^-1 U)^-1 U^T G^-1``. With ``E = G^-1 - I``, and ``R`` in the
-    bulk so that ``U^T G^-1 R = U^T E R``, the rise is::
+    ``G^-1 - G^-1 U (U^T G^-1 U)^-1 U^T G^-1``. With ``E = G^-1 - I``, and ``res`` in the
+    bulk so that ``U^T G^-1 res = U^T E res``, the rise is::
 
-        -1/2 nu [log det G + log det(I + U^T E U) + d log(1 + t / |R|^2)]
-        t = <R, E R> - tr((I + U^T E U)^-1 F F^T),   F = U^T E R
+        -1/2 nu [log det G + log det(I + U^T E U) + d log(1 + t / |res|^2)]
+        t = <res, E res> - tr((I + U^T E U)^-1 F F^T),   F = U^T E res
 
     ``G`` is the same for every patch, so its inverse and determinant are taken once,
     and each patch needs only products with ``E`` and an r x r solve. No two large
@@ -559,18 +530,18 @@ def _gain_chunk(patches, W, G, parts, nu):
         if weight == 0:
             continue
         U = np.linalg.qr(U.astype(np.float64))[0]        # orthonormal to float64 precision
-        R = Y.astype(np.float64)
-        R -= U @ (U.T @ R)
-        ER = E @ R
-        t = float(np.sum(R * ER))
+        res = Y.astype(np.float64)
+        res -= U @ (U.T @ res)
+        E_res = E @ res
+        t = float(np.sum(res * E_res))
         kept = 0.0
         if U.shape[1]:
             inner = np.eye(U.shape[1]) + U.T @ (E @ U)
-            F = U.T @ ER
+            F = U.T @ E_res
             kept = np.linalg.slogdet(inner)[1]
             t -= float(np.trace(np.linalg.solve(inner, F @ F.T)))
         total -= 0.5 * weight * (log_det + kept
-                                 + (n_vox - U.shape[1]) * np.log1p(t / float(np.sum(R * R))))
+                                 + (n_vox - U.shape[1]) * np.log1p(t / float(np.sum(res * res))))
     return total
 
 
