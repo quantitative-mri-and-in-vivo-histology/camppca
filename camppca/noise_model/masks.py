@@ -2,24 +2,19 @@
 
 An empty mask raises ``ValueError``.
 
-WHY brain_mask IS NOT JUST threshold + erode.  That is what it started as, and on GE
-MR750 data it collapsed the mask from ~137k voxels to 13.7k: the intensity threshold
-leaves a POROUS mask there (interior voxels below the cut, ~1000 connected components),
-and three erosions eat it from the inside out.  Every downstream number was then computed
-on a sliver of brain, with no 9x9x9 patch fitting inside the mask at all.  Closing the
-pores BEFORE eroding fixes it and barely moves the configs that were already fine.
-
-Pure numpy + scipy.ndimage.
+On some scanners the intensity threshold leaves a porous mask, with interior voxels
+below the cut. Erosion then eats it from the inside out. So the pores are closed before
+eroding.
 """
 
 import numpy as np
 from scipy.ndimage import binary_closing, binary_erosion, binary_fill_holes, label
 
 MASK_FRAC = 0.15      # threshold as a fraction of the mean-b0 99th percentile
-CLOSE = 2             # seal pores BEFORE eroding -- see the module docstring
+CLOSE = 2             # seal pores before eroding, see the module docstring
 ERODE = 3
 
-# ⚠ `estimate_noise_model` calls `brain_mask(..., erode=0)`: with `mask_only`, the model's
+# `estimate_noise_model` calls `brain_mask(..., erode=0)`: with `mask_only`, the model's
 # mask is also the set of voxels the engine writes, so eroding it would leave a 3-voxel
 # rim un-denoised.
 
@@ -43,22 +38,22 @@ def brain_mask(b0_mean, *, frac=MASK_FRAC, close=CLOSE, erode=ERODE):
     m = b0_mean > frac * np.percentile(b0_mean, 99)
     lab, n = label(m)
     if n == 0:
-        raise ValueError("empty brain mask -- check the threshold fraction")
+        raise ValueError("empty brain mask. Check the threshold fraction.")
     m = lab == (np.bincount(lab.ravel())[1:].argmax() + 1)
     if close > 0:
         # Padded with the edge slices: scipy erodes against a zero border, so the closing
-        # cut two slices off every face the brain touches (all of EDDEN's z faces).
+        # cut two slices off every face the brain touches.
         m = binary_closing(np.pad(m, close, mode="edge"), iterations=close)
         m = m[(slice(close, -close),) * 3]
     m = binary_fill_holes(m)
     for z in range(m.shape[2]):                    # 3-D fill misses pores open in-plane only
         m[:, :, z] = binary_fill_holes(m[:, :, z])
     if erode <= 0:
-        return m           # ⚠ scipy erodes to CONVERGENCE at iterations=0, not zero times
+        return m           # scipy erodes to convergence at iterations=0, not zero times
     eroded = binary_erosion(m, iterations=erode)
     if not eroded.any():
         raise ValueError(
             f"brain mask is empty after {erode} erosions (it held {int(m.sum())} voxels "
-            f"before). Thin volumes lose every slice this way -- lower `erode`, or pass a "
+            f"before). Thin volumes lose every slice this way. Lower `erode`, or pass a "
             f"mask explicitly.")
     return eroded

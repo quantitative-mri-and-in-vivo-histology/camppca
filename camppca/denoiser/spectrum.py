@@ -50,11 +50,11 @@ def _checked(evals, failed=False):
 
 
 # The kept route. The MP cut needs every eigenvalue but the rebuild only the top P
-# vectors, P often near 10 of 199. So each Gram is reduced to tridiagonal form once
+# vectors. So each Gram is reduced to tridiagonal form once
 # (sytrd), its eigenvalues come from that (sterf), and after the cut its top P vectors
 # come by inverse iteration (stein), mapped back to the Gram by ormtr. scipy has no
-# wrapper for ormtr, so it is called through ctypes from scipy's own LAPACK. It cut the
-# denoise by about a quarter, see CLAUDE.md. Real data only.
+# wrapper for ormtr, so it is called through ctypes from scipy's own LAPACK. Real data
+# only.
 
 ctypes.pythonapi.PyCapsule_GetPointer.restype = ctypes.c_void_p
 ctypes.pythonapi.PyCapsule_GetPointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
@@ -119,7 +119,7 @@ def top_eigvecs(gram, evals, reduced, counts):
         splits, or where inverse iteration does not converge, gets all its vectors from
         :func:`eigh_descending` instead. Inverse iteration loses accuracy in a large
         cluster of equal eigenvalues, such as the zeros of noiseless data, which keeps
-        everything. On EDDEN 0.9 mm about 1% of voxels keep more than a quarter.
+        everything.
     """
     prefix = "s" if gram.dtype == np.float32 else "d"
     stein = getattr(lapack, prefix + "stein")
