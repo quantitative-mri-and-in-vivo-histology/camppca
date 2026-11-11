@@ -69,6 +69,16 @@ result.denoised, result.sigma, result.rank
 - **Keep ≳ 50 volumes.** The noise-level estimator degenerates as the retained rank
   approaches the smaller of the patch's voxel count and the volume count.
 
+## Development
+
+Open in the devcontainer (**Dev Containers: Reopen in Container**). See
+`.devcontainer/README.md`.
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
 ## References
 
 - Cordero-Grande L et al. (2019). Complex diffusion-weighted image estimation via matrix recovery under general noise models. NeuroImage. [doi:10.1016/j.neuroimage.2019.06.039](https://doi.org/10.1016/j.neuroimage.2019.06.039)
@@ -85,16 +95,6 @@ result.denoised, result.sigma, result.rank
 - Tournier JD et al. (2019). MRtrix3: A fast, flexible and open software framework for medical image processing and visualisation. NeuroImage. [doi:10.1016/j.neuroimage.2019.116137](https://doi.org/10.1016/j.neuroimage.2019.116137)
 - Veraart J, Fieremans E, Novikov DS (2016). Diffusion MRI noise mapping using random matrix theory. Magn Reson Med. [doi:10.1002/mrm.26059](https://doi.org/10.1002/mrm.26059)
 - Veraart J et al. (2016). Denoising of diffusion MRI using random matrix theory. NeuroImage. [doi:10.1016/j.neuroimage.2016.08.016](https://doi.org/10.1016/j.neuroimage.2016.08.016)
-
-## Development
-
-Open in the devcontainer (**Dev Containers: Reopen in Container**). See
-`.devcontainer/README.md`.
-
-```bash
-pip install -e ".[dev]"
-pytest
-```
 
 ## License
 
