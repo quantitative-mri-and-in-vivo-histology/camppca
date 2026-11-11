@@ -50,8 +50,7 @@ def test_denoise_writes_image_noise_map_and_qc(dataset):
                  "noise_model_check.txt", "noise_model_check.json"):
         assert (qc / name).exists(), name
     check = json.loads((qc / "noise_model_check.json").read_text())
-    assert len(check["regions"]) == 8 and check["volume_splits"] == []
-    assert "volume halves skipped" in (qc / "noise_model_check.txt").read_text()
+    assert len(check["regions"]) == 8 and len(check["volume_splits"]) == 5
 
     prov = json.loads((qc / "provenance.json").read_text())
     assert prov["model"]["level_rounds"] == 0, "no level rounds by default"

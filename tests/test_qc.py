@@ -53,17 +53,25 @@ def test_stationary_noise_changes_the_level_by_little_anywhere(stationary):
     assert len(check.report()) == 1 + 8 + 1 + 3
 
 
-def test_a_half_with_other_noise_stands_out_and_few_volumes_skip_the_halves():
+def test_a_half_with_other_noise_stands_out():
     dwi, mask = _dataset(60, H_RIGHT)
     model = estimate_noise_model(dwi, mask, patch=PATCH)
-    with pytest.warns(RuntimeWarning, match="volume halves skipped"):
-        check = check_noise_model(dwi, model, grid=(2, 1, 1), random_splits=3,
-                                  n_noise=256)
+    check = check_noise_model(dwi, model, grid=(2, 1, 1), random_splits=3, n_noise=256)
     changes = {r["region"]: r["change"] for r in check.regions}
     spread = check.reference_spread()
     # The left half is less correlated than the model, the right half more.
     assert changes["x0 y0 z0"] > 2 * spread and changes["x1 y0 z0"] < -2 * spread
     assert check.flagged() == ["x0 y0 z0", "x1 y0 z0"]
+    assert [s["n_vols"] for s in check.volume_splits] == [(30, 30)] * 3
+
+
+def test_few_volumes_skip_the_halves():
+    dwi, mask = _dataset(40, H_LEFT)
+    with pytest.warns(RuntimeWarning, match="works best with 50 or more"):
+        model = estimate_noise_model(dwi, mask, patch=PATCH)
+    with pytest.warns(RuntimeWarning, match="volume halves skipped"):
+        check = check_noise_model(dwi, model, grid=(1, 1, 1), random_splits=1,
+                                  n_noise=256)
     assert check.volume_splits == []
     assert "fewer than 50" in check.report()[-1]
 

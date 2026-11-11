@@ -308,9 +308,8 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
     if level_rounds < 0:
         raise ValueError(f"level_rounds must be >= 0, got {level_rounds}")
     if n_vols < MIN_VOLUMES:
-        warn(f"{n_vols} volumes, fewer than {MIN_VOLUMES}: the Marchenko-Pastur "
-             "fit degenerates as the rank approaches the volume count, and the "
-             "noise level can come out far too high.")
+        warn(f"{n_vols} volumes: camppca works best with {MIN_VOLUMES} or more. With "
+             "fewer, the noise level can come out too high.")
 
     if bvals is None:
         bvals = np.zeros(n_vols)

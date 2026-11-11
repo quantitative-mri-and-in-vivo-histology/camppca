@@ -234,7 +234,7 @@ file would need a format kept readable across versions.
   less than scattered ones: on stationary synthetic noise every region fell outside.
 - Volumes: 5 random 50/50 splits, the halves against each other, never against the
   model. With half the volumes the split leaks more signal into the bulk, so every half
-  differs from the model the same way. Skipped below 2 x `MIN_VOLUMES` volumes.
+  differs from the model the same way. Skipped below `MIN_VOLUMES` volumes, halves of 25 at the least.
 - Not the sphericity, which says how correlated `C` is, not what a wrong one costs. Not
   the share of noise patches keeping a component, which needs about 20,000 draws. No
   shell split: b1000 against b2000 differed by up to 1.6%, the split's bias growing with
