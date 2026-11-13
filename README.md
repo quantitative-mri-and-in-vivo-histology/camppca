@@ -15,17 +15,11 @@ pip install -e .
 ## Command line
 
 ```bash
-camppca denoise in.nii.gz out.nii.gz --mask brain.nii.gz --noise sigma.nii.gz --qc qc/
+camppca denoise in.nii.gz out.nii.gz --noise sigma.nii.gz --mask brain.nii.gz
 ```
 
 Status lines go to stderr, each with the time since the start, and the long passes show a
 progress bar.
-
-`camppca estimate` writes the noise model and its check to the `--qc` folder:
-
-```bash
-camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/
-```
 
 | option | does |
 |---|---|
@@ -43,6 +37,12 @@ camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/
 | `--qc DIR` | writes the noise covariance model (the relative noise map d, and the correlation pattern ρ as NIfTI and `rho.png`), the final noise map σ and the rank map to DIR, and runs additional quality control analyses. These check that one correlation pattern holds across regions and volume halves. |
 | `-q` | show only warnings and errors |
 | `-v` | verbose: also show the progress of each round of the noise correlation fit, and the full Python traceback when an error stops the run |
+
+`camppca estimate` writes the noise model and its check to the `--qc` folder:
+
+```bash
+camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/
+```
 
 ### Complex denoising
 
