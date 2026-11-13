@@ -98,7 +98,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, *, patch=None
 
     denoised, sigma_mppca, rank = denoise_whitened(
         dwi, mask, None, patch=patch, algorithm=algorithm, shrink=tile_shrink,
-        workers=workers, aggregate=aggregate, stride=stride)
+        workers=workers, aggregate=aggregate, stride=stride, progress_label="denoising")
     return DenoiseResult(
         denoised=denoised, sigma=sigma_mppca, rank=rank,
         provenance=dict(method="mppca", version=__version__,

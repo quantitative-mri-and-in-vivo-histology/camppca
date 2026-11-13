@@ -17,16 +17,25 @@ Outputs are split by audience:
                      rank, provenance.json, and the check of one rho across regions and
                      volume halves (noise_model_check.txt and .json)
 
+Status lines go to stderr, each stamped with the time since the start, and stdout stays
+empty. ``-q`` keeps only warnings and errors, ``-v`` adds a line per loop round. The
+library logs through :mod:`logging`, and only this command configures it. Its warnings
+come out as stamped lines too, and every line clears the progress bar before it prints.
+
 Everything to look at goes into the ``--qc`` directory. The check
 (:func:`camppca.check_noise_model`) runs right after the estimate, before the denoise
 holds the output in memory. It refits the loop 23 times.
 """
 
 import argparse
+import logging
 import sys
+import time
+import warnings
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 from . import io
 from .denoiser.aggregate import AGGREGATES, check_aggregate
@@ -35,8 +44,13 @@ from .denoiser.shrink import SHRINKERS
 from .noise_model import estimate_noise_model
 from .noise_model.qc import check_noise_model
 from .phase import RADIANS, phase_scale, stabilize_phase
+from .pool import resolve_workers
+from .progress import elapsed
 
 __all__ = ["main"]
+
+# Named, not __name__: run as ``python -m camppca.cli`` that is "__main__", outside camppca.
+log = logging.getLogger("camppca.cli")
 
 
 def _add_common(p):
@@ -68,7 +82,15 @@ def _add_common(p):
     p.add_argument("--workers", type=int, default=None, metavar="N",
                    help="CPU processes to split the work over (default: one per "
                         "physical core; 1 runs in one process)")
-    p.add_argument("-q", "--quiet", action="store_true")
+    _add_verbosity(p)
+
+
+def _add_verbosity(p):
+    talk = p.add_mutually_exclusive_group()
+    talk.add_argument("-q", "--quiet", action="store_true",
+                      help="show only warnings and errors")
+    talk.add_argument("-v", "--verbose", action="store_true",
+                      help="also show each round of the correlation loop")
 
 
 def _mask_path(output):
@@ -124,7 +146,7 @@ def _parser():
     s.add_argument("--workers", type=int, default=None, metavar="N",
                    help="CPU processes to split the volumes over (default: one per "
                         "physical core; 1 runs in one process)")
-    s.add_argument("-q", "--quiet", action="store_true")
+    _add_verbosity(s)
     return p
 
 
@@ -193,7 +215,53 @@ def _plot_rho(path, model):
     return True
 
 
-def _phase(args, say):
+class _Lines(logging.StreamHandler):
+    """Writes each line through tqdm, which moves a progress bar out of its way."""
+
+    def emit(self, record):
+        try:
+            tqdm.write(self.format(record), file=self.stream)
+        except Exception:
+            self.handleError(record)
+
+
+def _log_warning(message, category, filename, lineno, file=None, line=None):
+    """``warnings.showwarning`` for the run: a warning is one stamped line."""
+    log.warning("%s", message)
+
+
+class _Stamp(logging.Formatter):
+    """``[m:ss] message``, the time since ``start``. Warnings and errors say so."""
+
+    def __init__(self, start):
+        super().__init__()
+        self.start = start
+
+    def format(self, record):
+        minutes, seconds = divmod(int(record.created - self.start), 60)
+        kind = f"{record.levelname.lower()}: " if record.levelno >= logging.WARNING else ""
+        return f"[{minutes}:{seconds:02d}] {kind}{record.getMessage()}"
+
+
+def _lag1(rho):
+    """rho one voxel along x, y and z, each where the table reaches."""
+    c = rho.shape[0] // 2                       # the zero lag
+    steps = {"x": (c + 1, c, 0), "y": (c, c + 1, 0), "z": (c, c, 1)}
+    # A patch one voxel wide on an axis has no lag along it.
+    return "".join(f", rho({axis}=1) {rho[at]:+.3f}" for axis, at in steps.items()
+                   if all(i < n for i, n in zip(at, rho.shape, strict=True)))
+
+
+def _shape(dwi):
+    return f"{' x '.join(str(n) for n in dwi.shape[:3])}, {dwi.shape[3]} volumes"
+
+
+def _workers(workers):
+    n = resolve_workers(workers)
+    return f"{n} worker{'s' if n > 1 else ''}"
+
+
+def _phase(args):
     magnitude, affine, header = io.load_dwi(args.magnitude)
     phase, phase_affine, _ = io.load_dwi(args.phase)
     io.check_same_space(phase_affine, affine, args.phase, args.magnitude)
@@ -201,51 +269,48 @@ def _phase(args, say):
     scale = phase_scale(phase, phase_range)    # checked before any work is done
     slice_axis = header.get_dim_info()[2]
     slice_axis = 2 if slice_axis is None else slice_axis
-    say(f"  {Path(args.magnitude).name}  {magnitude.shape}, phase x {scale:.6g} to radians, "
-        f"slices along axis {slice_axis}")
+    log.info("%s: %s, phase x %.6g to radians, slices along axis %d, %s",
+             Path(args.magnitude).name, _shape(magnitude), scale, slice_axis,
+             _workers(args.workers))
     out = stabilize_phase(magnitude, phase, slice_axis=slice_axis, imag=bool(args.imag),
                           workers=args.workers, phase_range=phase_range)
     real, imag = out if args.imag else (out, None)
     del magnitude, phase
     io.save_like(args.output, real, affine, header)
-    say(f"  wrote {args.output}")
+    log.info("wrote %s", args.output)
     if imag is not None:
         io.save_like(args.imag, imag, affine, header)
-        say(f"  wrote {args.imag}")
+        log.info("wrote %s", args.imag)
     return 0
 
 
-def main(argv=None):
-    args = _parser().parse_args(argv)
-    say = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
+def _run(args):
     if args.command == "phase":
-        return _phase(args, say)
+        return _phase(args)
     if args.command == "estimate" and not args.qc:     # before the minutes of work
-        print("camppca estimate: nothing written. Pass --qc DIR to keep the estimate.",
-              file=sys.stderr)
+        log.error("camppca estimate: nothing written. Pass --qc DIR to keep the estimate.")
         return 1
     if args.command == "denoise":
         check_aggregate(args.aggregate, args.stride)    # before the estimate, too
     dwi, bvals, mask, affine, header = _load(args)
     patch = None if args.patch is None else tuple(args.patch)
 
-    say(f"  {Path(args.input).name}  {dwi.shape}")
+    log.info("%s: %s, %s", Path(args.input).name, _shape(dwi), _workers(args.workers))
     noise_field = not getattr(args, "no_noise_field", False)   # estimate has no such flag
     model = estimate_noise_model(dwi, bvals=bvals, mask=mask, patch=patch,
                                  lowb=args.lowb, noise_field=noise_field,
                                  algorithm=args.algorithm, level_rounds=args.level_rounds,
                                  workers=args.workers)
-    # A patch one voxel wide in-plane gives lag 0: no x=1 entry to show.
-    lag1 = f", rho(x=1) {model.rho[model.lag + 1, model.lag, 0]:+.3f}" if model.lag else ""
-    say(f"  noise model: patch {'x'.join(map(str, model.provenance['patch']))}, "
-        f"lag {model.lag}{lag1}, sphericity {model.provenance['sphericity']:.3f}")
+    log.info("noise model: patch %s, lag %d%s, sphericity %.3f",
+             "x".join(map(str, model.provenance["patch"])), model.lag, _lag1(model.rho),
+             model.provenance["sphericity"])
 
     if args.qc:                    # before the denoise, which holds the output in memory
-        say("  checking the noise model across regions and volume halves")
+        log.info("checking the noise model across regions and volume halves")
         check = check_noise_model(dwi, model, workers=args.workers)
         _write_check(args.qc, check)
         for line in check.report():
-            say(f"    {line}")
+            log.info("  %s", line)
 
     result = None
     if args.command == "denoise":
@@ -257,24 +322,50 @@ def main(argv=None):
                                           mask_only=args.mask_only)
         io.save_like(args.output, result.denoised, affine, header,
                      dtype=result.denoised.dtype)
-        say(f"  wrote {args.output}")
+        log.info("wrote %s", args.output)
         if mask is None:
             mask_path = _mask_path(args.output)
             io.save_like(mask_path, model.mask.astype(np.uint8), affine, header,
                          dtype=np.uint8)
-            say(f"  wrote {mask_path}: no --mask given, so one was estimated from the "
-                f"mean {'b0' if bvals is not None else 'of every volume'}. Check it; "
-                "supplying your own brain mask is recommended.")
+            log.info("wrote %s: no --mask given, so one was estimated from the mean %s. "
+                     "Check it; supplying your own brain mask is recommended.", mask_path,
+                     "b0" if bvals is not None else "of every volume")
         if args.noise:
             io.save_like(args.noise, result.sigma, affine, header)
-            say(f"  wrote {args.noise}")
+            log.info("wrote %s", args.noise)
 
     if args.qc:
         plotted = _write_qc(args.qc, model, affine, header, result)
-        say(f"  wrote QC to {args.qc}/")
+        log.info("wrote QC to %s/", args.qc)
         if not plotted:
-            print("  note: rho.png skipped (matplotlib not installed)", file=sys.stderr)
+            log.warning("rho.png skipped (matplotlib not installed)")
     return 0
+
+
+def main(argv=None):
+    args = _parser().parse_args(argv)
+    # The camppca logger and the warning display are set up for this call and restored
+    # after, so a script or test calling main keeps its own.
+    package = logging.getLogger("camppca")
+    saved = package.level, package.propagate, warnings.showwarning
+    start = time.time()
+    handler = _Lines(sys.stderr)
+    handler.setFormatter(_Stamp(start))
+    package.addHandler(handler)
+    package.setLevel(logging.WARNING if args.quiet else
+                     logging.DEBUG if args.verbose else logging.INFO)
+    package.propagate = False
+    warnings.showwarning = _log_warning
+    try:
+        status = _run(args)
+        if status == 0:
+            log.info("done in %s", elapsed(time.time() - start))
+        return status
+    finally:
+        package.removeHandler(handler)
+        package.setLevel(saved[0])
+        package.propagate = saved[1]
+        warnings.showwarning = saved[2]
 
 
 if __name__ == "__main__":                    # pragma: no cover

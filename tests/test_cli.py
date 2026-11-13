@@ -1,13 +1,19 @@
 """CLI end to end: files land where the frozen interface says they do."""
 
+import io
 import json
+import logging
+import warnings
 
 import numpy as np
 import pytest
+from tqdm import tqdm
 
 nib = pytest.importorskip("nibabel")
 
-from camppca.cli import _mask_path, main
+from camppca import cli
+from camppca.cli import _lag1, _Lines, _mask_path, _Stamp, main
+from camppca.warn import warn
 
 
 @pytest.fixture(scope="module")
@@ -171,16 +177,41 @@ def test_mask_only_passes_the_outside_through(dataset):
     np.testing.assert_array_equal(only[outside], src[outside])
 
 
+def test_the_summary_shows_lag_one_along_each_axis_the_table_reaches():
+    rho = np.zeros((3, 3, 2))
+    rho[1, 1, 0], rho[2, 1, 0], rho[1, 2, 0], rho[1, 1, 1] = 1.0, 0.3, 0.2, -0.1
+    assert _lag1(rho) == ", rho(x=1) +0.300, rho(y=1) +0.200, rho(z=1) -0.100"
+    assert _lag1(rho[..., :1]) == ", rho(x=1) +0.300, rho(y=1) +0.200", "one slice"
+    assert _lag1(rho[1:2, 1:2]) == ", rho(z=1) -0.100", "one voxel in-plane"
+
+
 def test_the_patch_defaults_to_the_dwidenoise_rule(dataset, capsys):
     """50 volumes: the smallest odd cube with at least 50 voxels is 5 x 5 x 5."""
     qc = dataset / "qc_default_patch"
     rc = main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(qc), *_grad(dataset)])
     assert rc == 0
     assert json.loads((qc / "provenance.json").read_text())["model"]["patch"] == [5, 5, 5]
-    assert "patch 5x5x5" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "patch 5x5x5" in captured.err, "status goes to stderr"
+    assert captured.out == "", "stdout stays empty"
+    assert "round 1:" not in captured.err, "the loop's rounds need -v"
 
 
-def test_a_complex_input_gives_a_complex_output(dataset, tmp_path):
+def test_verbose_adds_the_rounds_and_logging_is_restored(dataset, capsys):
+    package = logging.getLogger("camppca")
+    before = package.level, package.propagate, list(package.handlers)
+    rc = main(["denoise", str(dataset / "in.nii.gz"), str(dataset / "out_verbose.nii.gz"),
+               "--patch", "5", "5", "3", "-v", *_grad(dataset)])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "round 1:" in err
+    assert "denoising done in" in err
+    assert err.splitlines()[-1].split("] ", 1)[1].startswith("done in")
+    assert (package.level, package.propagate, list(package.handlers)) == before, \
+        "main leaves the caller's logging as it found it"
+
+
+def test_a_complex_input_gives_a_complex_output(dataset, tmp_path, capsys):
     real = nib.load(str(dataset / "in.nii.gz")).get_fdata(dtype=np.float32)
     rng = np.random.default_rng(1)
     cplx = (real + 1j * 10 * rng.standard_normal(real.shape)).astype(np.complex64)
@@ -191,6 +222,7 @@ def test_a_complex_input_gives_a_complex_output(dataset, tmp_path):
                *_grad(dataset)])
 
     assert rc == 0
+    assert "wrote" not in capsys.readouterr().err, "-q keeps only warnings and errors"
     img = nib.load(str(out))
     assert img.get_data_dtype() == np.complex64
     assert np.iscomplexobj(np.asanyarray(img.dataobj))
@@ -225,3 +257,44 @@ def test_a_mask_on_another_grid_stops_the_run(dataset):
         main(["denoise", str(dataset / "in.nii.gz"), str(out), "--mask", str(mask),
               *_grad(dataset)])
     assert not out.exists()
+
+
+def test_each_main_call_prints_its_lines_once(tmp_path, capsys):
+    missing = str(tmp_path / "missing.nii.gz")
+    assert main(["estimate", missing]) == main(["estimate", missing]) == 1
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 2 and all("nothing written" in line for line in lines)
+
+
+def test_a_warning_is_a_stamped_line(dataset, capsys, monkeypatch):
+    estimate = cli.estimate_noise_model
+
+    def warning_estimate(*args, **kwargs):
+        warn("a test warning")
+        return estimate(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "estimate_noise_model", warning_estimate)
+    shown = warnings.showwarning
+    rc = main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(dataset / "qc_warn"),
+               "--patch", "5", "5", "3", "-q", *_grad(dataset)])
+    assert rc == 0
+    assert capsys.readouterr().err.splitlines() == ["[0:00] warning: a test warning"]
+    assert warnings.showwarning is shown, "main restores the warning display"
+
+
+class _Terminal(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_a_line_clears_the_bar_before_it_prints():
+    terminal = _Terminal()
+    handler = _Lines(terminal)
+    handler.setFormatter(_Stamp(0.0))
+    record = logging.LogRecord("camppca", logging.INFO, "", 0, "a line", None, None)
+    record.created = 61.0
+    with tqdm(total=4, file=terminal, desc="counting") as bar:
+        bar.update()
+        handler.emit(record)
+    line = next(part for part in terminal.getvalue().split("\n") if "a line" in part)
+    assert line.split("\r")[-1] == "[1:01] a line", "nothing of the bar before it"

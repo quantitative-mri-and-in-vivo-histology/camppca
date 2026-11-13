@@ -275,6 +275,7 @@ subspace and reconstruction. Older paper drafts used it.
                            denoising
       pool.py              CPU worker processes through joblib — both halves use it
       warn.py              warnings that point at the caller's line
+      progress.py          progress of the long passes, a bar or plain lines
       io.py                nibabel edge
       cli.py               camppca denoise | estimate
       __init__.py          public names
@@ -401,6 +402,23 @@ Breaking any of these corrupts results without an error:
 - **Every warning goes through `camppca.warn.warn`.** It points at the first frame
   outside the package. A fixed `stacklevel` pointed at `limit_blas`'s wrapper for every
   public function.
+- **Status goes through `logging`, and only the CLI configures it** (2026-11-13). Each
+  module logs to `logging.getLogger(__name__)`. Imported, camppca says nothing until the
+  caller turns on INFO for the `camppca` logger. Warnings stay `warnings.warn`, for what
+  the caller should change, as the Python docs advise.
+  - INFO: the start and end of each long pass with its time, the loop's start and end
+    in `estimate_noise_model`, each level round. DEBUG: each loop round, logged by
+    `estimate_noise_model` from the fit's `info` after it returns. The loop itself logs
+    nothing, since the check refits it up to 23 times.
+  - `progress.progress(total, label)` counts the chunks of `run_voxels`, `run_boxes`,
+    the phase step and the check's refits. On a terminal a tqdm bar on stderr, elsewhere
+    an INFO line every 10%, then "label done in X". With INFO off it does nothing.
+  - `cli.main` adds a handler to the `camppca` logger for its call and restores the
+    logger after, so a test or script calling `main` keeps its own logging. Lines go to
+    stderr as `[m:ss] message`, stdout stays empty. `-q` WARNING, `-v` DEBUG.
+  - The CLI's handler writes through `tqdm.write`, which clears the bar first. Written
+    plainly, a line landed at the end of the bar. For its call `main` also shows each
+    warning as a stamped log line, through `warnings.showwarning`, and restores it.
 
 - **`sigma` is returned in data units.** The engine rescales the denoised image by
   `d` at the center voxel but *not* `sigma_mppca`, so the API must apply that multiply by

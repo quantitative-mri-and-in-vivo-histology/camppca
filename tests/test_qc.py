@@ -4,12 +4,14 @@ Stationary noise must give small changes everywhere. Noise whose correlation dif
 one half of the image must show up in that half's regions, beyond the random subsets.
 """
 
+import logging
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
 
 from camppca import NoiseModel, check_noise_model, estimate_noise_model
-from camppca.noise_model import _good_level, _white_rho, loop
+from camppca.noise_model import _good_level, _white_rho, loop, qc
 
 PATCH = (5, 5, 3)
 H_LEFT = np.array([0.3, 1.0, 0.3])      # correlation along x in the left half
@@ -103,3 +105,25 @@ def test_the_pooled_comparisons_are_the_serial_ones():
     serial = _sigma_changes(pairs, 60, "cordero-grande", 128, 0, workers=1)
     assert _sigma_changes(pairs, 60, "cordero-grande", 128, 0, workers=2) == serial
     assert serial[0] < 0 < serial[1]     # correlated noise read as white comes out low
+
+
+def test_the_progress_total_counts_every_step_and_no_round_is_logged(monkeypatch, caplog):
+    dwi, mask = _dataset(60, H_LEFT)
+    model = estimate_noise_model(dwi, mask, patch=PATCH)
+    seen = {}
+
+    @contextmanager
+    def counting(total, label):
+        seen.update(total=total, steps=0)
+
+        def done(n=1):
+            seen["steps"] += n
+
+        yield done
+
+    monkeypatch.setattr(qc, "progress", counting)
+    with caplog.at_level(logging.DEBUG, logger="camppca"):
+        check_noise_model(dwi, model, grid=(2, 1, 1), random_splits=1, n_noise=256)
+    assert seen["steps"] == seen["total"] == 2 + 1 + 2 + 1, "regions, random, halves, pricing"
+    assert not [r for r in caplog.records if r.getMessage().startswith("round")], \
+        "the check's refits log no rounds"

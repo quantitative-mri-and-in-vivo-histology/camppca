@@ -190,7 +190,7 @@ def _level_voxels(dwi, d_field, voxels, whitener, patch, algorithm, tile):
 
 @limit_blas
 def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TILE,
-                   d_field=None, workers=None):
+                   d_field=None, workers=None, progress_label=None):
     """The MP noise level of every mask voxel's whitened patch, without denoising.
 
     The split :func:`denoise_whitened` makes, stopped once ``sigma_mppca`` is known: only the
@@ -209,6 +209,7 @@ def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TI
         tile: patches per batch; see :mod:`camppca.denoiser.gather`.
         d_field: (X, Y, Z) relative noise map, already guarded, or None.
         workers: CPU processes to split the voxels over, see :mod:`camppca.pool`.
+        progress_label: names the pass in the progress shown, see :mod:`camppca.progress`.
 
     Returns:
         (X, Y, Z) ``sigma_mppca`` in d-normalized units, zero outside ``mask``.
@@ -230,7 +231,7 @@ def whitened_level(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TI
 
     run_voxels(partial(_level_voxels, whitener=whitener, patch=patch, algorithm=algorithm,
                        tile=tile),
-               (dwi, d_field), voxels, write, resolve_workers(workers), tile)
+               (dwi, d_field), voxels, write, resolve_workers(workers), tile, progress_label)
     if np.iscomplexobj(dwi):
         level /= np.sqrt(2.0)              # one channel's level, as in the denoisers
     return level
@@ -292,7 +293,7 @@ def _mean_whitened_voxels(dwi, d_field, mask, centers, whitener, root, C, patch,
 @limit_blas
 def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=TILE,
                      d_field=None, shrink="hard", workers=None, aggregate="center",
-                     stride=1):
+                     stride=1, progress_label=None):
     """MPPCA on the patch whitened by ``C^(-1/2)``.
 
     Args:
@@ -317,6 +318,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
         aggregate: "center" (default) or "mean" over the overlapping patches; see
             :mod:`camppca.denoiser.aggregate`.
         stride: with "mean", a patch center every ``stride`` voxels per axis.
+        progress_label: names the pass in the progress shown, see :mod:`camppca.progress`.
 
     Returns:
         ``(denoised, sigma_mppca, rank)``. ``sigma_mppca`` is in d-normalized units; the
@@ -353,7 +355,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
                           patch=patch, algorithm=algorithm, tile=tile, shrink=shrink),
                   (dwi, d_field, mask),
                   voxel_chunks(patch_centers(mask, patch, stride), MEAN_CHUNKS, tile),
-                  assembly.add, workers)
+                  assembly.add, workers, progress_label)
         denoised, sigma_mppca, rank = assembly.finish()
         if np.iscomplexobj(dwi):
             sigma_mppca /= np.sqrt(2.0)      # one channel's level, as for real data
@@ -372,7 +374,7 @@ def denoise_whitened(dwi, mask, C, patch=None, algorithm="cordero-grande", tile=
 
     run_voxels(partial(_denoise_whitened_voxels, whitener=whitener, C=C, patch=patch,
                        algorithm=algorithm, tile=tile, shrink=shrink),
-               (dwi, d_field), voxels, write, workers, tile)
+               (dwi, d_field), voxels, write, workers, tile, progress_label)
     if np.iscomplexobj(dwi):
         sigma_mppca /= np.sqrt(2.0)
     restore_nonfinite(denoised, bad, values)

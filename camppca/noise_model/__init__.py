@@ -25,6 +25,8 @@ References:
 """
 
 import hashlib
+import logging
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -33,8 +35,11 @@ from scipy.ndimage import uniform_filter
 
 from ..patch import check_patch, patch_offsets, required_lag, resolve_patch, table_index
 from ..pool import limit_blas
+from ..progress import elapsed
 from ..warn import warn
 from .masks import brain_mask
+
+log = logging.getLogger(__name__)
 
 __all__ = ["NoiseModel", "estimate_noise_model", "brain_mask"]
 
@@ -294,7 +299,6 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
     from .. import __version__  # the package sets it after importing this module
     from ..denoiser.gather import check_dwi, check_range
     from ..denoiser.mp_threshold import check_algorithm
-    from .loop import fit_rho
 
     check_algorithm(algorithm)
     dwi, imag = _real_data(dwi)      # float32 once: every pass and map reuses it
@@ -337,7 +341,7 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
         _check_phase_stabilized(imag, dwi, mask, d if noise_field else None, patch,
                                 algorithm, workers)
     sample = _good_level(d, mask)          # the same patches in every level round
-    rho, info = fit_rho(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
+    rho, info = _logged_fit(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
                             noise_field=noise_field, workers=workers, sample=sample)
 
     rounds_run, change, spread = 0, None, None
@@ -353,10 +357,12 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
         both = (new > 0) & (d > 0)         # voxels below the floor come out zero
         change = float(np.median(np.abs((new[both] / np.median(new[both]))
                                         / (d[both] / np.median(d[both])) - 1)))
+        log.info("level round %d: the relative noise map moved by a median %.2f%%",
+                 rounds_run, 100 * change)
         if change < LEVEL_TOL:
             break
         d = new
-        rho, info = fit_rho(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
+        rho, info = _logged_fit(dwi, mask, d, rho, patch, lag, algorithm=algorithm,
                                 noise_field=noise_field, workers=workers, sample=sample)
         if info["fallback"]:
             break
@@ -390,6 +396,31 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
         model.rho = _white_rho(rho.shape)
         model.provenance.update(fallback=reason, sphericity=0.0)
     return model
+
+
+def _logged_fit(dwi, mask, d, rho, patch, lag, **kwargs):
+    """:func:`~camppca.noise_model.loop.fit_rho`, with a status line before and after.
+
+    The rounds are logged at DEBUG after the fit, here and not in the loop, since the check
+    refits it up to 23 times.
+    """
+    from .loop import fit_rho  # circular at the top level
+
+    shape = "x".join(str(int(v)) for v in patch)
+    log.info("correlation loop on patches of %s", shape)
+    start = time.perf_counter()
+    rho, info = fit_rho(dwi, mask, d, rho, patch, lag, **kwargs)
+    for n, (step, change) in enumerate(zip(info["steps"], info["changes"], strict=True), 1):
+        log.debug("round %d: step %g, largest change %.1e", n, step, change)
+    if info["fallback"]:
+        outcome = f"fell back to white noise in round {info['rounds']}"
+    elif info["converged"]:
+        outcome = f"converged after {info['rounds']} rounds"
+    else:
+        outcome = f"stopped after {info['rounds']} rounds"
+    log.info("correlation loop %s in %s, %d patches", outcome,
+             elapsed(time.perf_counter() - start), info["n_centers"])
+    return rho, info
 
 
 #: The imaginary part's rms over the real part's noise level above which complex data look
@@ -444,8 +475,9 @@ def _level_pass(dwi, mask, patch, algorithm, workers, C=None, d_field=None):
     from ..denoiser.camppca import whitened_level  # circular at the top level
 
     centers = _level_centers(mask, patch)
+    label = "relative noise map" if C is None else "relative noise map, whitened"
     level = whitened_level(dwi, centers, C, patch, algorithm, d_field=d_field,
-                           workers=workers)
+                           workers=workers, progress_label=label)
     return level, centers
 
 
