@@ -22,6 +22,9 @@ empty. ``-q`` keeps only warnings and errors, ``-v`` adds a line per loop round.
 library logs through :mod:`logging`, and only this command configures it. Its warnings
 come out as stamped lines too, and every line clears the progress bar before it prints.
 
+The output paths are checked before any data is read. An error in the inputs is one line
+and exit code 1, with the traceback under ``-v``.
+
 Everything to look at goes into the ``--qc`` directory. The check
 (:func:`camppca.check_noise_model`) runs right after the estimate, before the denoise
 holds the output in memory. It refits the loop 23 times.
@@ -29,6 +32,7 @@ holds the output in memory. It refits the loop 23 times.
 
 import argparse
 import logging
+import os
 import sys
 import time
 import warnings
@@ -240,7 +244,8 @@ class _Stamp(logging.Formatter):
     def format(self, record):
         minutes, seconds = divmod(int(record.created - self.start), 60)
         kind = f"{record.levelname.lower()}: " if record.levelno >= logging.WARNING else ""
-        return f"[{minutes}:{seconds:02d}] {kind}{record.getMessage()}"
+        line = f"[{minutes}:{seconds:02d}] {kind}{record.getMessage()}"
+        return f"{line}\n{self.formatException(record.exc_info)}" if record.exc_info else line
 
 
 def _lag1(rho):
@@ -261,10 +266,51 @@ def _workers(workers):
     return f"{n} worker{'s' if n > 1 else ''}"
 
 
+def _check_paths(inputs, outputs, qc=None):
+    """Refuse output paths that would fail at the write, after all the work.
+
+    Each output must be NIfTI, in a folder that exists and can be written, writable if it
+    exists already, and no input. ``qc`` must be a folder or not exist yet, under a folder
+    that can be written.
+    """
+    given = [Path(p).resolve() for p in inputs if p]
+    seen = []
+    for path in filter(None, outputs):
+        out = Path(path)
+        if not out.name.lower().endswith((".nii", ".nii.gz")):
+            raise ValueError(f"{path}: outputs are NIfTI, so the name must end in .nii "
+                             f"or .nii.gz")
+        folder = out.parent
+        if not folder.is_dir():
+            raise ValueError(f"{path}: the folder {folder} does not exist")
+        if not os.access(folder, os.W_OK):
+            raise ValueError(f"{path}: the folder {folder} cannot be written to")
+        if out.exists() and not os.access(out, os.W_OK):
+            raise ValueError(f"{path}: the file exists and cannot be written to")
+        if out.resolve() in given:
+            raise ValueError(f"{path}: this is also an input, and writing would overwrite it")
+        if out.resolve() in seen:
+            raise ValueError(f"{path}: two outputs would be written to this file")
+        seen.append(out.resolve())
+    if qc:
+        folder = Path(qc)
+        if folder.exists() and not folder.is_dir():
+            raise ValueError(f"--qc {qc}: this is a file, and --qc takes a folder")
+        existing = next(p for p in (folder, *folder.parents) if p.exists())
+        if not existing.is_dir():
+            raise ValueError(f"--qc {qc}: {existing} is a file, so the folder cannot be made")
+        if not os.access(existing, os.W_OK):
+            raise ValueError(f"--qc {qc}: the folder {existing} cannot be written to")
+
+
 def _phase(args):
+    _check_paths([args.magnitude, args.phase], [args.output, args.imag])
     magnitude, affine, header = io.load_dwi(args.magnitude)
     phase, phase_affine, _ = io.load_dwi(args.phase)
     io.check_same_space(phase_affine, affine, args.phase, args.magnitude)
+    if phase.shape != magnitude.shape:
+        raise ValueError(f"{args.phase}: shape {phase.shape}, and the magnitude's is "
+                         f"{magnitude.shape}")
     phase_range = RADIANS if args.phase_range is None else tuple(args.phase_range)
     scale = phase_scale(phase, phase_range)    # checked before any work is done
     slice_axis = header.get_dim_info()[2]
@@ -290,8 +336,13 @@ def _run(args):
     if args.command == "estimate" and not args.qc:     # before the minutes of work
         log.error("camppca estimate: nothing written. Pass --qc DIR to keep the estimate.")
         return 1
+    inputs = [args.input, args.mask, *(args.fslgrad or [])]
     if args.command == "denoise":
         check_aggregate(args.aggregate, args.stride)    # before the estimate, too
+        written = [args.output, args.noise, None if args.mask else _mask_path(args.output)]
+    else:
+        written = []
+    _check_paths(inputs, written, args.qc)
     dwi, bvals, mask, affine, header = _load(args)
     patch = None if args.patch is None else tuple(args.patch)
 
@@ -342,8 +393,18 @@ def _run(args):
     return 0
 
 
+def _expand_home(args):
+    """``~`` in every path, for a quoted path or one from a script, which no shell expands."""
+    for name in ("input", "output", "mask", "noise", "qc", "magnitude", "phase", "imag"):
+        if getattr(args, name, None):
+            setattr(args, name, os.path.expanduser(getattr(args, name)))
+    if getattr(args, "fslgrad", None):
+        args.fslgrad = [os.path.expanduser(p) for p in args.fslgrad]
+
+
 def main(argv=None):
     args = _parser().parse_args(argv)
+    _expand_home(args)
     # The camppca logger and the warning display are set up for this call and restored
     # after, so a script or test calling main keeps its own.
     package = logging.getLogger("camppca")
@@ -360,12 +421,17 @@ def main(argv=None):
         status = _run(args)
         if status == 0:
             log.info("done in %s", elapsed(time.time() - start))
-        return status
+    except (ValueError, OSError) as err:       # the inputs, a missing file, a full disk
+        # A bug can raise a ValueError too, so the traceback is one flag away.
+        log.error("%s%s", err, "" if args.verbose else " (run with -v for the traceback)",
+                  exc_info=args.verbose)
+        status = 1
     finally:
         package.removeHandler(handler)
         package.setLevel(saved[0])
         package.propagate = saved[1]
         warnings.showwarning = saved[2]
+    return status
 
 
 if __name__ == "__main__":                    # pragma: no cover

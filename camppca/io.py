@@ -6,6 +6,7 @@ the input's affine and header.
 """
 
 import json
+import zlib
 
 import nibabel as nib
 import numpy as np
@@ -34,9 +35,12 @@ def load_dwi(path, dtype=np.float32):
         raise ValueError(f"{path}: expected a 4D image, got shape {img.shape}")
     if np.iscomplexobj(np.empty(0, img.get_data_dtype())):
         dtype = np.complex64
-    data = _read_volumes(img, dtype)
-    if data is None:
-        data = np.asanyarray(img.dataobj, dtype=dtype)
+    try:
+        data = _read_volumes(img, dtype)
+        if data is None:
+            data = np.asanyarray(img.dataobj, dtype=dtype)
+    except (EOFError, zlib.error) as err:      # an interrupted copy or download
+        raise ValueError(f"{path}: the file is cut short or damaged. {err}") from err
     return data, img.affine, img.header
 
 
@@ -69,15 +73,19 @@ def _read_volumes(img, dtype):
 
 def load_bvals(path):
     """Load a whitespace-separated FSL bval file as a flat float array."""
-    bvals = np.loadtxt(str(path)).ravel().astype(float)
+    table = np.loadtxt(str(path))
+    if table.ndim == 2 and table.shape[0] == 3 and table.shape[1] > 1:
+        raise ValueError(f"{path}: 3 rows of {table.shape[1]}, which looks like a bvec "
+                         f"file. -fslgrad takes the bvec file first, then the bval file.")
+    bvals = table.ravel().astype(float)
     if bvals.size == 0:
         raise ValueError(f"{path}: expected a 1-D list of b-values")
     return bvals
 
 
 def load_mask(path, affine=None):
-    """Load a mask image as a boolean array. A trailing dimension of 1 is dropped, as
-    some tools write masks with shape (X, Y, Z, 1).
+    """Load a mask image as a boolean array, the voxels above 0.5. A trailing dimension
+    of 1 is dropped, as some tools write masks with shape (X, Y, Z, 1).
 
     With ``affine``, the data's, the mask must lie on the same voxel grid; see
     :func:`check_same_space`.
@@ -85,10 +93,21 @@ def load_mask(path, affine=None):
     img = _load_nifti(path)
     if affine is not None:
         check_same_space(img.affine, affine, path, "the input")
-    data = np.asanyarray(img.dataobj)
+    try:
+        data = np.asanyarray(img.dataobj)
+    except (EOFError, zlib.error) as err:
+        raise ValueError(f"{path}: the file is cut short or damaged. {err}") from err
     if data.ndim == 4 and data.shape[3] == 1:
         data = data[..., 0]
-    return data > 0.5
+    if data.ndim != 3:
+        raise ValueError(f"{path}: a mask must be 3D, got shape {data.shape}. Is this the "
+                         f"image rather than its mask?")
+    mask = data > 0.5
+    if not mask.any():
+        raise ValueError(f"{path}: the mask is empty. A mask holds the voxels above 0.5"
+                         + (f", and its largest value is {np.nanmax(data):g}."
+                            if np.any(data > 0) else "."))
+    return mask
 
 
 def check_same_space(affine, reference, path, reference_name):
@@ -105,7 +124,10 @@ def check_same_space(affine, reference, path, reference_name):
 
 
 def _load_nifti(path):
-    img = nib.load(str(path))
+    try:
+        img = nib.load(str(path))
+    except nib.filebasedimages.ImageFileError as err:
+        raise ValueError(f"{path}: expected a NIfTI file (.nii or .nii.gz). {err}") from err
     if not isinstance(img, (nib.Nifti1Image, nib.Nifti2Image)):
         raise ValueError(f"{path}: expected a NIfTI file (.nii or .nii.gz), got "
                          f"{type(img).__name__}")

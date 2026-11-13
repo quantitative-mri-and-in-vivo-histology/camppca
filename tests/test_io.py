@@ -100,3 +100,41 @@ def test_a_mask_on_another_grid_is_refused(tmp_path):
     with pytest.raises(ValueError, match="do not line up"):
         io.load_mask(tmp_path / "mask.nii", np.diag([2.0, 2.0, 2.0, 1.0]))
     assert io.load_mask(tmp_path / "mask.nii", flipped + 1e-5).all(), "rounding passes"
+
+
+def test_a_mask_that_is_the_image_is_refused(tmp_path):
+    nib.save(nib.Nifti1Image(np.ones((4, 5, 3, 7), np.float32), np.eye(4)), tmp_path / "m.nii")
+    with pytest.raises(ValueError, match="must be 3D, got shape .4, 5, 3, 7.. Is this the image"):
+        io.load_mask(tmp_path / "m.nii")
+
+
+@pytest.mark.parametrize("value, says", [(0, r"empty\. A mask holds the voxels above 0\.5\.$"),
+                                         (0.4, "its largest value is 0.4")])
+def test_an_empty_mask_is_refused(tmp_path, value, says):
+    nib.save(nib.Nifti1Image(np.full((4, 5, 3), value, np.float32), np.eye(4)),
+             tmp_path / "m.nii")
+    with pytest.raises(ValueError, match=says):
+        io.load_mask(tmp_path / "m.nii")
+
+
+def test_a_bvec_file_given_as_bvals_is_named(tmp_path):
+    np.savetxt(tmp_path / "dwi.bvec", np.ones((3, 7)))
+    with pytest.raises(ValueError, match="looks like a bvec file"):
+        io.load_bvals(tmp_path / "dwi.bvec")
+    np.savetxt(tmp_path / "dwi.bval", np.ones((1, 7)))
+    assert io.load_bvals(tmp_path / "dwi.bval").shape == (7,)
+
+
+def test_a_file_nibabel_cannot_read_is_a_value_error(tmp_path):
+    (tmp_path / "notes.txt").write_text("hello")
+    with pytest.raises(ValueError, match="expected a NIfTI"):
+        io.load_dwi(tmp_path / "notes.txt")
+
+
+def test_a_truncated_image_is_named_as_damaged(tmp_path):
+    path = tmp_path / "dwi.nii.gz"
+    nib.save(nib.Nifti1Image(np.random.default_rng(0).random((8, 8, 8, 6), np.float32),
+                             np.eye(4)), path)
+    path.write_bytes(path.read_bytes()[:-400])
+    with pytest.raises(ValueError, match="cut short or damaged"):
+        io.load_dwi(path)

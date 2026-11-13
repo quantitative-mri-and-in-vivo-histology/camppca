@@ -44,7 +44,7 @@ from .. import __version__
 from ..patch import resolve_patch
 from .aggregate import check_aggregate
 from .camppca import denoise_whitened
-from .gather import as_data, check_dwi
+from .gather import as_data, check_dwi, check_mask
 from .result import DenoiseResult
 from .shrink import check_shrink, rule_text
 
@@ -82,7 +82,8 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, *, patch=None
         MPPCA does not use a noise model.
 
     Raises:
-        ValueError: if ``dwi`` is not 4D, ``mask`` does not match its spatial shape,
+        ValueError: if ``dwi`` is not 4D, ``mask`` is not 3D, is empty or does not
+            match its spatial shape,
             ``patch`` is not three odd positive integers, or ``shrink`` is unknown.
     """
     shrink = check_shrink(shrink)
@@ -93,8 +94,7 @@ def denoise_mppca(dwi: np.ndarray, mask: np.ndarray | None = None, *, patch=None
     if mask is None:
         mask = np.ones(dwi.shape[:3], bool)
     else:
-        mask = np.asarray(mask, bool)
-        check_dwi(dwi, mask.shape)
+        mask = check_mask(mask, dwi.shape[:3])
 
     denoised, sigma_mppca, rank = denoise_whitened(
         dwi, mask, None, patch=patch, algorithm=algorithm, shrink=tile_shrink,

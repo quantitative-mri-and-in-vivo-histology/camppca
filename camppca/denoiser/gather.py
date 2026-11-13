@@ -49,6 +49,19 @@ def check_dwi(dwi, spatial_shape=None):
     return dwi
 
 
+def check_mask(mask, spatial_shape):
+    """``mask`` as a boolean array, refused unless 3D, of ``spatial_shape`` and not empty."""
+    mask = np.asarray(mask, bool)
+    if mask.ndim != 3:
+        raise ValueError(f"mask must be 3D (X, Y, Z), got shape {mask.shape}")
+    if mask.shape != tuple(spatial_shape):
+        raise ValueError(f"dwi spatial shape {tuple(spatial_shape)} does not match the "
+                         f"mask's {mask.shape}")
+    if not mask.any():
+        raise ValueError("the mask is empty")
+    return mask
+
+
 def zero_nonfinite(dwi):
     """``dwi`` with NaN and inf set to zero, and what it takes to put them back.
 

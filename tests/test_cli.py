@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import logging
 import warnings
 
@@ -121,10 +122,11 @@ def test_level_rounds_reach_the_estimator(dataset):
     assert prov["model"]["level_rounds_run"] == 1
 
 
-def test_even_patch_is_rejected(dataset):
-    with pytest.raises(ValueError, match="odd"):
-        main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(dataset / "qc_even"),
-              "--patch", "4", "5", "5", *_grad(dataset)])
+def test_even_patch_is_rejected(dataset, capsys):
+    assert main(["estimate", str(dataset / "in.nii.gz"), "--qc", str(dataset / "qc_even"),
+                 "--patch", "4", "5", "5", *_grad(dataset)]) == 1
+    err = capsys.readouterr().err
+    assert "error: " in err and "odd" in err and "Traceback" not in err
 
 
 def test_a_qc_rerun_overwrites_rather_than_accumulates(dataset):
@@ -242,20 +244,20 @@ def test_shrink_and_algorithm_reach_the_model_and_the_denoise(dataset):
 
 def test_bad_options_fail_before_the_data_is_read(tmp_path, capsys):
     missing = str(tmp_path / "missing.nii.gz")
-    with pytest.raises(ValueError, match="stride > 1 needs"):
-        main(["denoise", missing, str(tmp_path / "out.nii.gz"), "--stride", "2"])
+    assert main(["denoise", missing, str(tmp_path / "out.nii.gz"), "--stride", "2"]) == 1
     assert main(["estimate", missing]) == 1
-    assert "nothing written" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "stride > 1 needs" in err and "nothing written" in err
 
 
-def test_a_mask_on_another_grid_stops_the_run(dataset):
+def test_a_mask_on_another_grid_stops_the_run(dataset, capsys):
     mask = dataset / "flipped_mask.nii.gz"
     nib.save(nib.Nifti1Image(np.ones((34, 34, 16), np.uint8), np.diag([-1.0, 1, 1, 1])),
              str(mask))
     out = dataset / "never.nii.gz"
-    with pytest.raises(ValueError, match="do not line up"):
-        main(["denoise", str(dataset / "in.nii.gz"), str(out), "--mask", str(mask),
-              *_grad(dataset)])
+    assert main(["denoise", str(dataset / "in.nii.gz"), str(out), "--mask", str(mask),
+                 *_grad(dataset)]) == 1
+    assert "do not line up" in capsys.readouterr().err
     assert not out.exists()
 
 
@@ -298,3 +300,55 @@ def test_a_line_clears_the_bar_before_it_prints():
         handler.emit(record)
     line = next(part for part in terminal.getvalue().split("\n") if "a line" in part)
     assert line.split("\r")[-1] == "[1:01] a line", "nothing of the bar before it"
+
+
+@pytest.mark.parametrize("output, extra, says", [
+    ("nodir/out.nii.gz", [], "does not exist"),
+    ("out.mgz", [], "must end in .nii"),
+    ("in.nii.gz", [], "also an input"),
+    ("out.nii.gz", ["--noise", "out.nii.gz"], "two outputs"),
+    ("out.nii.gz", ["--qc", "in.bval"], "this is a file"),
+    ("out.nii.gz", ["--qc", "in.bval/qc"], "so the folder cannot be made"),
+])
+def test_output_paths_are_checked_before_the_data_is_read(tmp_path, capsys, output, extra,
+                                                           says):
+    (tmp_path / "in.bval").write_text("0 1000")
+    extra = [str(tmp_path / e) if e.endswith((".gz", ".bval", "/qc")) else e for e in extra]
+    rc = main(["denoise", str(tmp_path / "in.nii.gz"), str(tmp_path / output), *extra,
+               "-fslgrad", str(tmp_path / "in.bvec"), str(tmp_path / "in.bval")])
+    err = capsys.readouterr().err
+    assert rc == 1 and says in err, "the input does not even exist: no data was read"
+    assert "run with -v for the traceback" in err
+
+
+def test_a_read_only_output_is_refused(tmp_path, capsys):
+    old = tmp_path / "old.nii.gz"
+    old.write_bytes(b"")
+    old.chmod(0o444)
+    if os.access(old, os.W_OK):
+        pytest.skip("running as root, which writes any file")
+    assert main(["denoise", str(tmp_path / "in.nii.gz"), str(old)]) == 1
+    assert "exists and cannot be written" in capsys.readouterr().err
+
+
+def test_capitals_and_a_quoted_home_pass_the_path_checks(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert main(["denoise", "~/in.nii.gz", "~/OUT.NII.GZ"]) == 1
+    err = capsys.readouterr().err
+    assert "No such file" in err and str(tmp_path / "in.nii.gz") in err, \
+        "past the path checks, the input is looked up in the home folder"
+
+
+def test_verbose_errors_carry_the_traceback(tmp_path, capsys):
+    out = str(tmp_path / "nodir" / "out.nii.gz")
+    assert main(["denoise", str(tmp_path / "in.nii.gz"), out, "-v"]) == 1
+    assert "Traceback" in capsys.readouterr().err
+
+
+def test_phase_images_of_another_shape_are_named(tmp_path, capsys):
+    for name, n in (("mag.nii.gz", 4), ("phase.nii.gz", 3)):
+        nib.save(nib.Nifti1Image(np.ones((4, 4, 4, n), np.float32), np.eye(4)),
+                 str(tmp_path / name))
+    rc = main(["phase", str(tmp_path / "mag.nii.gz"), str(tmp_path / "phase.nii.gz"),
+               str(tmp_path / "real.nii.gz")])
+    assert rc == 1 and "shape (4, 4, 4, 3), and the magnitude's is" in capsys.readouterr().err

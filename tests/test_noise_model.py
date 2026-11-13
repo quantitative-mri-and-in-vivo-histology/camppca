@@ -346,3 +346,13 @@ def test_a_table_that_does_not_fit_the_lag_or_is_not_a_correlation_is_refused():
         NoiseModel(rho=rho, d=np.ones((4, 4, 4)), mask=np.ones((4, 4, 4)), lag=2)
     with pytest.raises(ValueError, match="1 at zero lag"):
         NoiseModel(rho=2 * rho, d=np.ones((4, 4, 4)), mask=np.ones((4, 4, 4)), lag=4)
+
+
+def test_the_estimator_refuses_a_bad_mask_and_data_without_noise():
+    dwi, _, mask = _synthetic(np.random.default_rng(0))[:3]
+    with pytest.raises(ValueError, match="mask must be 3D"):
+        estimate_noise_model(dwi, dwi > 0)
+    with pytest.raises(ValueError, match="the mask is empty"):
+        estimate_noise_model(dwi, np.zeros_like(mask))
+    with pytest.raises(ValueError, match="value 0 throughout the mask"):
+        estimate_noise_model(np.zeros_like(dwi), mask)

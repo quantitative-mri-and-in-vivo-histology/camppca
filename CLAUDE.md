@@ -420,6 +420,15 @@ Breaking any of these corrupts results without an error:
     plainly, a line landed at the end of the bar. For its call `main` also shows each
     warning as a stamped log line, through `warnings.showwarning`, and restores it.
 
+- **Inputs are checked before the work** (2026-11-13). The CLI checks every output path
+  before it reads the data: NIfTI, a folder that exists and can be written, an existing
+  file writable, no input, no two outputs alike, `--qc` a folder. `~` is expanded. On real data a missing folder failed the write
+  after ten minutes. A mask must be 3D and hold a voxel (`gather.check_mask`, and
+  `io.load_mask` with the path), and the estimator refuses data with one value
+  throughout the mask. `cli.main` turns a ValueError or OSError into one `error:` line
+  and exit code 1, with the traceback under `-v`. The line says so, since a bug can raise a
+  ValueError too. A truncated `.nii.gz` reads as a ValueError naming the file. Probe: `docs/local/2026-11-13_input_validation.md`.
+
 - **`sigma` is returned in data units.** The engine rescales the denoised image by
   `d` at the center voxel but *not* `sigma_mppca`, so the API must apply that multiply by
   default. σ is the headline metric — the scale of `d` must not leak into the reported

@@ -182,3 +182,11 @@ def test_a_mask_of_the_wrong_shape_is_rejected():
     dwi = np.zeros((6, 6, 6, 8), np.float32)
     with pytest.raises(ValueError, match="does not match the mask"):
         denoise_mppca(dwi, np.ones((5, 5, 5), bool))
+
+
+def test_a_mask_that_is_not_3d_or_empty_is_rejected():
+    dwi = np.zeros((6, 6, 6, 8), np.float32)
+    with pytest.raises(ValueError, match="mask must be 3D"):
+        denoise_mppca(dwi, np.ones((6, 6, 6, 8), bool))
+    with pytest.raises(ValueError, match="the mask is empty"):
+        denoise_mppca(dwi, np.zeros((6, 6, 6), bool))
