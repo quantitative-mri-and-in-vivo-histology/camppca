@@ -38,12 +38,6 @@ progress bar.
 | `-q` | show only warnings and errors |
 | `-v` | verbose: also show the progress of each round of the noise correlation fit, and the full Python traceback when an error stops the run |
 
-`camppca estimate` writes the noise model and its check to the `--qc` folder:
-
-```bash
-camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/
-```
-
 ### Complex denoising
 
 For complex data, camppca denoises real-valued data after phase stabilization, which
@@ -57,6 +51,14 @@ camppca denoise real.nii.gz out.nii.gz --mask brain.nii.gz
 The phase is read in radians. For any other format, `--phase-range LOW HIGH` gives the
 values that span one full turn, such as `-4096 4096` for Siemens integers or `-180 180`
 for degrees. `--imag` writes the imaginary part, which should hold noise only.
+
+### Estimate noise model only
+
+`camppca estimate` writes the noise covariance model and its check to the `--qc` folder:
+
+```bash
+camppca estimate in.nii.gz --mask brain.nii.gz --qc qc/
+```
 
 ## Python API
 
