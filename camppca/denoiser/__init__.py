@@ -116,7 +116,8 @@ def denoise_with_noise_model(dwi, model, *, patch=None, noise_field=True,
     region = model.mask if mask_only else np.ones(model.mask.shape, bool)
     denoised, sigma_mppca, rank = denoise_whitened(
         dwi, region, C, patch=tuple(int(v) for v in patch), algorithm=algorithm,
-        d_field=d_eff, shrink=shrink, workers=workers, aggregate=aggregate, stride=stride)
+        d_field=d_eff, shrink=shrink, workers=workers, aggregate=aggregate, stride=stride,
+        progress_label="denoising")
 
     if d_eff is not None:
         # The engine rescales the IMAGE by d at the center voxel but not sigma_mppca.

@@ -93,6 +93,7 @@ from . import (
 
 __all__ = ["fit_rho"]
 
+
 MAX_CENTERS = 5000      # patch centers the bulk is pooled over, at most
 MIN_CENTERS = 500       # fewer tiles than this and the grid narrows, so patches overlap
 LOOP_TOL = 5e-4         # stop when a full step moves no table value by more than this
@@ -137,7 +138,8 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
         ``(rho, info)``: the stationary table, shaped like ``rho_start`` with unit zero
         lag and ``rho_start``'s values at lags the patch never spans, and a dict with
         ``rounds``, ``converged``, ``steps`` (each round's line-search step, 1 for a
-        full one, 0 for a round that found the table at the optimum), ``unsolved`` (the rounds whose Fisher step stopped unsolved), ``sphericity`` (that of the returned table's patch correlation),
+        full one, 0 for a round that found the table at the optimum), ``changes`` (each
+        such round's largest change of a table value), ``unsolved`` (the rounds whose Fisher step stopped unsolved), ``sphericity`` (that of the returned table's patch correlation),
         ``n_centers``, ``stride`` (of the grid of patch centers, see
         :func:`_sample_centers`, None when ``centers`` is given) and ``fallback``: None,
         or why the table fell back to white noise.
@@ -189,7 +191,7 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
         cls, lags = _lag_classes(patch)
         rho = rho_start
         C = _build_C(rho, patch, lag)
-        converged, fallback, steps, unsolved, bounded = False, None, [], {}, False
+        converged, fallback, steps, changes, unsolved, bounded = False, None, [], [], {}, False
         for rounds in range(1, MAX_ROUNDS + 1):  # noqa: B007 - read after the loop
             results = split(C)
             bulk, factors = _assemble(results)
@@ -214,11 +216,13 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
                 # A full step inside the valid correlations, and no fraction of it raises
                 # the likelihood beyond rounding: the table is at the optimum.
                 steps.append(0.0)
+                changes.append(0.0)
                 converged = True
                 break
             steps.append(outcome.step)
             bounded = outcome.bounded
             change = float(np.abs(outcome.values - _class_values(rho, lags, lag)).max())
+            changes.append(change)
             rho = _table_from_values(outcome.values, lags, lag, dzmax)
             C = _build_C(rho, patch, lag)
             if change < LOOP_TOL and outcome.step == 1.0:
@@ -246,8 +250,8 @@ def fit_rho(dwi, mask, d, rho_start, patch, lag, algorithm="cordero-grande",
     rho = rho.copy()
     unspanned = ~_spanned(patch, lag, dzmax)
     rho[unspanned] = rho_start[unspanned]
-    info = dict(rounds=rounds, converged=converged, steps=steps, fallback=fallback,
-                unsolved=sorted(unsolved),
+    info = dict(rounds=rounds, converged=converged, steps=steps, changes=changes,
+                fallback=fallback, unsolved=sorted(unsolved),
                 sphericity=_sphericity_excess(_build_C(rho, patch, lag)),
                 n_centers=int(centers[0].size), stride=stride)
     return rho, info

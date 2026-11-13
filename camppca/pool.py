@@ -47,6 +47,8 @@ import numpy as np
 from joblib import Parallel, delayed, parallel_config
 from threadpoolctl import threadpool_info, threadpool_limits
 
+from .progress import progress
+
 __all__ = ["default_workers", "resolve_workers", "worker_pool", "voxel_chunks",
            "run_voxels", "run_boxes", "blas_threads", "main_threads", "limit_blas"]
 
@@ -151,7 +153,7 @@ def _chunk_task(fn, i, voxels, arrays):
     return i, fn(*arrays, voxels)
 
 
-def run_voxels(fn, arrays, voxels, write, workers: int, tile: int):
+def run_voxels(fn, arrays, voxels, write, workers: int, tile: int, progress_label=None):
     """Run a per-voxel pass in chunks, over the worker pool when ``workers`` > 1.
 
     Args:
@@ -165,32 +167,40 @@ def run_voxels(fn, arrays, voxels, write, workers: int, tile: int):
         workers: processes; 1 runs every chunk here.
         tile: the engine's tile size; chunks hold whole tiles, so the result is the
             single pass, bit for bit.
+        progress_label: names the pass in the progress shown, see
+            :func:`camppca.progress.progress`. None shows none.
     """
     chunks = voxel_chunks(voxels, 8 * workers, int(tile))
     starts = np.cumsum([0] + [c.size for c in chunks])
-    if workers == 1:
-        with blas_threads(1):              # per-patch work, as in the workers
-            for i, chunk in enumerate(chunks):
-                write(slice(starts[i], starts[i + 1]), fn(*arrays, chunk))
-        return
-    with worker_pool(workers, return_as="generator_unordered") as parallel:
-        for i, outputs in parallel(delayed(_chunk_task)(fn, i, chunk, arrays)
-                                   for i, chunk in enumerate(chunks)):
-            write(slice(starts[i], starts[i + 1]), outputs)
+    with progress(len(chunks), progress_label) as done:
+        if workers == 1:
+            with blas_threads(1):              # per-patch work, as in the workers
+                for i, chunk in enumerate(chunks):
+                    write(slice(starts[i], starts[i + 1]), fn(*arrays, chunk))
+                    done()
+            return
+        with worker_pool(workers, return_as="generator_unordered") as parallel:
+            for i, outputs in parallel(delayed(_chunk_task)(fn, i, chunk, arrays)
+                                       for i, chunk in enumerate(chunks)):
+                write(slice(starts[i], starts[i + 1]), outputs)
+                done()
 
 
-def run_boxes(fn, arrays, chunks, add, workers: int):
+def run_boxes(fn, arrays, chunks, add, workers: int, progress_label=None):
     """Run a per-chunk pass whose results are summed, in chunk order.
 
     Like :func:`run_voxels`, but ``add(outputs)`` receives the chunks' outputs strictly
     in the order of ``chunks``, so sums come out the same for any number of workers.
     """
-    if workers == 1:
-        with blas_threads(1):              # per-patch work, as in the workers
-            for chunk in chunks:
-                add(fn(*arrays, chunk))
-        return
-    with worker_pool(workers, return_as="generator") as parallel:
-        for _, outputs in parallel(delayed(_chunk_task)(fn, i, chunk, arrays)
-                                   for i, chunk in enumerate(chunks)):
-            add(outputs)
+    with progress(len(chunks), progress_label) as done:
+        if workers == 1:
+            with blas_threads(1):              # per-patch work, as in the workers
+                for chunk in chunks:
+                    add(fn(*arrays, chunk))
+                    done()
+            return
+        with worker_pool(workers, return_as="generator") as parallel:
+            for _, outputs in parallel(delayed(_chunk_task)(fn, i, chunk, arrays)
+                                       for i, chunk in enumerate(chunks)):
+                add(outputs)
+                done()

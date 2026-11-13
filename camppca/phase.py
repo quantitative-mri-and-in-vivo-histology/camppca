@@ -44,6 +44,7 @@ from joblib import delayed
 from scipy import ndimage
 
 from .pool import resolve_workers, worker_pool
+from .progress import progress
 from .warn import warn
 
 __all__ = ["stabilize_phase", "phase_scale"]
@@ -137,14 +138,17 @@ def stabilize_phase(magnitude, phase, *, slice_axis=2, imag=False, workers=None,
 
     task = partial(_rotate_volumes, scale=scale, slice_axis=slice_axis, imag=imag)
     chunks = np.array_split(np.arange(n_vols), min(n_vols, 4 * workers))
-    if workers == 1:
-        for chunk in chunks:
-            write(chunk, task(magnitude, phase, chunk))
-    else:
-        with worker_pool(workers, return_as="generator_unordered") as parallel:
-            for chunk, out in parallel(delayed(_chunk_task)(task, chunk, magnitude, phase)
-                                       for chunk in chunks):
-                write(chunk, out)
+    with progress(len(chunks), "phase stabilization") as done:
+        if workers == 1:
+            for chunk in chunks:
+                write(chunk, task(magnitude, phase, chunk))
+                done()
+        else:
+            with worker_pool(workers, return_as="generator_unordered") as parallel:
+                for chunk, out in parallel(delayed(_chunk_task)(task, chunk, magnitude, phase)
+                                           for chunk in chunks):
+                    write(chunk, out)
+                    done()
     return (real, im) if imag else real
 
 

@@ -30,6 +30,7 @@ from joblib import delayed
 from ..denoiser.camppca import _whiten_split, sqrtm_psd
 from ..denoiser.gather import check_range
 from ..pool import limit_blas, resolve_workers, worker_pool
+from ..progress import progress
 from ..warn import warn
 from . import MIN_VOLUMES, _build_C, _good_level, _real_data, _white_rho
 from .loop import _sample_centers, fit_rho
@@ -152,59 +153,65 @@ def check_noise_model(dwi, model, *, grid=(2, 2, 2), random_splits=5, n_noise=20
     n_centers = centers[0].size
     C_model = model.patch_correlation(patch)
 
-    def refit(pick, data=dwi):
-        rho, info = fit_rho(data, model.mask, model.d, _white_rho(model.rho.shape), patch,
-                            model.lag, algorithm=algorithm, noise_field=noise_field,
-                            workers=workers, centers=tuple(c[pick] for c in centers))
-        return _build_C(rho, patch, model.lag), info["fallback"]
-
     # Regions at the quantiles of the centers, so each axis splits into equal counts.
     bins = []
     for axis, g in enumerate(grid):
         edges = np.quantile(centers[axis], np.arange(1, g) / g)
         bins.append(np.searchsorted(edges, centers[axis], side="right"))
     region_of = np.ravel_multi_index(bins, grid)
-    regions, pairs = [], []        # pairs: (C_true, C_used), priced after the fits
-    for index in np.ndindex(*grid):
-        pick = region_of == np.ravel_multi_index(index, grid)
-        if not pick.any():
-            continue
-        C, fallback = refit(pick)
-        pairs.append((C, C_model))
-        regions.append(dict(region=" ".join(f"{a}{i}" for a, i in zip("xyz", index,
-                                                                         strict=True)),
-                            n_centers=int(pick.sum()), change=None,
-                            fallback=fallback))
+    # One step per refit, and one for pricing the differences on synthetic noise.
+    split_volumes = n_vols >= MIN_VOLUMES
+    n_fits = np.unique(region_of).size + random_splits * (1 + 2 * split_volumes)
+    with progress(n_fits + 1, "noise model check") as done:
+        def refit(pick, data=dwi):
+            rho, info = fit_rho(data, model.mask, model.d, _white_rho(model.rho.shape), patch,
+                                model.lag, algorithm=algorithm, noise_field=noise_field,
+                                workers=workers, centers=tuple(c[pick] for c in centers))
+            done()
+            return _build_C(rho, patch, model.lag), info["fallback"]
 
-    size = int(np.median([r["n_centers"] for r in regions]))
-    reference = []
-    for _ in range(random_splits):
-        pick = np.zeros(n_centers, bool)
-        pick[rng.choice(n_centers, size, replace=False)] = True
-        C, fallback = refit(pick)
-        pairs.append((C, C_model))
-        reference.append(dict(region="random", n_centers=size, change=None,
-                              fallback=fallback))
+        regions, pairs = [], []        # pairs: (C_true, C_used), priced after the fits
+        for index in np.ndindex(*grid):
+            pick = region_of == np.ravel_multi_index(index, grid)
+            if not pick.any():
+                continue
+            C, fallback = refit(pick)
+            pairs.append((C, C_model))
+            regions.append(dict(region=" ".join(f"{a}{i}" for a, i in zip("xyz", index,
+                                                                             strict=True)),
+                                n_centers=int(pick.sum()), change=None,
+                                fallback=fallback))
 
-    volume_splits, skipped = [], None
-    if n_vols < MIN_VOLUMES:
-        skipped = (f"{n_vols} volumes, fewer than {MIN_VOLUMES}, where the "
-                   f"Marchenko-Pastur fit degenerates")
-        warn(f"volume halves skipped: {skipped}")
-    else:
-        every = np.ones(n_centers, bool)
+        size = int(np.median([r["n_centers"] for r in regions]))
+        reference = []
         for _ in range(random_splits):
-            order = rng.permutation(n_vols)
-            halves = [np.sort(order[:n_vols // 2]), np.sort(order[n_vols // 2:])]
-            fits = [refit(every, np.ascontiguousarray(dwi[..., h])) for h in halves]
-            (C_a, fell_a), (C_b, fell_b) = fits
-            pairs += [(C_a, C_b), (C_b, C_a)]
-            volume_splits.append(dict(n_vols=(halves[0].size, halves[1].size),
-                                      change=None,
-                                      fallback=fell_a or fell_b))
+            pick = np.zeros(n_centers, bool)
+            pick[rng.choice(n_centers, size, replace=False)] = True
+            C, fallback = refit(pick)
+            pairs.append((C, C_model))
+            reference.append(dict(region="random", n_centers=size, change=None,
+                                  fallback=fallback))
 
-    # The synthetic noise in one pool after the fits: serial it took 80 s of 264 at 0.9 mm.
-    changes = iter(_sigma_changes(pairs, n_vols, algorithm, n_noise, noise_seed, workers))
+        volume_splits, skipped = [], None
+        if not split_volumes:
+            skipped = (f"{n_vols} volumes, fewer than {MIN_VOLUMES}, where the "
+                       f"Marchenko-Pastur fit degenerates")
+            warn(f"volume halves skipped: {skipped}")
+        else:
+            every = np.ones(n_centers, bool)
+            for _ in range(random_splits):
+                order = rng.permutation(n_vols)
+                halves = [np.sort(order[:n_vols // 2]), np.sort(order[n_vols // 2:])]
+                fits = [refit(every, np.ascontiguousarray(dwi[..., h])) for h in halves]
+                (C_a, fell_a), (C_b, fell_b) = fits
+                pairs += [(C_a, C_b), (C_b, C_a)]
+                volume_splits.append(dict(n_vols=(halves[0].size, halves[1].size),
+                                          change=None,
+                                          fallback=fell_a or fell_b))
+
+        # The synthetic noise in one pool after the fits: serial it took 80 s of 264 at 0.9 mm.
+        changes = iter(_sigma_changes(pairs, n_vols, algorithm, n_noise, noise_seed, workers))
+        done()
     for r in regions + reference:
         r["change"] = next(changes)
     for s in volume_splits:
