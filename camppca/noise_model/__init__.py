@@ -294,10 +294,15 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
 
     Returns:
         A :class:`NoiseModel`.
+
+    Raises:
+        ValueError: if ``dwi`` is not 4D, ``mask`` is not 3D, is empty or has another
+            shape, ``bvals`` has another length, or the data hold one value throughout
+            the mask.
     """
     # Imported here: the denoiser imports this package, so a top-level import is circular.
     from .. import __version__  # the package sets it after importing this module
-    from ..denoiser.gather import check_dwi, check_range
+    from ..denoiser.gather import check_mask, check_range
     from ..denoiser.mp_threshold import check_algorithm
 
     check_algorithm(algorithm)
@@ -328,8 +333,8 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
         # erode=0: with mask_only the stored mask is also the set of voxels the engine
         # WRITES, so eroding here would leave an un-denoised rim.
         mask = brain_mask(b0_mean, erode=0)
-    mask = np.asarray(mask, bool)
-    check_dwi(dwi, mask.shape)
+    mask = check_mask(mask, dwi.shape[:3])
+    _check_varies(dwi, mask)
 
     rho = _white_rho((2 * lag + 1, 2 * lag + 1, dzmax + 1))
     if noise_field:
@@ -396,6 +401,17 @@ def estimate_noise_model(dwi, mask=None, *, bvals=None, patch=None, lowb=100,
         model.rho = _white_rho(rho.shape)
         model.provenance.update(fallback=reason, sphericity=0.0)
     return model
+
+
+def _check_varies(dwi, mask):
+    """Refuse data that hold one value throughout the mask: there is no noise to fit."""
+    low, high = np.inf, -np.inf
+    for x in np.flatnonzero(mask.any(axis=(1, 2))):     # a slab at a time, no copy
+        values = dwi[x][mask[x]]
+        low, high = min(low, values.min()), max(high, values.max())
+    if not high > low:
+        raise ValueError(f"the data hold the value {low:g} throughout the mask, so there "
+                         f"is no noise to estimate")
 
 
 def _logged_fit(dwi, mask, d, rho, patch, lag, **kwargs):

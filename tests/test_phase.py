@@ -130,7 +130,7 @@ def test_bad_settings_are_refused():
         stabilize_phase(m, m[..., :2])
 
 
-def test_cli_writes_real_and_imaginary_parts(tmp_path):
+def test_cli_writes_real_and_imaginary_parts(tmp_path, capsys):
     """Phase stored as Siemens does, uint16 scaled to -4096..4094."""
     rng = np.random.default_rng(3)
     magnitude = blob()[..., None] * np.ones(SHAPE[3])
@@ -143,8 +143,8 @@ def test_cli_writes_real_and_imaginary_parts(tmp_path):
 
     args = ["phase", str(tmp_path / "mag.nii.gz"), str(tmp_path / "phase.nii.gz"),
             str(tmp_path / "real.nii.gz"), "--imag", str(tmp_path / "imag.nii.gz"), "-q"]
-    with pytest.raises(ValueError, match="--phase-range"):
-        main(args)
+    assert main(args) == 1
+    assert "--phase-range" in capsys.readouterr().err
     assert not (tmp_path / "real.nii.gz").exists(), "refused before any work"
     rc = main(args + ["--phase-range", "-4096", "4096"])
     assert rc == 0
@@ -155,14 +155,14 @@ def test_cli_writes_real_and_imaginary_parts(tmp_path):
     assert (tmp_path / "imag.nii.gz").exists()
 
 
-def test_cli_refuses_a_phase_on_another_grid(tmp_path):
+def test_cli_refuses_a_phase_on_another_grid(tmp_path, capsys):
     magnitude = blob()[..., None] * np.ones(SHAPE[3])
     nib.save(nib.Nifti1Image(magnitude.astype(np.float32), np.eye(4)), tmp_path / "mag.nii")
     nib.save(nib.Nifti1Image(np.zeros(SHAPE, np.float32), np.diag([1.0, -1, 1, 1])),
              tmp_path / "phase.nii")
-    with pytest.raises(ValueError, match="do not line up"):
-        main(["phase", str(tmp_path / "mag.nii"), str(tmp_path / "phase.nii"),
-              str(tmp_path / "real.nii"), "-q"])
+    assert main(["phase", str(tmp_path / "mag.nii"), str(tmp_path / "phase.nii"),
+                 str(tmp_path / "real.nii"), "-q"]) == 1
+    assert "do not line up" in capsys.readouterr().err
 
 
 def test_the_pooled_result_is_the_serial_one():
